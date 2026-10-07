@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1.27
+#
+# ghcr.io/qtsone/agentic-runner -- the barebones Runner image (PRD issue 46, ADR-0013 §6).
+#
+# Python, git and both Agent Runtime CLIs, built from the `agentic-runner` distribution
+# alone: no platform package, no dev group, no test tooling, no `buf`, no Alembic tree.
+# An Organisation that needs more layers its toolchain FROM this image and names the tag
+# in its Agent Runtime Profile; Dockerfile.qts-runner is the first such layer.
+#
+# Build context is the repository root, because the Runner depends on the contracts
+# distribution beside it (packages/contracts).
+
+FROM node:22-bookworm-slim AS cli
+
+ARG TARGETARCH
+ARG CODEX_CLI_VERSION=0.141.0
+ARG CLAUDE_CODE_VERSION=2.1.280
+
+# Both CLIs ship a native binary per platform as an optional dependency; the arch-specific
+# package is named explicitly so a build for one platform never pulls every other.
+RUN case "${TARGETARCH}" in \
+        "amd64") node_arch="x64" ;; \
+        "arm64") node_arch="arm64" ;; \
+        *) echo "Unsupported CLI architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && npm install --global \
+        "@openai/codex@${CODEX_CLI_VERSION}" \
+        "@openai/codex-linux-${node_arch}@npm:@openai/codex@${CODEX_CLI_VERSION}-linux-${node_arch}" \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "@anthropic-ai/claude-code-linux-${node_arch}@${CLAUDE_CODE_VERSION}" \
+        --include=optional --omit=dev --no-audit --no-fund \
+    && npm cache clean --force
+
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
+
+ARG RUNNER_VERSION
+ARG CONTRACTS_VERSION
+LABEL org.opencontainers.image.source="https://github.com/qtsone/agentic-runner" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.version="${RUNNER_VERSION}" \
+      one.qts.agentic-runner.contracts="${CONTRACTS_VERSION}"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    PATH="/opt/agentic-runner/bin:${PATH}" \
+    AGENTIC_RUNNER_READINESS_PORT=8080
+
+# The workspace layer (agentic_runner/integrations/git/workspace.py) shells out to git.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Codex is a JS launcher that finds its native binary beside itself, so it needs node and
+# its module tree; `claude` is one self-contained native binary, so only that is copied
+# (COPY dereferences the npm symlink) and its module tree stays behind.
+COPY --from=cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
+COPY --from=cli /usr/local/bin/claude /usr/local/bin/claude
+RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+
+# The two shipped distributions and nothing else (ADR-0013 §4). `uv pip`, not `uv sync`:
+# there is no workspace root here, so no platform package and no dev group can be pulled
+# in by accident -- the partition the image test asserts.
+COPY packages/contracts /build/packages/contracts
+COPY packages/runner /build/packages/runner
+RUN uv venv /opt/agentic-runner \
+    && uv pip install --python /opt/agentic-runner --no-cache --no-sources \
+        /build/packages/contracts /build/packages/runner \
+    && rm -rf /build
+
+# The uid an `isolation: none` deployment runs as (ADR-0015 §5). `contract_uid` runs as
+# root with five capabilities and needs no user of its own (17 A1).
+RUN groupadd --system --gid 65532 runner \
+    && useradd --system --uid 65532 --gid runner --home-dir /var/lib/agentic-os runner \
+    && mkdir -p /var/lib/agentic-os/workspaces /var/lib/agentic-os/state \
+        /run/agentic-runner /etc/agentic-runner/hooks /etc/agentic-runner/credentials \
+    && chown -R runner:runner /var/lib/agentic-os /run/agentic-runner
+
+WORKDIR /var/lib/agentic-os
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()" || exit 1
+
+ENTRYPOINT ["agentic-runner"]
+CMD ["run"]

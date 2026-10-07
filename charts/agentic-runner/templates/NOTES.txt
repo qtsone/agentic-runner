@@ -1,0 +1,13 @@
+{{ include "agentic-runner.fullname" . }}: {{ .Values.replicas }} Runner(s), isolation {{ .Values.isolation }}.
+
+Each replica registers its own identity with {{ .Values.controlPlane.url }} and appears on
+the Organisation Console Runners page once its first heartbeat lands (~30s):
+
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} logs statefulset/{{ include "agentic-runner.fullname" . }}
+
+A pod that stays NotReady with "refusing to start (isolation_unavailable)" in its log is a
+`contract_uid` Runner in a namespace that cannot grant CAP_SETUID (a `restricted` Pod
+Security level): set `isolation: none` and accept a single-Contract Runner (17 A2).
+
+Docs: https://github.com/qtsone/agentic-runner

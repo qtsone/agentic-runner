@@ -1,0 +1,17 @@
+apiVersion: v2
+name: agentic-runner
+description: >-
+  The Agentic OS Runner (ADR-0013): an activity-only Temporal worker an Organisation
+  installs in its own cluster. N replicas are N Runners with N identities under one
+  Recipient Key; every Contract on a Runner is its own OS user (ADR-0015).
+type: application
+version: 0.1.0
+# The Runner image tag this chart installs by default: agentic_runner.__version__.
+appVersion: "0.1.0"
+home: https://github.com/qtsone/agentic-runner
+sources:
+  - https://github.com/qtsone/agentic-runner
+keywords:
+  - agentic-os
+  - runner
+  - temporal

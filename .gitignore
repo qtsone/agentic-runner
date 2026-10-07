@@ -214,27 +214,5 @@ __marimo__/
 
 # Custom
 .claude/
-.hooks/
-.mcp.json
-.scratch/
-.workflows/
-.worktrees/
-ARCHITECTURE.md
-CLAUDE.md
-AGENTS.md
-
-# Docs configuration
-docs/*
-!docs/llm/
-!docs/guides/
-.agent/
-.workflows-state/
+.paperclip/
 .DS_Store
-.serena/
-web/node_modules/
-web/dist/
-web/test-results/
-src/workflows_mcp/static/admin/
-.playwright-mcp/
-.superpowers/
-MagicMock/

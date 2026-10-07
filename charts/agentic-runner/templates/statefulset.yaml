@@ -1,0 +1,253 @@
+{{- if not .Values.controlPlane.url }}
+{{- fail "controlPlane.url is required" }}
+{{- end }}
+{{- if not .Values.temporal.address }}
+{{- fail "temporal.address is required" }}
+{{- end }}
+{{- if not (has .Values.isolation (list "contract_uid" "none")) }}
+{{- fail "isolation must be contract_uid or none (17 A2)" }}
+{{- end }}
+# A StatefulSet rather than a Deployment: N replicas are N Runners with N durable
+# identities (ADR-0013 §8), and an identity lives in the pod's own state volume. A
+# Deployment's pods would share one PVC and one identity, or mint a new Runner on every
+# restart against the Organisation's cap -- stable names and per-replica claims are
+# exactly what a StatefulSet is.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "agentic-runner.fullname" . }}
+  labels:
+    {{- include "agentic-runner.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  serviceName: {{ include "agentic-runner.fullname" . }}
+  # Every replica boots at once: the first to reach the API creates the Recipient Key
+  # Secret, the rest read it (agentic_runner.recipient_key_secret).
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "agentic-runner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentic-runner.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "agentic-runner.fullname" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "agentic-runner.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # One Recipient Key per release (22 A4): create the Secret if absent, else read it,
+        # and install it into this pod's state directory before the Runner registers.
+        - name: recipient-key
+          image: "{{ .Values.image.repository }}:{{ include "agentic-runner.tag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["recipient-key", "ensure-secret", "--secret", {{ include "agentic-runner.recipientKeySecret" . | quote }}]
+          env:
+            - name: AGENTIC_RUNNER_STATE_DIR
+              value: /var/lib/agentic-os/state
+          securityContext:
+            {{- include "agentic-runner.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/agentic-os/state
+              subPath: state
+            - name: kube-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      containers:
+        - name: runner
+          image: "{{ .Values.image.repository }}:{{ include "agentic-runner.tag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run"]
+          # preStop runs BEFORE kubelet's SIGTERM, so the drain starts as early as pod
+          # deletion begins; the process is PID 1 (bare exec, no shell), so signalling it
+          # directly is safe (issue 02).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -TERM 1"]
+          ports:
+            - name: readiness
+              containerPort: {{ .Values.readinessPort }}
+          # Red until the Runner is registered, heard by the control plane and polling;
+          # red for good when a `contract_uid` Runner cannot setuid, because that process
+          # exits instead (17 A2). No liveness probe: a Directive legitimately runs for
+          # longer than any probe window, and restarting it would lose the attempt.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: readiness
+            periodSeconds: 10
+            failureThreshold: 3
+          env:
+            - name: AGENTIC_CONTROL_PLANE_URL
+              value: {{ .Values.controlPlane.url | quote }}
+            {{- if .Values.controlPlane.internalUrl }}
+            - name: INTERNAL_FASTAPI_BASE_URL
+              value: {{ .Values.controlPlane.internalUrl | quote }}
+            {{- end }}
+            - name: AGENTIC_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic-runner.agentTokenSecret" . }}
+                  key: token
+            - name: TEMPORAL_ADDRESS
+              value: {{ .Values.temporal.address | quote }}
+            - name: AGENTIC_TEMPORAL_TLS
+              value: {{ .Values.temporal.tls | quote }}
+            {{- if .Values.tags }}
+            - name: AGENTIC_RUNNER_TAGS
+              value: {{ include "agentic-runner.tags" . | quote }}
+            {{- end }}
+            - name: AGENTIC_RUNNER_ISOLATION
+              value: {{ .Values.isolation | quote }}
+            - name: AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES
+              value: {{ .Values.maxConcurrentDirectives | quote }}
+            - name: AGENTIC_RUNNER_EGRESS_POSTURE
+              value: {{ .Values.egressPosture | quote }}
+            - name: AGENTIC_RUNNER_READINESS_PORT
+              value: {{ .Values.readinessPort | quote }}
+            - name: AGENTIC_RUNNER_STATE_DIR
+              value: /var/lib/agentic-os/state
+            - name: AGENTIC_RUNNER_WORKSPACE_ROOT
+              value: /var/lib/agentic-os/workspaces
+            - name: AGENTIC_RUNNER_SOCKET_DIR
+              value: /run/agentic-runner
+            {{- if .Values.hooks }}
+            - name: AGENTIC_RUNNER_HOOKS_PATH
+              value: /etc/agentic-runner/hooks
+            {{- end }}
+            {{- if .Values.credentials.existingSecret }}
+            - name: AGENTIC_RUNNER_CREDENTIAL_STORE
+              value: /etc/agentic-runner/credentials
+            {{- end }}
+            - name: WORKSPACE_ROOT
+              value: /var/lib/agentic-os/workspaces
+            - name: WORKER_STATE_DIR
+              value: /var/lib/agentic-os/state
+            - name: CODEX_HOME
+              value: /var/lib/agentic-os/codex
+            # Codex's own sandbox (bwrap) cannot create user namespaces inside a container;
+            # the Contract's uid and 0700 tree are the isolation boundary instead
+            # (ADR-0015 §1), which is exactly the posture codex_runtime's guard accepts.
+            - name: CODEX_SANDBOX_MODE
+              value: danger-full-access
+            - name: CODEX_ASK_FOR_APPROVAL
+              value: never
+            - name: CODEX_STRICT_CONFIG
+              value: "true"
+            - name: CODEX_POLICY_HOOK_CONFIGURED
+              value: "true"
+            - name: CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS
+              value: "true"
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- include "agentic-runner.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: sockets
+              mountPath: /run/agentic-runner
+            - name: state
+              mountPath: /var/lib/agentic-os/workspaces
+              subPath: workspaces
+            - name: state
+              mountPath: /var/lib/agentic-os/codex
+              subPath: codex
+            # The Runner's own state, never readable by a Contract uid: the identity, the
+            # Recipient Key and the Contract->uid map live here (ADR-0015 §1).
+            - name: state
+              mountPath: /var/lib/agentic-os/state
+              subPath: state
+            {{- if .Values.hooks }}
+            - name: hooks
+              mountPath: /etc/agentic-runner/hooks
+              readOnly: true
+            {{- end }}
+            {{- if .Values.credentials.existingSecret }}
+            - name: credentials
+              mountPath: /etc/agentic-runner/credentials
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: sockets
+          emptyDir: {}
+        # The init container's API credential, and only its: a projected token scoped to
+        # the Recipient Key Secret's Role, never mounted into the Runner container.
+        - name: kube-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
+        {{- if .Values.hooks }}
+        - name: hooks
+          configMap:
+            name: {{ include "agentic-runner.fullname" . }}-hooks
+            defaultMode: 0755
+        {{- end }}
+        {{- if .Values.credentials.existingSecret }}
+        # 0400, owned by the Runner's uid (17 A11): Kubernetes' 0644 default would hand
+        # one Contract's key to every other Contract uid on the pod.
+        - name: credentials
+          secret:
+            secretName: {{ .Values.credentials.existingSecret }}
+            defaultMode: 0400
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+        labels:
+          {{- include "agentic-runner.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.storage.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size }}

@@ -1,0 +1,105 @@
+# Default values for agentic-runner. Every value here lands on the Runner as environment
+# (ADR-0013 §8); see https://github.com/qtsone/agentic-runner.
+
+image:
+  repository: ghcr.io/qtsone/agentic-runner
+  # An Organisation that layers its toolchain FROM the Runner image names its own tag
+  # here and in its Agent Runtime Profile; empty means the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# N replicas are N Runners: each pod registers its own identity and polls its own
+# `runner.{runner_id}` queue (ADR-0013 §8). Capacity is more replicas under the same
+# tags, never a replica sharing one identity.
+replicas: 1
+
+controlPlane:
+  # Required. Where this Runner registers and heartbeats (PRD issue 41): the platform's
+  # public Runner edge, https://api.agentic.<zone> (ADR-0016) -- for Organisation #1 too.
+  url: ""
+  # Optional. Where the Runner's activities call `/api/runner/v1/*`; defaults to `url`.
+  # Every such call authenticates with the per-Directive token the Runner pulls over
+  # its signed stream, or with the Runner signature itself (PRD issue 63) -- no shared
+  # secret is needed. Only the runner-api serves these routes, so this differs from
+  # `url` only behind a proxy of the Organisation's own.
+  internalUrl: ""
+
+# The reusable, per-Organisation Agent Token (PRD issue 41), shown once on the Runners
+# page. Either paste it here (rendered into a Secret) or name a Secret holding it under
+# the key `token`.
+agentToken:
+  value: ""
+  existingSecret: ""
+
+temporal:
+  # Required. `temporal-grpc.<zone>:443` over TLS for an external Organisation; the
+  # internal frontend for one hosted beside the platform.
+  address: ""
+  tls: false
+
+# Free-form Runner Tags (25 §9): routing data, never a queue name or a heartbeat field.
+tags: {}
+#  region: eu-west-1
+#  gpu: none
+
+# `contract_uid` (default): every Contract on this Runner is its own uid, which needs
+# the five capabilities below and root inside the container (17 A1). `none`: one uid,
+# one Contract at a time (17 A2) -- the only mode a `restricted` Pod Security namespace
+# can run, and the chart never auto-detects that: set it.
+isolation: contract_uid
+maxConcurrentDirectives: 1
+# What this Runner reports it can reach: unrestricted | allowlisted | blocked | unenforced
+# (06 §4). `allowlisted` is the claim that a Directive under a Profile egress allow-list
+# reaches nothing else: the Runner hands it an allow-listing proxy (PRD issue 58), and the
+# claim holds only if the namespace's NetworkPolicy also stops what ignores the proxy.
+egressPosture: unrestricted
+
+# Runner Hooks (PRD issue 45): catalogue-named scripts, mounted 0755. Keys are the hook
+# names, values the script bodies.
+hooks: {}
+#  runner_startup: |
+#    #!/bin/sh
+#    echo "runner up"
+
+# Credential References (PRD issue 48): a Secret with one key per reference name,
+# mounted 0400 and owned by the Runner's uid so no Contract uid can read another's.
+credentials:
+  existingSecret: ""
+
+# The release's Recipient Key (22 A4): one X25519 pair per installation, created by the
+# first replica's init container if absent and shared by every replica. Empty means
+# `<release>-recipient-key`.
+recipientKey:
+  secretName: ""
+
+# Anything else the Runner reads from its environment: GITHUB_APP_ID,
+# GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_PEM, ANTHROPIC_API_KEY, ... --
+# typically one Secret referenced from `extraEnvFrom`. Never INTERNAL_SERVICE_TOKEN: the
+# Runner authenticates on its own credentials (PRD issue 63) and does not read it.
+extraEnv: []
+extraEnvFrom: []
+
+storage:
+  size: 10Gi
+  storageClassName: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Sized to one Directive's worst case (issue 02): the CLI timeout (900s) plus the
+# verifier's 20-minute ceiling. Must stay >= the Runner's graceful_shutdown_timeout
+# (agentic_runner.service.graceful_shutdown_timeout) or the pod is SIGKILLed mid-run.
+terminationGracePeriodSeconds: 2100
+
+readinessPort: 8080
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

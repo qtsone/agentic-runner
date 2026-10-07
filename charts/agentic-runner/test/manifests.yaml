@@ -1,0 +1,75 @@
+# The chart test's neighbours (PRD issue 46): a fake control plane served from the Runner
+# image itself (fake-control-plane.py, mounted from the ConfigMap run.sh creates) and a
+# Temporal dev server holding the one namespace the fake hands out.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runner-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-control-plane
+  namespace: runner-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: fake-control-plane}
+  template:
+    metadata:
+      labels: {app: fake-control-plane}
+    spec:
+      containers:
+        - name: fake
+          image: agentic-runner:test
+          imagePullPolicy: Never
+          command: ["python", "/fake/fake-control-plane.py", "8000"]
+          ports: [{containerPort: 8000}]
+          volumeMounts: [{name: script, mountPath: /fake}]
+      volumes:
+        - name: script
+          configMap: {name: fake-control-plane}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-control-plane
+  namespace: runner-test
+spec:
+  selector: {app: fake-control-plane}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal
+  namespace: runner-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: temporal}
+  template:
+    metadata:
+      labels: {app: temporal}
+    spec:
+      containers:
+        - name: temporal
+          image: temporalio/admin-tools:1.32.0
+          command:
+            - temporal
+            - server
+            - start-dev
+            - --ip=0.0.0.0
+            - --port=7233
+            - --headless
+            - --namespace=org-00000000-0000-0000-0000-000000000001
+          ports: [{containerPort: 7233}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal
+  namespace: runner-test
+spec:
+  selector: {app: temporal}
+  ports: [{port: 7233, targetPort: 7233}]
