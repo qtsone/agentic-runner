@@ -56,7 +56,9 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     "isolation_modes": sorted({str(b["isolation"]) for b in STATE["bootstraps"]}),
                     "heartbeats": len(STATE["heartbeats"]),
-                    "heartbeat_runner_ids": sorted({str(h["runner_id"]) for h in STATE["heartbeats"]}),
+                    "heartbeat_runner_ids": sorted(
+                        {str(h["runner_id"]) for h in STATE["heartbeats"]}
+                    ),
                 },
             )
             return
@@ -97,7 +99,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/runner/v1/runners/heartbeat":
             runner_id = self.headers.get("X-Runner-Id", "")
-            STATE["heartbeats"].append({"runner_id": runner_id, "isolation": body["isolation_mode"]})
+            STATE["heartbeats"].append(
+                {"runner_id": runner_id, "isolation": body["isolation_mode"]}
+            )
             self._json(
                 200,
                 {
