@@ -51,6 +51,44 @@ works and is flagged; two or more minors behind finishes what it holds and recei
 Directives until it is upgraded. A contracts change is therefore a release of this repository
 first, and a version bump in the control plane after it.
 
+## Releases
+
+Both packages, the image and the chart release together at **one version**, which is also the
+contracts version. Conventional commits on `main` pick it: `fix:` bumps the patch, `feat:` the
+minor, and a breaking change (`feat!:` or a `BREAKING CHANGE:` footer) the major. A breaking
+contracts change is always a major, and that major is the floor the control plane enforces.
+Other commit types (`chore:`, `ci:`, `docs:`, `test:`, `refactor:`) release nothing.
+
+Each merge to `main` runs semantic-release (`.github/workflows/release.yml`). When a release is
+due it writes the version into both packages and the chart (`scripts/set-version.py`), commits
+`CHANGELOG.md`, and pushes a `v<version>` tag. The tag starts `.github/workflows/publish-pypi.yml`,
+which publishes:
+
+| Artifact | Where |
+|---|---|
+| `agentic-runner-contracts`, `agentic-runner` | PyPI, by trusted publishing, with attestations |
+| Runner image, `linux/amd64` and `linux/arm64` | `ghcr.io/qtsone/agentic-runner:<version>`, `:contracts-<version>`, `:latest` |
+| Chart | `oci://ghcr.io/qtsone/charts/agentic-runner`, `appVersion` = `<version>` |
+
+The image carries an SBOM and build provenance. The image and the chart are signed with keyless
+cosign and carry a GitHub build provenance attestation. The GitHub Release lists the contracts
+version and every artifact's digest. To verify a release:
+
+```bash
+cosign verify ghcr.io/qtsone/agentic-runner:<version> \
+  --certificate-identity "https://github.com/qtsone/agentic-runner/.github/workflows/publish-pypi.yml@refs/tags/v<version>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/qtsone/agentic-runner:<version> --repo qtsone/agentic-runner
+
+cosign verify ghcr.io/qtsone/charts/agentic-runner:<version> \
+  --certificate-identity "https://github.com/qtsone/agentic-runner/.github/workflows/publish-pypi.yml@refs/tags/v<version>" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/qtsone/charts/agentic-runner:<version> --repo qtsone/agentic-runner
+```
+
+Running the publish workflow by hand (`workflow_dispatch`) builds and checks everything and
+publishes nothing.
+
 ## Development
 
 ```bash
