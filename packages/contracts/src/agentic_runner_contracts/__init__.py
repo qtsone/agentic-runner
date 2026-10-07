@@ -24,6 +24,10 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # schedule them on it -- roll the Runner image out before the platform change.
 # 2.5.0 (ADR-0018 §3, §4): the Grant snapshot carries ``reach`` and each registry row its
 # ``product_id``. Additive; an older payload parses with both empty.
-__version__ = "2.5.0"
+# 2.6.0 (console-v2 issue 28): `WorkerRuntimeContext.skills` and `SkillVersionSpec`.
+# Additive; an older payload parses with no Skills. But the context forbids extra keys,
+# so a Runner one minor behind refuses a context that carries `skills` -- the platform
+# must not send the field until its Runners are on 2.6.
+__version__ = "2.6.0"
 
 __all__ = ["__version__"]
