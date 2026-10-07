@@ -127,6 +127,14 @@ from agentic_runner.workers.fastapi_client import (
 )
 from agentic_runner.workers.harness_usage import extract_claude_result, extract_codex_turn_usage
 from agentic_runner.workers.mcp_config import McpServerEntry
+from agentic_runner.workers.skills import (
+    SkillDelivery,
+    delivery_for,
+    first_digest_mismatch,
+    remove_skills,
+    skills_preamble,
+    write_skills,
+)
 from agentic_runner_contracts.activity_io import (
     LEARNER_CHILDREN_BUDGET_BYTES,
     LEARNING_FAILED,
@@ -236,6 +244,7 @@ from agentic_runner_contracts.routing import (
 from agentic_runner_contracts.runtime_context import (
     EGRESS_ALLOW_LIST_KEY,
     McpServerSpec,
+    SkillVersionSpec,
     WorkerRuntimeContext,
     WorkerRuntimeContextResolver,
     work_branch_name,
@@ -489,6 +498,8 @@ class _RuntimeContextState:
     experience: str = ""
     experience_lesson_ids: tuple[str, ...] = ()
     experience_truncated: bool = False
+    # Console-v2 issue 28: the Skill versions attached to the Agent.
+    skills: tuple[SkillVersionSpec, ...] = ()
     workspace_path: Path | None = None
     branch_head_sha: str | None = None
     # The Autonomy Policy's tier source (PRD issue 14) -- see WorkerRuntimeContext for
@@ -531,6 +542,9 @@ class _DirectiveAttempt:
     # PRD issue 58: what config assembly wrote for the CLI, and where it may reach.
     mcp_servers: tuple[McpServerEntry, ...] | None = None
     egress_allow_list: tuple[str, ...] = ()
+    # Console-v2 issue 28: the attached Skills, for a runtime with no skills directory to
+    # write them into. Prefixed to the Directive prompt; empty when there is none.
+    skills_preamble: str = ""
 
     async def run_environment_hook(self) -> None:
         self.extra_env.update(await self.hooks.environment())
@@ -1322,6 +1336,7 @@ def wipe_contract_residue(
 _ROUTING_EVIDENCE_SOURCE = "runner.routing"
 DIRECTIVE_TOKEN_EVIDENCE_SOURCE = "runner.directive_token"
 AGENT_RUNTIME_EVIDENCE_SOURCE = "runner.agent_runtime"
+SKILLS_EVIDENCE_SOURCE = "runner.skills"
 
 
 class _EvidenceWriter(Protocol):
@@ -1751,7 +1766,8 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
-                    prompt=_directive_prompt(
+                    prompt=attempt.skills_preamble
+                    + _directive_prompt(
                         completion_criteria=runtime_state.completion_criteria,
                         pr_body=request.pr_body,
                         persona_preamble=_persona_prompt_preamble(
@@ -2216,6 +2232,7 @@ class RunnerRalphActivities:
                 work_record_id, source=source, payload=dict(payload)
             )
 
+        await self._refuse_skill_digest_mismatch(work_record_id, state)
         credentials = await self._resolve_credentials(work_record_id, state)
         if credentials is not None:
             # Names only, at the moment they resolved (22 A1's Evidence): a support read
@@ -2279,6 +2296,13 @@ class RunnerRalphActivities:
                 credentials=credentials,
                 env=callback_env,
             )
+            delivered_preamble = await self._deliver_skills(
+                stack,
+                work_record_id=work_record_id,
+                state=state,
+                sandbox=sandbox,
+                directive_number=directive_number,
+            )
             session = await stack.enter_async_context(
                 DirectiveHookSession(
                     hooks=self._hooks,
@@ -2300,7 +2324,84 @@ class RunnerRalphActivities:
                 credentials=credentials,
                 mcp_servers=mcp_servers,
                 egress_allow_list=egress_allow_list,
+                skills_preamble=delivered_preamble,
             )
+
+    async def _refuse_skill_digest_mismatch(
+        self, work_record_id: str, state: _RuntimeContextState
+    ) -> None:
+        """A Skill whose body is not the version that was published fails the Directive
+        non-retryably (console-v2 issue 28): a retry would fetch the same body, and
+        running on it would hand the Agent prompt material no person reviewed."""
+
+        mismatch = first_digest_mismatch(state.skills)
+        if mismatch is None:
+            return
+        await _raise_recorded(
+            ApplicationError(
+                f"Skill {mismatch.slug} version {mismatch.version} does not match its sha256",
+                non_retryable=True,
+            ),
+            self._fastapi_client,
+            work_record_id,
+            source=SKILLS_EVIDENCE_SOURCE,
+            actor=self._actor(),
+            payload={
+                "event": "skills.digest_mismatch",
+                "agent_id": state.agent_id,
+                "slug": mismatch.slug,
+                "version": mismatch.version,
+                "sha256": mismatch.sha256,
+            },
+        )
+
+    async def _deliver_skills(
+        self,
+        stack: contextlib.AsyncExitStack,
+        *,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        sandbox: DirectiveSandbox | None,
+        directive_number: int,
+    ) -> str:
+        """Put the attached Skills where this runtime reads them; return any preamble.
+
+        Written files are removed on the attempt's exit, success or failure. A Runner
+        with no Contract sandbox has no harness root it owns, so it falls back to the
+        preamble rather than writing into a shared ``CODEX_HOME``.
+        """
+
+        if not state.skills:
+            return ""
+        delivery = delivery_for(state.cli_kind)
+        if delivery is SkillDelivery.DIRECTORY and sandbox is None:
+            delivery = SkillDelivery.PROMPT_PREAMBLE
+        preamble = ""
+        if delivery is SkillDelivery.DIRECTORY:
+            assert sandbox is not None
+            # Registered before the write, so a write that fails half-way is cleaned too.
+            stack.push_async_callback(
+                remove_skills, sandbox.harness_config_dir, state.skills, uid=sandbox.uid
+            )
+            await write_skills(sandbox.harness_config_dir, state.skills, uid=sandbox.uid)
+        else:
+            preamble = skills_preamble(state.skills)
+        await self._fastapi_client.append_evidence(
+            work_record_id,
+            source=SKILLS_EVIDENCE_SOURCE,
+            payload={
+                "event": "skills.delivered",
+                "directive_number": directive_number,
+                "agent_id": state.agent_id,
+                "cli_kind": state.cli_kind,
+                "delivery": delivery.value,
+                "skills": [
+                    {"slug": skill.slug, "version": skill.version, "sha256": skill.sha256}
+                    for skill in state.skills
+                ],
+            },
+        )
+        return preamble
 
     async def _plan_mcp(
         self,
@@ -2952,6 +3053,7 @@ class RunnerRalphActivities:
             experience=runtime_context.experience,
             experience_lesson_ids=tuple(runtime_context.experience_lesson_ids),
             experience_truncated=runtime_context.experience_truncated,
+            skills=tuple(runtime_context.skills),
             workspace_path=resolved_workspace,
             branch_head_sha=branch_head_sha,
             product_id=runtime_context.product_id,
@@ -4207,7 +4309,8 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
-                    prompt=_learning_prompt(
+                    prompt=attempt.skills_preamble
+                    + _learning_prompt(
                         request,
                         base_branch=state.base_branch or request.base_ref,
                         transcript=self._learner_transcript(state, request.work_record_id),
@@ -4442,7 +4545,7 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
-                    prompt=await kind.prompt(state, prompt_notes),
+                    prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
                     base_branch=request.base_ref,
                     work_branch=state.work_branch,
                 )
