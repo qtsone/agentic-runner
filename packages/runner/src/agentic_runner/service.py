@@ -60,6 +60,7 @@ from agentic_runner.integrations.git.workspace import LocalGitWorkspace
 from agentic_runner.integrations.github.gh_client import GitHubAppClient
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOutbox
+from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
 from agentic_runner.registration import (
     RunnerRegistrationClient,
@@ -524,6 +525,8 @@ class ControlPlaneStream:
     sources: UserSourcePoller | None = None
     # PRD issue 52: where a transcript pull-through relayed on the ack is answered from.
     messages: MessageStore | None = None
+    # Console-v2 issue 29: the latest start of each Runner-hosted Tool Server.
+    tool_servers: ToolServerHealthLog | None = None
     _delivered: set[tuple[str, str]] = field(default_factory=set)
     _last_seen: tuple[float, datetime] | None = None
 
@@ -601,6 +604,7 @@ class ControlPlaneStream:
             last_wake_at=self.last_wake_at,
             clock_skew_seconds=self._clock_skew(now),
             source_status=self.sources.statuses() if self.sources is not None else [],
+            tool_servers=self.tool_servers.latest() if self.tool_servers is not None else [],
         )
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
@@ -875,6 +879,8 @@ async def _serve_registered(
     )
     messages = MessageStore(state_dir / MESSAGES_DIR)
     stream.messages = messages
+    tool_servers = ToolServerHealthLog()
+    stream.tool_servers = tool_servers
     link = HeartbeatLink(stream, ceilings=proxy.ceilings)
     # The first beat is the one that hands back a Runner Token: a persisted identity has
     # none, and the Temporal connection below cannot be opened without it.
@@ -915,6 +921,7 @@ async def _serve_registered(
                 attestation=attestation,
                 token_source=stream,
                 messages=messages,
+                tool_servers=tool_servers,
                 # The wake signal rides the connection this process polls with: one
                 # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
                 signaller=TemporalWorkflowSignaller(client),
@@ -1004,6 +1011,7 @@ def _activities(
     token_source: DirectiveTokenSource | None = None,
     messages: MessageStore | None = None,
     signaller: TemporalWorkflowSignaller | None = None,
+    tool_servers: ToolServerHealthLog | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1047,6 +1055,7 @@ def _activities(
         token_source=token_source,
         message_store=messages,
         workflow_signaller=signaller,
+        tool_server_health=tool_servers,
     )
     return [
         *ralph.activity_callables(),

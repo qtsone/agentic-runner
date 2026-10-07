@@ -22,7 +22,8 @@ import contextlib
 import json
 import os
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, Final
 
@@ -34,6 +35,7 @@ from agentic_runner_contracts.grants import (
     McpServerDecision,
     decide_mcp_server,
 )
+from agentic_runner_contracts.runner_registration import ToolServerHealth
 from agentic_runner_contracts.runtime_context import McpServerSpec
 
 __all__ = [
@@ -41,6 +43,7 @@ __all__ = [
     "McpPlan",
     "RunnerHostedServer",
     "Spawner",
+    "ToolServerHealthLog",
     "entry_for",
     "plan_mcp",
 ]
@@ -56,6 +59,8 @@ MCP_PATH: Final[str] = "/mcp"
 # Agent Token, a git token): only what a program needs to start.
 _HOSTED_ENV_ALLOWLIST: Final[tuple[str, ...]] = ("PATH", "HOME", "LANG", "TZ")
 _DEFAULT_CALL_TIMEOUT_SECONDS: Final[float] = 300.0
+# The heartbeat's own bound on `tool_servers`.
+_HEALTH_MAX: Final[int] = 64
 
 Spawner = Callable[..., Awaitable[asyncio.subprocess.Process]]
 
@@ -137,6 +142,25 @@ def _list(value: object) -> list[object]:
     return list(value) if isinstance(value, list) else []
 
 
+@dataclass
+class ToolServerHealthLog:
+    """The latest start of each Runner-hosted Tool Server, for the heartbeat (issue 29).
+
+    Keyed by slug, not by Work Record: it is a fact about this host, like the load and
+    the slots, and a later Directive's start of the same server replaces the earlier one.
+    """
+
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    _latest: dict[str, ToolServerHealth] = field(default_factory=dict)
+
+    def record(self, slug: str, *, started: bool, at: datetime) -> None:
+        self._latest[slug] = ToolServerHealth(slug=slug, started=started, last_started_at=at)
+
+    def latest(self) -> list[ToolServerHealth]:
+        newest = sorted(self._latest.values(), key=lambda entry: entry.last_started_at)
+        return newest[-_HEALTH_MAX:]
+
+
 class RunnerHostedServer:
     """One credentialed stdio server, spawned by the Runner and bridged to loopback HTTP.
 
@@ -158,6 +182,7 @@ class RunnerHostedServer:
         spawner: Spawner | None = None,
         host: str = "127.0.0.1",
         call_timeout_seconds: float = _DEFAULT_CALL_TIMEOUT_SECONDS,
+        health: ToolServerHealthLog | None = None,
     ) -> None:
         self.spec = spec
         self._credential_env = dict(credential_env)
@@ -169,6 +194,9 @@ class RunnerHostedServer:
         self._server: asyncio.Server | None = None
         self._lock = asyncio.Lock()
         self._port = 0
+        self._health = health
+        self._started_at: datetime | None = None
+        self._reported = False
 
     @property
     def url(self) -> str:
@@ -177,21 +205,28 @@ class RunnerHostedServer:
     async def __aenter__(self) -> RunnerHostedServer:
         env = {name: os.environ[name] for name in _HOSTED_ENV_ALLOWLIST if name in os.environ}
         env.update(self._credential_env)
+        if self._health is not None:
+            self._started_at = self._health.clock()
         # The Runner's own uid: no `user=` / `group=` here, deliberately. The credential
         # is the Runner's to hold, and the Contract's uid must not be able to read the
         # process that holds it (17 A4).
-        self._process = await self._spawner(
-            str(self.spec.config["command"]),
-            *(str(arg) for arg in _list(self.spec.config.get("args"))),
-            env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        try:
+            self._process = await self._spawner(
+                str(self.spec.config["command"]),
+                *(str(arg) for arg in _list(self.spec.config.get("args"))),
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except BaseException:
+            self._report(started=False)
+            raise
         try:
             self._server = await asyncio.start_server(self._serve, host=self._host, port=0)
         except BaseException:
+            self._report(started=False)
             await self._stop_process()
             raise
         self._port = int(self._server.sockets[0].getsockname()[1])
@@ -207,7 +242,18 @@ class RunnerHostedServer:
             self._server.close()
             with contextlib.suppress(Exception):
                 await self._server.wait_closed()
+        # No call reached it: it came up if it was still running when the attempt ended.
+        process = self._process
+        self._report(started=process is not None and process.returncode is None)
         await self._stop_process()
+
+    def _report(self, *, started: bool) -> None:
+        """Record this start once: the first call's outcome, else the state at exit."""
+
+        if self._health is None or self._started_at is None or self._reported:
+            return
+        self._reported = True
+        self._health.record(self.spec.slug, started=started, at=self._started_at)
 
     async def _stop_process(self) -> None:
         process = self._process
@@ -241,12 +287,19 @@ class RunnerHostedServer:
             if not isinstance(message, dict):
                 await write_json(writer, 400, {"detail": "one JSON-RPC message per request"})
                 return
-            reply = await self._call(message)
+            try:
+                reply = await self._call(message)
+            except (TimeoutError, ConnectionError, RuntimeError):
+                self._report(started=False)
+                raise
             if reply is None:
                 writer.write(response_head(202, content_type="application/json", content_length=0))
                 with contextlib.suppress(ConnectionError):
                     await writer.drain()
                 return
+            # Only an answer proves the server up: a notification is a write to a pipe,
+            # which a dead child's buffer can still take.
+            self._report(started=True)
             await write_json(writer, 200, reply)
         except TimeoutError:
             await write_json(writer, 504, {"detail": "the MCP server did not answer in time"})
