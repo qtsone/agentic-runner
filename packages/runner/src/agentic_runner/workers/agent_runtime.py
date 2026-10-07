@@ -1,0 +1,93 @@
+"""The AgentRuntime port: the single-turn contract every runtime implements.
+
+Temporal owns the Ralph Loop (ADR-0007), so a runtime never runs its own loop — it
+executes exactly one Directive and returns the result. This module defines the
+runtime-neutral port and the data that crosses it, so a second runtime (Claude Code,
+issue 11) can be added behind the same seam as Codex (ADR-0006).
+
+Concrete runtimes are siblings of this module in ``agentic_runner.workers`` and are
+injected into the activity adapter. They must never enter the workflow import graph (the
+determinism sandbox); the deterministic workflow only ever invokes them by activity name.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+from agentic_runner.workers.contract_isolation import DirectiveSandbox
+from agentic_runner.workers.mcp_config import McpServerEntry
+
+
+class AuthModel(StrEnum):
+    """How a runtime authenticates. Declared per-runtime so an unattended Persona can be
+    placed on stable API-key auth instead of an expiring browser session (ADR-0006)."""
+
+    DEVICE_LOGIN = "device_login"
+    API_KEY = "api_key"
+
+
+@dataclass(frozen=True, slots=True)
+class DirectiveRequest:
+    """The input to one Directive: a single runtime turn in a prepared workspace."""
+
+    workspace_path: Path
+    prompt: str
+    base_branch: str
+    work_branch: str
+    # Which Contract's uid this turn runs as, where its harness config root is, and the
+    # floor it may not exceed (ADR-0015 §1). None only where the caller built no
+    # isolation at all (unit fakes); the composition root always supplies one.
+    sandbox: DirectiveSandbox | None = None
+    # The attempt's callback socket and bearer, plus whatever the `environment` Runner
+    # Hook exported (PRD issue 45). Pairs rather than a mapping so the request stays
+    # frozen; every runtime merges them through `_runtime_support.apply_extra_env`, which
+    # drops the names the Runner reserves for itself.
+    extra_env: tuple[tuple[str, str], ...] = ()
+    # The MCP servers the Agent's Effective Grant lets this Directive have (PRD issue
+    # 58). ``None`` -- no server is bound to the Work Record's Product -- leaves the CLI's
+    # own config untouched, so a Product without MCP runs byte-identically to before;
+    # ``()`` is "servers are bound, none granted", which still has to be said to the CLI
+    # so nothing ungranted is loaded from anywhere else.
+    mcp_servers: tuple[McpServerEntry, ...] | None = None
+    # The destinations this Directive may reach (the Profile's list plus what the Runner
+    # added), enforced by the attempt's egress proxy. Empty: no Profile list, so the
+    # runtime keeps its own network posture.
+    egress_allow_list: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DirectiveEvidence:
+    """Bounded, redacted record of one Directive, safe for control-plane storage."""
+
+    workspace_id: str
+    base_branch: str
+    work_branch: str
+    command_hash: str
+    guard_mode: str
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class DirectiveResult:
+    """The outcome of one Directive. ``exit_code`` 0 is success; a guard refusal is
+    signalled by ``exit_code`` 126 and an ``evidence.guard_mode`` starting with
+    ``"refused"`` — the discriminator the Ralph Loop branches on."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    error: str
+    command_hash: str
+    evidence: DirectiveEvidence
+
+
+@runtime_checkable
+class AgentRuntime(Protocol):
+    """The pluggable engine an Agent uses to execute one Directive per step."""
+
+    auth_model: AuthModel
+
+    async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult: ...

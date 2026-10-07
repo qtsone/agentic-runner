@@ -1,0 +1,46 @@
+# A virtual workspace root: the two distributions below are what ships, and this file
+# only holds the development tooling and the settings every member shares.
+
+[tool.uv.workspace]
+members = ["packages/contracts", "packages/runner"]
+
+[tool.uv.sources]
+agentic-runner-contracts = { workspace = true }
+agentic-runner = { workspace = true }
+
+[dependency-groups]
+dev = [
+  "agentic-runner",
+  "agentic-runner-contracts",
+  "mypy>=1.13,<2.0",
+  "packaging>=24",
+  "pytest>=8.0,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+  "pytest-cov>=6.0,<8.0",
+  "pytest-xdist>=3.8.0",
+  "pyyaml>=6.0,<7.0",
+  "ruff>=0.8,<1.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["agentic_runner", "agentic_runner_contracts"]
+
+[tool.ruff]
+src = ["packages/contracts/src", "packages/runner/src", "tests"]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]

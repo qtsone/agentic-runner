@@ -1,0 +1,191 @@
+name: Test Suite
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUNNER_IMAGE: agentic-runner:test
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The image's interpreter, and the floor both packages declare.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # AGENTIC_OS_REQUIRE_HELM turns the chart template test's skip-if-no-helm into a failure.
+      - name: Run tests
+        env:
+          AGENTIC_OS_REQUIRE_HELM: "1"
+        run: |
+          uv run pytest -q -n auto \
+            --cov --cov-report=xml --cov-report=term-missing:skip-covered
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          files: ./coverage.xml
+          flags: tests
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff lint
+        run: uv run ruff check packages/ tests/
+
+      - name: Ruff format check
+        run: uv run ruff format --check packages/ tests/
+
+      - name: Mypy
+        run: uv run mypy packages/
+
+  # ADR-0015 §1: two Contracts on one Runner, each spawning as its own uid, neither able to
+  # read the other's Workspace or harness root. It needs CAP_SETUID, which a hosted runner's
+  # `runner` user does not have, so it runs in a container where the user is root. The test
+  # skips itself without that capability; the env var turns the skip into a failure here.
+  contract-uid-isolation:
+    name: Contract uid isolation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: python:3.12-bookworm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Contract uid isolation
+        env:
+          AGENTIC_OS_REQUIRE_CONTRACT_UID_ISOLATION: "1"
+        run: uv run pytest -q tests/integration/test_contract_uid_isolation.py
+
+  image:
+    name: Runner image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build the Runner image
+        run: docker build -f Dockerfile.runner -t "$RUNNER_IMAGE" .
+
+      - name: Image test
+        run: ./scripts/check-runner-images.sh "$RUNNER_IMAGE"
+
+  chart:
+    name: Helm chart on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+
+      - name: helm lint
+        run: |
+          helm lint charts/agentic-runner \
+            --set controlPlane.url=https://api.example.test \
+            --set temporal.address=temporal-grpc.example.test:443 \
+            --set agentToken.value=agent-token-of-sixteen-plus-chars
+
+      - name: Create a kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: runner-test
+          version: v0.33.0
+          node_image: kindest/node:v1.37.0
+
+      - name: Build the Runner image and load it into kind
+        run: |
+          docker build -f Dockerfile.runner -t "$RUNNER_IMAGE" .
+          kind load docker-image "$RUNNER_IMAGE" --name runner-test
+
+      - name: Install with replicas 2 and assert two Runners under one Recipient Key
+        run: charts/agentic-runner/test/run.sh
+
+      - name: Runner logs
+        if: always()
+        run: |
+          kubectl -n runner-test get pods -o wide || true
+          kubectl -n runner-test describe pods -l app.kubernetes.io/instance=rel || true
+          kubectl get events -A --sort-by=.lastTimestamp || true
+          kubectl -n runner-test logs statefulset/rel-agentic-runner --all-containers --prefix || true
+          kubectl -n runner-test logs deployment/fake-control-plane || true
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [tests, quality, contract-uid-isolation, image, chart]
+    if: always()
+    steps:
+      - name: Report results
+        run: |
+          {
+            echo "## Test Suite Results"
+            echo ""
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Tests | ${{ needs.tests.result }} |"
+            echo "| Code Quality | ${{ needs.quality.result }} |"
+            echo "| Contract uid isolation | ${{ needs.contract-uid-isolation.result }} |"
+            echo "| Runner image | ${{ needs.image.result }} |"
+            echo "| Helm chart on kind | ${{ needs.chart.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "${{ needs.tests.result }}" = success ] \
+            && [ "${{ needs.quality.result }}" = success ] \
+            && [ "${{ needs.contract-uid-isolation.result }}" = success ] \
+            && [ "${{ needs.image.result }}" = success ] \
+            && [ "${{ needs.chart.result }}" = success ]
