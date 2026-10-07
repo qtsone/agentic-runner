@@ -28,6 +28,10 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Additive; the envelope omits the key while it is empty, so a control plane on 2.5 parses
 # a beat unchanged until the Runner has started a Tool Server -- upgrade the control plane
 # before the Runner.
-__version__ = "2.6.1"
+# 2.7.0 (console-v2 issue 28): `WorkerRuntimeContext.skills` and `SkillVersionSpec`.
+# Additive; an older payload parses with no Skills. But the context forbids extra keys,
+# so a Runner one minor behind refuses a context that carries `skills` -- the platform
+# must not send the field until its Runners are on 2.7.
+__version__ = "2.7.0"
 
 __all__ = ["__version__"]

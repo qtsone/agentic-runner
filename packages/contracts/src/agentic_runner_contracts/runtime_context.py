@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _FORBIDDEN_SECRET_VALUE_FIELDS = frozenset(
     {
@@ -64,6 +64,35 @@ class McpServerSpec(BaseModel):
     tools: list[str] = Field(default_factory=list)
 
 
+# ADR-0017 §1: the cap slice 13 puts on `skill_versions.body`, in UTF-8 bytes.
+SKILL_BODY_LIMIT_BYTES = 64 * 1024
+
+
+class SkillVersionSpec(BaseModel):
+    """One Skill version attached to the Agent (ADR-0017 §1, console-v2 issue 28).
+
+    ``sha256`` is the digest the control plane recorded when the version was published,
+    over the UTF-8 ``body``. It is deliberately *not* checked here: a mismatch is refused
+    by the Runner with Evidence naming the slug and version, which a parse failure could
+    not write. ``slug`` becomes a directory name in the harness root, so it is held to a
+    path-safe spelling at parse time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    version: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    body: str
+
+    @field_validator("body")
+    @classmethod
+    def cap_body(cls, body: str) -> str:
+        if len(body.encode("utf-8")) > SKILL_BODY_LIMIT_BYTES:
+            raise ValueError(f"Skill body exceeds {SKILL_BODY_LIMIT_BYTES} bytes")
+        return body
+
+
 class WorkerRuntimeContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -108,6 +137,9 @@ class WorkerRuntimeContext(BaseModel):
     experience: str = ""
     experience_lesson_ids: list[str] = Field(default_factory=list)
     experience_truncated: bool = False
+    # Console-v2 issue 28: the Skill versions attached to the Agent, which the Runner
+    # delivers to the Agent Runtime before every Directive. Defaulted for the same skew.
+    skills: list[SkillVersionSpec] = Field(default_factory=list)
     task_queue: str
     worker_secret_refs: list[str]
     # PRD issue 48, map 22 A1 / 25 §11: the Credential Reference *names* on the
