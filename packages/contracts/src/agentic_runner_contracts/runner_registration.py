@@ -29,10 +29,17 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    StringConstraints,
+    model_serializer,
+)
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
 from agentic_runner_contracts.llm_usage import UsageRecord
@@ -253,6 +260,19 @@ class CredentialValidity(BaseModel):
     valid: bool
 
 
+class ToolServerHealth(BaseModel):
+    """Whether a Tool Server the Runner last started for a Directive came up (console-v2
+    issue 29). The slug, one boolean and when -- never a command line, URL, env or error
+    text, which is where a credential would leak (slice 18's scrubbed boolean)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The platform's `mcp_servers.slug` is String(64).
+    slug: Annotated[str, StringConstraints(max_length=64)]
+    started: bool
+    last_started_at: datetime
+
+
 class SlotStatus(BaseModel):
     """One credential slot as the funder sees it (22 A10)."""
 
@@ -466,6 +486,19 @@ class HeartbeatEnvelope(BaseModel):
     # connected, as a code -- how the console learns a Slack workspace refused member
     # installs. Absent on an older Runner, which reads no user-connected Source.
     source_status: list[SourceStatus] = Field(default_factory=list, max_length=64)
+    # Console-v2 issue 29: each Runner-hosted Tool Server's latest start, per slug. A
+    # server not started since the process began is absent.
+    tool_servers: list[ToolServerHealth] = Field(default_factory=list, max_length=64)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_tool_servers(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A control plane on contracts 2.5 forbids extra keys, so a Runner that started no
+        # Tool Server sends the body that control plane already parses. One that did needs
+        # the control plane on 2.6 first.
+        body = handler(self)
+        if isinstance(body, dict) and not body.get("tool_servers"):
+            body.pop("tool_servers", None)
+        return body
 
 
 class HeartbeatAck(BaseModel):
