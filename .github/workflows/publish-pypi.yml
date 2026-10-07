@@ -184,7 +184,7 @@ jobs:
             ${{ env.IMAGE }}:contracts-${{ env.VERSION }}
             ${{ env.IMAGE }}:latest
 
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.2
         if: env.PUBLISH == 'true'
 
       - name: Sign the image
@@ -246,7 +246,7 @@ jobs:
           [ -n "$digest" ] || { echo "::error::helm push printed no digest"; exit 1; }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.2
         if: env.PUBLISH == 'true'
 
       - name: Sign the chart
