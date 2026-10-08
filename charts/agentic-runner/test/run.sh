@@ -11,8 +11,6 @@ ns=runner-test
 release=rel
 
 kubectl apply -f "${here}/manifests.yaml"
-kubectl -n "${ns}" create configmap fake-control-plane \
-  --from-file="${here}/fake-control-plane.py" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "${ns}" rollout status deployment/fake-control-plane --timeout=180s
 kubectl -n "${ns}" rollout status deployment/temporal --timeout=180s
 

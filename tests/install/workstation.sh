@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # docs/workstation.md, run as written: `uv tool install` the built wheels, `agentic-runner
-# install <org>`, and a Runner that registers and heartbeats against the fake control plane
-# and a Temporal dev server (`temporal` on PATH).
+# install <org>`, and a Runner that registers and heartbeats against the conformance kit's
+# fake control plane and a Temporal dev server (`temporal` on PATH).
 # Usage: tests/install/workstation.sh <dist dir holding both wheels> process|launchd
 #
 # process  `install --no-start`, then the exact command the login agent runs, as a plain
@@ -40,9 +40,9 @@ agentic-runner --version
 temporal server start-dev --port 7233 --headless --namespace "${namespace}" \
   > "${work}/temporal.log" 2>&1 &
 pids+=($!)
-# The fake needs `cryptography`, which the Runner's own tool environment already holds.
-FAKE_NAMESPACE="${namespace}" "${UV_TOOL_DIR}/agentic-runner/bin/python" \
-  "${repo}/charts/agentic-runner/test/fake-control-plane.py" 8000 > "${work}/fake.log" 2>&1 &
+# The conformance kit's fake control plane, served from the Runner just installed.
+"${UV_TOOL_DIR}/agentic-runner/bin/python" -m agentic_runner.testing 8000 \
+  --namespace "${namespace}" > "${work}/fake.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 60); do
   curl -fsS "${stats}" >/dev/null 2>&1 && nc -z 127.0.0.1 7233 && break

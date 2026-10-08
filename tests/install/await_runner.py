@@ -1,9 +1,10 @@
 """Wait until the fake control plane has seen Runners register and heartbeat.
 
 The install tests (``docker.sh``, ``workstation.sh``) start a Runner the way a guide in
-``docs/`` tells a person to, against ``charts/agentic-runner/test/fake-control-plane.py``,
-then call this: it polls ``/stats`` until every expected Runner has registered with the
-expected isolation mode and each one has heartbeat, and fails with the last stats seen.
+``docs/`` tells a person to, against the conformance kit's fake control plane
+(``python -m agentic_runner.testing``), then call this: it polls ``/stats`` until every
+expected Runner has registered with the expected isolation mode and each one has
+heartbeat, and fails with the last stats seen.
 
 Usage: await_runner.py <stats url> --runners N --isolation MODE [--timeout SECONDS]
 Standard library only: it runs on a bare CI host, outside any virtualenv.
