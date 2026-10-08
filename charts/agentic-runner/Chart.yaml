@@ -5,9 +5,9 @@ description: >-
   installs in its own cluster. N replicas are N Runners with N identities under one
   Recipient Key; every Contract on a Runner is its own OS user (ADR-0015).
 type: application
-version: 3.2.0
+version: 3.3.0
 # The Runner image tag this chart installs by default: agentic_runner.__version__.
-appVersion: "3.2.0"
+appVersion: "3.3.0"
 home: https://github.com/qtsone/agentic-runner
 sources:
   - https://github.com/qtsone/agentic-runner

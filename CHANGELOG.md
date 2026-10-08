@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.3.0](https://github.com/qtsone/agentic-runner/compare/v3.2.0...v3.3.0) (2026-10-08)
+
+
+### Features
+
+* **runner:** a shared Runner runs API keys only; Codex API-key mode; LLM slot from a delivered key (QTS-885, QTS-1287) ([#30](https://github.com/qtsone/agentic-runner/issues/30)) ([632b9b3](https://github.com/qtsone/agentic-runner/commit/632b9b30e2fd70c611db5dfe0989c96988e47958)), closes [#321](https://github.com/qtsone/agentic-runner/issues/321) [#322](https://github.com/qtsone/agentic-runner/issues/322) [#321](https://github.com/qtsone/agentic-runner/issues/321) [#317](https://github.com/qtsone/agentic-runner/issues/317) [#321](https://github.com/qtsone/agentic-runner/issues/321)
+
 # [3.2.0](https://github.com/qtsone/agentic-runner/compare/v3.1.1...v3.2.0) (2026-10-08)
 
 
