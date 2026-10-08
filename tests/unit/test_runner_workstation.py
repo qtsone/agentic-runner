@@ -33,8 +33,6 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
 from agentic_runner import cli, service, workstation
@@ -44,17 +42,15 @@ from agentic_runner.host_store import (
     open_workstation_store,
 )
 from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.testing import FakeControlPlane
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
-    BootstrapRequest,
-    BootstrapResponse,
     FloorState,
     HeartbeatAck,
     HeartbeatEnvelope,
     HostAttestation,
     InstallChannel,
     LifecycleKind,
-    RunnerIdentityMaterial,
     SessionKind,
     StoreKind,
 )
@@ -64,57 +60,6 @@ CONTROL_PLANE = "http://control-plane.test"
 
 
 # ------------------------------------------------------------------ fakes
-
-
-class FakeControlPlane:
-    def __init__(self) -> None:
-        self.bootstraps: list[BootstrapRequest] = []
-        self.heartbeats: list[HeartbeatEnvelope] = []
-        self.heard = asyncio.Event()
-
-    def transport(self) -> httpx.MockTransport:
-        return httpx.MockTransport(self._handle)
-
-    def _handle(self, request: httpx.Request) -> httpx.Response:
-        date = {"date": "Wed, 23 Sep 2026 10:00:00 GMT"}
-        if request.url.path.endswith("/bootstrap"):
-            self.bootstraps.append(BootstrapRequest.model_validate_json(request.content))
-            runner_id = uuid4()
-            pem = (
-                Ed25519PrivateKey.generate()
-                .private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                )
-                .decode()
-            )
-            body = BootstrapResponse(
-                identity=RunnerIdentityMaterial(
-                    runner_id=runner_id, identity_id=f"id-{runner_id}", private_key_pem=pem
-                ),
-                temporal_namespace=f"org-{uuid4()}",
-                task_queue=f"runner.{runner_id}",
-                runner_token="bootstrap-token",
-                runner_token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                tag_set_version=1,
-                floor_state=FloorState.OK,
-                contracts_floor=contracts_version,
-                host_party="user",
-            )
-            return httpx.Response(200, json=json.loads(body.model_dump_json()), headers=date)
-        self.heartbeats.append(HeartbeatEnvelope.model_validate_json(request.content))
-        self.heard.set()
-        ack = HeartbeatAck(
-            runner_id=request.headers["X-Runner-Id"],
-            runner_token=f"token-{len(self.heartbeats)}",
-            runner_token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-            floor_state=FloorState.OK,
-            contracts_floor=contracts_version,
-            tag_set_version=1,
-            accepts_new_directives=True,
-        )
-        return httpx.Response(200, json=json.loads(ack.model_dump_json()), headers=date)
 
 
 class Commands:
@@ -229,7 +174,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
 ) -> None:
     home = tmp_path / "home"
     paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
-    plane = FakeControlPlane()
+    plane = FakeControlPlane(host_party="user")
     commands = Commands()
 
     async with httpx.AsyncClient(transport=plane.transport()) as http:
@@ -355,7 +300,7 @@ async def test_the_runner_never_opens_a_file_under_any_harness_root(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(harness_roots[0]))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(harness_roots[1]))
-    plane = FakeControlPlane()
+    plane = FakeControlPlane(host_party="user")
     opened.clear()  # the setup above wrote them; from here on it is the Runner
 
     async with httpx.AsyncClient(transport=plane.transport()) as http:
@@ -415,7 +360,7 @@ async def _run_once(
         return type("Client", (), {"api_key": None})()
 
     async def stop_once_heard() -> None:
-        await plane.heard.wait()
+        await plane.wait_for(lambda: bool(plane.heartbeats))
         stop.set()
 
     stopper = asyncio.create_task(stop_once_heard())

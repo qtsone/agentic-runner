@@ -50,10 +50,17 @@ def _name(project: Path) -> str:
     return canonicalize_name(_project(project)["name"])
 
 
-def _declared(project: Path) -> frozenset[str]:
-    return frozenset(
-        canonicalize_name(Requirement(spec).name) for spec in _project(project)["dependencies"]
-    )
+def _declared(project: Path, extra: str | None = None) -> frozenset[str]:
+    specs = _project(project)["dependencies"]
+    if extra is not None:
+        specs = [*specs, *_project(project)["optional-dependencies"][extra]]
+    return frozenset(canonicalize_name(Requirement(spec).name) for spec in specs)
+
+
+# The conformance kit's pytest half (runner-repo issue 07) may import the `testing` extra;
+# nothing else may, the fake control plane included -- the chart and Docker tests serve it
+# from the image, which installs no extra.
+_TESTING_EXTRA_MODULES = ("agentic_runner/testing/plugin.py", "agentic_runner/testing/test_")
 
 
 def _allowed_roots(package: str, declared: frozenset[str]) -> frozenset[str]:
@@ -111,6 +118,13 @@ def test_a_distribution_imports_only_itself_and_what_it_declares(package: str) -
     project = DISTRIBUTIONS[package]
     declared = _declared(project)
     violations = _violations(project / "src", package, _allowed_roots(package, declared))
+    if package == "agentic_runner":
+        with_extra = _violations(
+            project / "src", package, _allowed_roots(package, _declared(project, "testing"))
+        )
+        for module in [m for m in violations if m.startswith(_TESTING_EXTRA_MODULES)]:
+            if module not in with_extra:
+                del violations[module]
 
     assert violations == {}, (
         f"{package} may import only itself, the standard library and the distributions "

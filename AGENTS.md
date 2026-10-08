@@ -27,6 +27,8 @@ with the synonyms to avoid. Use those terms.
 - `Dockerfile.runner`, `scripts/check-runner-images.sh` — the barebones image and its test.
 - `packaging/homebrew/` — the workstation formula.
 - `tests/` — unit and integration tests; `tests/test_package_partition.py` is the partition gate.
+- `packages/runner/src/agentic_runner/testing/` — the conformance kit: the fake control plane
+  every test registers against, and the scenario suite (`docs/conformance.md`).
 
 ## Commands
 
@@ -34,6 +36,7 @@ with the synonyms to avoid. Use those terms.
 uv sync
 uv run pytest -q
 uv run pytest tests/unit/test_runner_service.py -v
+uv run pytest --pyargs agentic_runner.testing      # the conformance scenarios
 uv run ruff check packages/ tests/
 uv run ruff format --check packages/ tests/
 uv run mypy packages/

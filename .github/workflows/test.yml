@@ -184,7 +184,8 @@ jobs:
 
   # docs/workstation.md: `uv tool install` from the built wheels, `agentic-runner install`,
   # and the Runner registering and heartbeating -- as a plain process on Linux, where a CI
-  # host has no user systemd instance, and as the launchd LaunchAgent on macOS.
+  # host has no user systemd instance, and as the launchd LaunchAgent on macOS. Then the
+  # conformance suite (docs/conformance.md) from a clean virtualenv on both.
   workstation:
     name: Workstation (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -225,6 +226,11 @@ jobs:
 
       - name: Run the workstation guide
         run: tests/install/workstation.sh dist ${{ matrix.mode }}
+
+      # docs/conformance.md: `agentic-runner[testing]` into a clean virtualenv from the
+      # same wheels, then the scenario suite against that install.
+      - name: Run the conformance suite
+        run: tests/install/conformance.sh dist
 
       # The attempt fence reads a process's start time with `ps -o lstart=` on macOS; the
       # Tests job covers the Linux `/proc/<pid>/stat` reader (runner-repo 05).

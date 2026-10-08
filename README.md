@@ -43,6 +43,10 @@ Each guide installs only published artifacts, and CI runs each one to a Runner t
 registers and heartbeats against a fake control plane. Before the first release, run from a
 checkout: `uv sync && uv run agentic-runner --help`.
 
+To prove a fork or your own build works without the platform, install
+`agentic-runner[testing]` and run `pytest --pyargs agentic_runner.testing`. Guide:
+[docs/conformance.md](docs/conformance.md).
+
 ## The compatibility floor
 
 The version of `agentic-runner-contracts` is the compatibility floor between the control plane

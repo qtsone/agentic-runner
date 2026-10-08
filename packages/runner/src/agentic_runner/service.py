@@ -64,6 +64,7 @@ from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOut
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
 from agentic_runner.registration import (
+    RUNNER_REVOKED_REASON,
     RunnerRegistrationClient,
     RunnerRegistrationError,
     RunnerState,
@@ -890,6 +891,8 @@ async def _serve_registered(
             await link.exchange()
             break
         except Exception as error:  # noqa: BLE001 - keep trying until the control plane answers
+            if _revoked(error):
+                return 1
             _logger.warning("heartbeat failed before start: %s", error)
             if stop is not None and stop.is_set():
                 return 1
@@ -931,7 +934,11 @@ async def _serve_registered(
             graceful_shutdown_timeout=graceful_shutdown_timeout(settings),
             max_concurrent_activities=state.max_concurrent_directives,
         )
-        beat = asyncio.create_task(_heartbeat_forever(link, stream, client, interval))
+        stop = stop or asyncio.Event()
+        revoked = asyncio.Event()
+        beat = asyncio.create_task(
+            _heartbeat_forever(link, stream, client, interval, stop=stop, revoked=revoked)
+        )
         poll = asyncio.create_task(_poll_sources_forever(stream.sources, _source_poll_seconds()))
         readiness.ready = True
         await run_runner_lifecycle_hook(hooks, HookName.RUNNER_STARTUP)
@@ -945,7 +952,20 @@ async def _serve_registered(
                     await task
             await run_runner_lifecycle_hook(hooks, HookName.RUNNER_SHUTDOWN)
             await _report_stop(link, lifecycle)
-    return 0
+    return 1 if revoked.is_set() else 0
+
+
+def _revoked(error: Exception) -> bool:
+    """Whether a failed heartbeat was the control plane revoking this Runner.
+
+    Every other failure is a lost beat and the next tick retries it; a revocation is
+    final, so retrying would only dial a control plane that has already said no.
+    """
+
+    if isinstance(error, RunnerRegistrationError) and error.reason == RUNNER_REVOKED_REASON:
+        print(f"revoked by the control plane: {error}", flush=True)
+        return True
+    return False
 
 
 async def _report_stop(link: HeartbeatLink, lifecycle: LifecycleOutbox) -> None:
@@ -959,13 +979,20 @@ async def _report_stop(link: HeartbeatLink, lifecycle: LifecycleOutbox) -> None:
 
 
 async def _heartbeat_forever(
-    link: HeartbeatLink, stream: ControlPlaneStream, client: Client, interval: float
+    link: HeartbeatLink,
+    stream: ControlPlaneStream,
+    client: Client,
+    interval: float,
+    *,
+    stop: asyncio.Event,
+    revoked: asyncio.Event,
 ) -> None:
     """Every 30 s, for as long as the process lives; a missed beat is logged, not fatal.
 
     Staleness is the link's own property (issue 44): after three minutes of failures the
     verb seams refuse on their own, so there is nothing for this loop to do about a
-    failure except try again on the next tick.
+    failure except try again on the next tick. A revocation is the exception: it drains
+    the Worker exactly as SIGTERM would, and the process exits non-zero.
     """
 
     while True:
@@ -974,6 +1001,10 @@ async def _heartbeat_forever(
         try:
             await link.exchange()
         except Exception as error:  # noqa: BLE001 - any failed exchange is a lost beat
+            if _revoked(error):
+                revoked.set()
+                stop.set()
+                return
             _logger.warning("heartbeat failed: %s", error)
             continue
         if stream.runner_token is not None and stream.runner_token != token_before:

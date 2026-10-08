@@ -34,8 +34,8 @@ trap cleanup EXIT
 fresh_control_plane() {
   docker rm -f fake-control-plane >/dev/null 2>&1 || true
   docker run -d --name fake-control-plane --network "${network}" -p 8000:8000 \
-    -v "${repo}/charts/agentic-runner/test/fake-control-plane.py:/fake.py:ro" \
-    -e FAKE_NAMESPACE="${namespace}" --entrypoint python "${image}" /fake.py 8000 >/dev/null
+    --entrypoint python "${image}" -m agentic_runner.testing 8000 \
+    --namespace "${namespace}" >/dev/null
   for _ in $(seq 30); do curl -fsS "${stats}" >/dev/null 2>&1 && return; sleep 1; done
   echo "fake control plane did not start"; docker logs fake-control-plane; exit 1
 }
