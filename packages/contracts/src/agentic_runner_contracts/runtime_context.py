@@ -9,9 +9,16 @@ the same reason: both sides resolve this context, through clients of their own.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 _FORBIDDEN_SECRET_VALUE_FIELDS = frozenset(
     {
@@ -98,7 +105,10 @@ class WorkerRuntimeContext(BaseModel):
 
     work_record_id: str
     profile_slug: str
-    cli_kind: Literal["codex_cli", "claude_code"]
+    # Any harness a Profile names, the pattern the Runner's registration already reports
+    # (local-agents 12 item 6). Which runtime serves it is the Runner's choice; a kind the
+    # Runner does not serve fails closed there.
+    cli_kind: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
     repo: str
     base_branch: str
     reviewer: str | None = None
