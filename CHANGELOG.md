@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [2.7.0](https://github.com/qtsone/agentic-runner/compare/v2.6.1...v2.7.0) (2026-10-08)
+
+
+### Features
+
+* **runner:** deliver attached Skills to the Agent Runtime (contracts 2.7.0) ([#18](https://github.com/qtsone/agentic-runner/issues/18)) ([504fd32](https://github.com/qtsone/agentic-runner/commit/504fd32b8e13aaf75abb131765af50ea2bfa2d82)), closes [#3](https://github.com/qtsone/agentic-runner/issues/3) [#3](https://github.com/qtsone/agentic-runner/issues/3) [#11](https://github.com/qtsone/agentic-runner/issues/11)
+
 ## [2.6.1](https://github.com/qtsone/agentic-runner/compare/v2.6.0...v2.6.1) (2026-10-08)
 
 
