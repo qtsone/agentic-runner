@@ -86,6 +86,15 @@ To rotate it, delete the Secret and restart the pods
 (`kubectl rollout restart statefulset/<release>-agentic-runner`). Each funder then delivers
 their credentials again, as after a reinstall.
 
+A value delivered under **`OPENAI_API_KEY`** or **`ANTHROPIC_API_KEY`** is also the
+Contract's LLM key. The Runner checks it with one models-list call and, if the provider
+accepts it, spends it on every Codex or Claude Code Directive of that Contract. A Runner
+hosted by an Organisation is shared, and a shared Runner never signs in to a
+subscription, so this key is the only way it runs a Contract's Directives. Without one,
+the Directive is refused `shared_runner_api_key_only`. The heartbeat reports the key as
+`<reference>@v<version>`. To spend it at a gateway rather than at the vendor, set
+`AGENTIC_RUNNER_OPENAI_BASE_URL` / `AGENTIC_RUNNER_ANTHROPIC_BASE_URL` in `extraEnv`.
+
 ## Check it
 
 ```sh
