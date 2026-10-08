@@ -108,8 +108,11 @@ _FAKE_CLAUDE = textwrap.dedent(
         chunks.append(data.decode())
     record(chunks=chunks)
     if args == ["setup-token"]:
+        if mode == "long-output":
+            sys.stdout.write("x" * 70000 + "\\r\\n")
         sys.stdout.write("\\r\\nYour OAuth token (valid for 1 year):\\r\\n\\r\\n")
-        sys.stdout.write(TOKEN + "\\r\\n")
+        if mode != "no-token":
+            sys.stdout.write(TOKEN + "\\r\\n")
     else:
         with open(os.path.join(root, ".credentials.json"), "w") as handle:
             handle.write("{}")
@@ -348,6 +351,37 @@ async def test_the_long_lived_token_lands_in_the_harness_root_0600(
 
 
 @pytest.mark.asyncio
+async def test_a_token_after_more_output_than_the_cap_still_lands(
+    isolation: ContractIsolation, fake_claude: Path
+) -> None:
+    """The cap keeps the tail: `setup-token` prints the token last."""
+
+    sign_ins = _sign_ins(isolation, fake_claude, mode="long-output")
+    prompt = await sign_ins.start(CONTRACT_A, method=None)
+    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
+    await _until(lambda: sign_ins.waiting == 0)
+
+    token_file = isolation.harness_config_dir(CONTRACT_A, "claude_code") / OAUTH_TOKEN_FILE
+    assert token_file.read_text() == TOKEN
+
+
+@pytest.mark.asyncio
+async def test_a_setup_token_that_prints_no_token_is_an_error_not_silence(
+    isolation: ContractIsolation, fake_claude: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sign_ins = _sign_ins(isolation, fake_claude, mode="no-token")
+    prompt = await sign_ins.start(CONTRACT_A, method=None)
+    with caplog.at_level(logging.ERROR):
+        await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
+        await _until(lambda: sign_ins.waiting == 0)
+
+    token_file = isolation.harness_config_dir(CONTRACT_A, "claude_code") / OAUTH_TOKEN_FILE
+    assert not token_file.exists()
+    assert f"{prompt.sign_in_id} did not complete" in caplog.text
+    assert "printed no token" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_a_harness_launch_sees_the_token_without_the_runner_opening_it(
     isolation: ContractIsolation, fake_claude: Path, opened_paths: list[str]
 ) -> None:
@@ -549,8 +583,9 @@ _FAKE_SECURITY = textwrap.dedent(
     #!/bin/sh
     stdin=""
     if [ "$1" = unlock-keychain ]; then read -r stdin; fi
+    if [ "$1" = create-keychain ]; then read -r new; read -r again; stdin="$new,$again"; fi
     printf '%s|%s|%s\\n' "$HOME" "$stdin" "$*" >>"$SECURITY_LOG"
-    if [ "$1" = create-keychain ]; then : >"$4"; fi
+    if [ "$1" = create-keychain ]; then : >"$2"; fi
     """
 )
 
@@ -589,12 +624,12 @@ async def test_macos_short_lived_sign_in_gets_a_per_contract_keychain(
     keychain = str(root / "claude.keychain-db")
     calls = [line.split("|", 2) for line in log.read_text().splitlines()]
     assert all(called_home == home for called_home, _, _ in calls)
-    made = [argv for _, _, argv in calls if not argv.startswith("unlock-keychain")]
+    made = [(stdin, argv) for _, stdin, argv in calls if not argv.startswith("unlock-keychain")]
     assert made == [
-        f"create-keychain -p {password} {keychain}",
-        f"set-keychain-settings {keychain}",
-        f"list-keychains -d user -s {keychain}",
-        f"default-keychain -d user -s {keychain}",
+        (f"{password},{password}", f"create-keychain {keychain}"),
+        ("", f"set-keychain-settings {keychain}"),
+        ("", f"list-keychains -d user -s {keychain}"),
+        ("", f"default-keychain -d user -s {keychain}"),
     ], "made once, on the first short-lived sign-in"
     unlocks = [(stdin, argv) for _, stdin, argv in calls if argv.startswith("unlock-keychain")]
     assert unlocks == [(password, f"unlock-keychain {keychain}")] * 2

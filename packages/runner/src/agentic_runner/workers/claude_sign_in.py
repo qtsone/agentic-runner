@@ -31,6 +31,7 @@ import asyncio
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import pty
 import re
@@ -111,6 +112,39 @@ _PTY_ROWS: Final[int] = 50
 _DEFAULT_PROMPT_TIMEOUT_SECONDS: Final[float] = 30.0
 _STATUS_TIMEOUT_SECONDS: Final[int] = 30
 _OUTPUT_LIMIT_BYTES: Final[int] = 65_536
+
+_logger = logging.getLogger(__name__)
+
+# Runs as the Contract's uid, never the Runner's: the Contract owns every directory down to
+# its harness root and can swap one for a symlink while a sign-in waits. The Runner, with
+# CAP_CHOWN and CAP_DAC_OVERRIDE, would follow it into another Contract's root; as the
+# Contract's uid the write or unlink reaches only what that Contract already could.
+# ``value`` None removes the file.
+_PRIVATE_FILE_SCRIPT: Final[str] = """
+import json, os, secrets, sys
+path, value = json.load(sys.stdin)
+if value is None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    sys.exit()
+directory, name = os.path.split(path)
+temporary = os.path.join(directory, "." + name + "." + secrets.token_hex(8) + ".tmp")
+flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+try:
+    with os.fdopen(os.open(temporary, flags, 0o600), "w", encoding="utf-8") as handle:
+        handle.write(value)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+"""
 
 # The URL arrives as an OSC 8 hyperlink whose target is whole even when its visible text
 # is split; the plain form is the fallback for a CLI that prints it bare.
@@ -351,8 +385,7 @@ class ClaudeSignIns:
             session.exited.set()
             session.changed.set()
             return
-        if len(session.output) + len(chunk) <= _OUTPUT_LIMIT_BYTES:
-            session.output.extend(chunk)
+        _keep_tail(session.output, chunk)
         session.changed.set()
 
     async def _await_prompt(self, session: _WaitingSignIn) -> str:
@@ -381,8 +414,6 @@ class ClaudeSignIns:
         if session.ended:
             return
         session.ended = True
-        if self._waiting.get(session.sign_in_id) is session:
-            del self._waiting[session.sign_in_id]
         loop = asyncio.get_running_loop()
         if not session.exited.is_set():
             loop.remove_reader(session.master_fd)
@@ -394,21 +425,30 @@ class ClaudeSignIns:
         with contextlib.suppress(OSError):
             # The CLI's last words can still be in the master's buffer after EOF.
             while chunk := os.read(session.master_fd, 4096):
-                session.output.extend(chunk[: max(0, _OUTPUT_LIMIT_BYTES - len(session.output))])
+                _keep_tail(session.output, chunk)
         with contextlib.suppress(OSError):
             os.close(session.master_fd)
         session.master_fd = -1
+        token_file = session.harness_root / OAUTH_TOKEN_FILE
         try:
             if session.method == OAUTH_TOKEN:
                 token = _printed_token(session.output.decode("utf-8", errors="replace"))
                 if token is not None:
-                    _write_token_file(session.harness_root, token, session.uid)
+                    await _write_private(token_file, token, session.uid)
+                elif session.process.returncode == 0:
+                    raise ClaudeSignInError("claude setup-token exited 0 but printed no token")
             elif session.process.returncode == 0:
                 # A finished `claude_ai` sign-in replaces a long-lived token, which the
                 # launcher would otherwise go on preferring.
-                (session.harness_root / OAUTH_TOKEN_FILE).unlink(missing_ok=True)
+                await _write_private(token_file, None, session.uid)
+        except ClaudeSignInError as error:
+            # Nobody awaits a sign-in's end; the person sees it as still signed out.
+            _logger.error("Claude Code sign-in %s did not complete: %s", session.sign_in_id, error)
         finally:
             session.output.clear()
+            # Last, so `waiting` falls to zero only once the token is on disk.
+            if self._waiting.get(session.sign_in_id) is session:
+                del self._waiting[session.sign_in_id]
 
     async def _ensure_keychain(self, sandbox: DirectiveSandbox) -> None:
         """A per-Contract keychain, the default of the sandbox ``HOME`` (macOS only)."""
@@ -419,21 +459,22 @@ class ClaudeSignIns:
         if keychain.exists() and password_file.exists():
             return
         password = secrets.token_urlsafe(32)
-        _write_private(password_file, password, sandbox.uid)
-        commands = [
-            ["security", "create-keychain", "-p", password, str(keychain)],
+        await _write_private(password_file, password, sandbox.uid)
+        # The password goes in on stdin, twice (new and retyped): in argv `ps` shows it.
+        commands: list[tuple[list[str], str | None]] = [
+            (["security", "create-keychain", str(keychain)], f"{password}\n{password}\n"),
             # No auto-lock: the launcher unlocks before each spawn, but a Directive can
             # outlive any timeout, and a lock mid-turn blocks on a GUI prompt.
-            ["security", "set-keychain-settings", str(keychain)],
-            ["security", "list-keychains", "-d", "user", "-s", str(keychain)],
-            ["security", "default-keychain", "-d", "user", "-s", str(keychain)],
+            (["security", "set-keychain-settings", str(keychain)], None),
+            (["security", "list-keychains", "-d", "user", "-s", str(keychain)], None),
+            (["security", "default-keychain", "-d", "user", "-s", str(keychain)], None),
         ]
-        for argv in commands:
+        for argv, stdin in commands:
             result = await run_subprocess_exec(
                 argv=argv,
                 cwd=sandbox.home_dir,
                 env=_harness_env(sandbox),
-                stdin=None,
+                stdin=stdin,
                 timeout_seconds=_STATUS_TIMEOUT_SECONDS,
                 output_limit_bytes=_OUTPUT_LIMIT_BYTES,
                 sandbox=sandbox,
@@ -463,27 +504,31 @@ def _printed_token(text: str) -> str | None:
     return match.group(0) if match else None
 
 
-def _write_token_file(harness_root: Path, token: str, uid: int | None) -> None:
-    _write_private(harness_root / OAUTH_TOKEN_FILE, token, uid)
+def _keep_tail(output: bytearray, chunk: bytes) -> None:
+    """The last ``_OUTPUT_LIMIT_BYTES``: the token is the last thing ``setup-token`` prints,
+    so a cap that kept the head would drop it from a long output."""
+
+    output.extend(chunk)
+    del output[:-_OUTPUT_LIMIT_BYTES]
 
 
-def _write_private(path: Path, value: str, uid: int | None) -> None:
-    """0600 and the Contract's from the first byte, replacing whatever was there.
+async def _write_private(path: Path, value: str | None, uid: int | None) -> None:
+    """0600 and the Contract's from the first byte, replacing whatever was there; or, for
+    ``value`` None, gone. Done as the Contract's uid (see ``_PRIVATE_FILE_SCRIPT``)."""
 
-    Never follows a link the Contract planted: the temp file is created exclusively and
-    the rename replaces the name, not what it points at.
-    """
-
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    try:
-        os.write(descriptor, value.encode("utf-8"))
-        if uid is not None:
-            os.fchown(descriptor, uid, uid)
-        os.fsync(descriptor)
-    except BaseException:
-        os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-        raise
-    os.close(descriptor)
-    os.replace(temporary, path)
+    identity: dict[str, object] = (
+        {} if uid is None else {"user": uid, "group": uid, "extra_groups": []}
+    )
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-I",
+        "-c",
+        _PRIVATE_FILE_SCRIPT,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        **identity,  # type: ignore[arg-type]
+    )
+    await process.communicate(json.dumps([str(path), value]).encode("utf-8"))
+    if process.returncode != 0:
+        raise ClaudeSignInError(f"writing {path.name} failed (exit {process.returncode})")

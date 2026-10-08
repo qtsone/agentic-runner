@@ -398,3 +398,40 @@ async def test_a_claude_token_is_its_contracts_own_and_no_other_contract_reads_i
         assert exit_code != 0
         assert _CLAUDE_TOKEN not in stdout
         assert "Permission denied" in stderr
+
+
+@pytest.mark.asyncio
+async def test_a_claude_token_never_lands_through_a_symlink_its_contract_planted(
+    tmp_path: Path,
+) -> None:
+    """Sentinel F1: Contract A owns its harness root, so while its sign-in waits it can swap
+    that root for a symlink into Contract B's. The token write runs as A's uid and stops."""
+
+    require_uid_separation()
+    isolation = ContractIsolation(
+        workspace_root=tmp_path / "workspaces",
+        state_dir=tmp_path / "state",
+        uid_min=60_050,
+        uid_max=60_059,
+        max_processes=512,
+        memory_limit_bytes=4 * 1024**3,
+    )
+    _make_traversable(tmp_path)
+    fake = tmp_path / "claude"
+    fake.write_text(_FAKE_CLAUDE_SETUP_TOKEN)
+    fake.chmod(0o755)
+    sign_ins = ClaudeSignIns(
+        isolation, argv_by_method={"oauth_token": (str(fake), "setup-token")}, platform="linux"
+    )
+    root_b = isolation.sandbox(CONTRACT_B, runtime_kind="claude_code").harness_config_dir
+
+    prompt = await sign_ins.start(CONTRACT_A, method=None)
+    root_a = isolation.harness_config_dir(CONTRACT_A, "claude_code")
+    root_a.rename(root_a.with_name("claude_code.moved"))
+    root_a.symlink_to(root_b)
+    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, "browser-code-0123456789")
+    async with asyncio.timeout(10):
+        while sign_ins.waiting:
+            await asyncio.sleep(0.05)
+
+    assert list(root_b.iterdir()) == []
