@@ -11,7 +11,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
+from agentic_runner.auth_mode import SHARED_RUNNER_SIGN_IN_RULE
 from agentic_runner.workers.contract_device_login import ContractDeviceLogin
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts.activity_io import (
@@ -31,8 +33,12 @@ class ContractDeviceLoginActivities:
         *,
         contract_isolation: ContractIsolation,
         device_login: ContractDeviceLogin | None = None,
+        host_party: str | None = None,
     ) -> None:
         self._contract_isolation = contract_isolation
+        # The party this process was registered as hosted by. A shared Runner never runs a
+        # subscription, so it never starts or reads one either (local-agents 04).
+        self._host_party = host_party
         # Injectable for tests; None falls through to the real `codex` subprocess.
         self._device_login = device_login or ContractDeviceLogin(contract_isolation)
 
@@ -46,6 +52,7 @@ class ContractDeviceLoginActivities:
     async def sign_in_contract_device_login(
         self, request: ContractDeviceLoginInput
     ) -> ContractDeviceLoginResult:
+        self._refuse_on_shared_runner()
         prompt = await self._device_login.sign_in(
             request.contract_id, runtime_kind=request.runtime_kind
         )
@@ -61,6 +68,7 @@ class ContractDeviceLoginActivities:
     async def check_contract_device_login_status(
         self, request: ContractDeviceLoginStatusInput
     ) -> ContractDeviceLoginStatusResult:
+        self._refuse_on_shared_runner()
         present = self._device_login.token_present(
             request.contract_id, runtime_kind=request.runtime_kind
         )
@@ -77,3 +85,19 @@ class ContractDeviceLoginActivities:
             token_present=present,
             delivered_at=delivered_at,
         )
+
+    def _refuse_on_shared_runner(self) -> None:
+        """Non-retryable, and typed by the rule: there is no Work Record to write Evidence
+        on here, so the failure the platform's sign-in workflow receives names it.
+
+        Only a Runner known to be the person's own signs in: one whose state names no host
+        party (registered before issue 42) is refused too, as `choose_auth_mode` never runs
+        a subscription on it either."""
+
+        if self._host_party != "user":
+            raise ApplicationError(
+                f"this Runner is hosted by {self._host_party!r}; only a person's own Runner "
+                "signs in, a shared Runner runs API keys only",
+                type=SHARED_RUNNER_SIGN_IN_RULE,
+                non_retryable=True,
+            )

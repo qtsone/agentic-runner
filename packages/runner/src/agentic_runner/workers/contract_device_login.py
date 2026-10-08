@@ -40,6 +40,7 @@ __all__ = [
     "ContractDeviceLoginPromptError",
     "DeviceLoginPrompt",
     "UnknownHarnessError",
+    "login_file_counts",
 ]
 
 # The token file each harness's own device-login flow writes, relative to its config root
@@ -173,6 +174,20 @@ class ContractDeviceLogin:
         if filename is None:
             return None
         return self._isolation.harness_config_dir(contract_id, runtime_kind) / filename
+
+
+def login_file_counts(isolation: ContractIsolation, contract_id: str | None) -> dict[str, int]:
+    """How many login files each of this Contract's harness roots holds, by ``stat`` alone.
+
+    A count per harness and never a path: the residue report on a shared Runner says that
+    a login is there, not where or what it is (local-agents 04).
+    """
+
+    counts: dict[str, int] = {}
+    for runtime_kind, filename in _TOKEN_FILE_BY_RUNTIME.items():
+        if (isolation.harness_config_dir(contract_id, runtime_kind) / filename).is_file():
+            counts[runtime_kind] = 1
+    return counts
 
 
 def _prompt_has_verification(raw: str) -> bool:

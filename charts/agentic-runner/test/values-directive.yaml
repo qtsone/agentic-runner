@@ -1,0 +1,11 @@
+# The chart test's one Codex Directive on an API key (local-agents 04b).
+hooks:
+  # `codex exec` refuses a directory that is not a git repository, and the Learning
+  # Directive the test dispatches runs in a Workspace nothing cloned into.
+  pre_directive: |
+    #!/bin/sh
+    exec git init -q .
+extraEnv:
+  # The delivered OPENAI_API_KEY is spent at the fake control plane's provider routes.
+  - name: AGENTIC_RUNNER_OPENAI_BASE_URL
+    value: http://fake-control-plane:8000/v1

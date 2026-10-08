@@ -22,7 +22,7 @@ from agentic_runner.activities import SKILLS_EVIDENCE_SOURCE, RunnerRalphActivit
 from agentic_runner.integrations.git.fake_workspace import FakeGitWorkspace
 from agentic_runner.integrations.github.fake_client import FakeGitHubClient
 from agentic_runner.workers.agent_runtime import (
-    AuthModel,
+    AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
@@ -100,7 +100,7 @@ class _SkillReadingRuntime:
     """Records what its harness root's Skill file held while the Directive ran."""
 
     fail: bool = False
-    auth_model: AuthModel = AuthModel.DEVICE_LOGIN
+    auth_modes: frozenset[AuthMode] = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     requests: list[DirectiveRequest] = field(default_factory=list)
     seen_sha256: str | None = None
 

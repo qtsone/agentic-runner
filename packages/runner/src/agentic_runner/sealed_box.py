@@ -35,6 +35,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from agentic_runner.auth_mode import SETUP_TOKEN_REFUSED_RULE, is_setup_token
 from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts.runner_registration import RecipientKey
 from agentic_runner_contracts.sealed_credential import (
@@ -62,6 +64,8 @@ from agentic_runner_contracts.sealed_credential import (
     delivery_binding,
     key_fingerprint,
 )
+
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "RECIPIENT_KEY_FILENAME",
@@ -378,6 +382,12 @@ class SealedCredentialStream:
 
         return dict(self._plaintext)
 
+    def version(self, contract_id: str, slot: str) -> int | None:
+        """The delivery version this installation last opened for a slot."""
+
+        held = self._held.get((contract_id, slot))
+        return held[0] if held is not None else None
+
     def apply(self, credentials: Sequence[SealedCredential]) -> list[SealedCredential]:
         """Open what is new, forget what is gone; return what failed to open.
 
@@ -407,6 +417,20 @@ class SealedCredentialStream:
             opened = self._open(sealed)
             if opened is None:
                 refused.append(sealed)
+                continue
+            if is_setup_token(opened):
+                # Refused on every Runner, user-hosted too (local-agents 04): a long-lived
+                # subscription bearer is never a delivered credential. Held, so the same
+                # version is not re-opened every beat, but never served or reported opened;
+                # a funder's replacement is a new version and opens normally.
+                self._held[key] = (sealed.version, sealed.recipient_key_id)
+                self._plaintext.pop(key, None)
+                _logger.warning(
+                    "sealed credential %s/%s refused (%s)",
+                    sealed.contract_id,
+                    sealed.slot,
+                    SETUP_TOKEN_REFUSED_RULE,
+                )
                 continue
             self._plaintext[key] = opened
             self._held[key] = (sealed.version, sealed.recipient_key_id)

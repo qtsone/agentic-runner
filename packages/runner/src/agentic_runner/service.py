@@ -26,11 +26,12 @@ import shutil
 import signal
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import UUID
 
 import httpx
 from temporalio import activity
@@ -60,7 +61,15 @@ from agentic_runner.hooks import AttemptFacts, HookName, HookRunner
 from agentic_runner.integrations.git.workspace import LocalGitWorkspace
 from agentic_runner.integrations.github.gh_client import GitHubAppClient
 from agentic_runner.lifecycle import LIFECYCLE_FILENAME, LifecycleOutbox
-from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOutbox
+from agentic_runner.llm_proxy import (
+    LLM_SLOT_REFERENCES,
+    CeilingStore,
+    LlmProvider,
+    LlmProxy,
+    SlotStore,
+    UsageOutbox,
+    llm_slot_references,
+)
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
 from agentic_runner.private_state import (
@@ -549,7 +558,10 @@ class ControlPlaneStream:
     messages: MessageStore | None = None
     # Console-v2 issue 29: the latest start of each Runner-hosted Tool Server.
     tool_servers: ToolServerHealthLog | None = None
+    # Local-agents 04b: which delivered references fill the LLM proxy's slot, and where.
+    llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
     _delivered: set[tuple[str, str]] = field(default_factory=set)
+    _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
     _last_seen: tuple[float, datetime] | None = None
 
     def _observe_sleep(self, now: datetime) -> None:
@@ -644,6 +656,7 @@ class ControlPlaneStream:
                 refused.slot,
             )
         self._sync_delivered()
+        await self._sync_llm_slots()
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token
             self.runner_token_expires_at = ack.runner_token_expires_at
@@ -686,6 +699,40 @@ class ControlPlaneStream:
         for contract_id, slot in self._delivered - set(plaintext):
             self.credentials.drop(contract_id, slot)
         self._delivered = set(plaintext)
+
+    async def _sync_llm_slots(self) -> None:
+        """A delivered LLM key becomes its Contract's proxy slot (local-agents 04b).
+
+        Offered once per value, not once per beat: :meth:`SlotStore.put` probes the
+        provider, and a value the probe refused stays refused until the funder delivers a
+        new one -- the heartbeat's slot fields already say why. A renewal re-seals the same
+        value, so it costs no probe either.
+
+        One slot per Contract, as the proxy resolves it: a Contract delivered both an
+        OpenAI and an Anthropic key serves whichever was offered last (a per-harness slot
+        needs the attempt to carry its cli_kind). So withdrawing either reference wipes
+        the Contract's slot and re-offers what remains -- otherwise a revoked key that was
+        serving would go on serving behind the one still delivered (22 A9).
+        """
+
+        delivered = {
+            key: value for key, value in self.sealed.plaintext.items() if key[1] in self.llm_slots
+        }
+        withdrawn = {contract_id for contract_id, _ in set(self._offered_to_proxy) - set(delivered)}
+        for contract_id in withdrawn:
+            self.proxy.slots.drop(UUID(contract_id))
+        offered = {key: v for key, v in self._offered_to_proxy.items() if key[0] not in withdrawn}
+        for (contract_id, reference), value in sorted(delivered.items()):
+            if offered.get((contract_id, reference)) == value:
+                continue
+            version = self.sealed.version(contract_id, reference)
+            await self.proxy.slots.put(
+                UUID(contract_id),
+                self.llm_slots[reference].slot(
+                    reference=reference, key_id=f"{reference}@v{version}", value=value
+                ),
+            )
+        self._offered_to_proxy = delivered
 
 
 # ------------------------------------------------------------------ readiness
@@ -889,6 +936,16 @@ async def _serve_registered(
         proxy=proxy,
         sealed=SealedCredentialStream(RecipientKeyStore(state_dir)),
         credentials=credentials,
+        llm_slots=llm_slot_references(
+            {
+                name: url
+                for name, url in (
+                    ("openai", config.openai_base_url),
+                    ("anthropic", config.anthropic_base_url),
+                )
+                if url
+            }
+        ),
         load=load,
         egress_posture=EgressPosture(
             os.environ.get(EGRESS_POSTURE_ENV, "").strip() or EgressPosture.UNRESTRICTED
@@ -1123,7 +1180,9 @@ def _activities(
     )
     return [
         *ralph.activity_callables(),
-        *ContractDeviceLoginActivities(contract_isolation=isolation).activity_callables(),
+        *ContractDeviceLoginActivities(
+            contract_isolation=isolation, host_party=state.host_party or None
+        ).activity_callables(),
         *RunnerTriageActivities(
             proxy=proxy,
             model=settings.TRIAGE_MODEL,

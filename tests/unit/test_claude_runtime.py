@@ -8,7 +8,7 @@ import pytest
 
 from agentic_runner.service import build_agent_runtimes
 from agentic_runner.workers._runtime_support import SubprocessResult
-from agentic_runner.workers.agent_runtime import AuthModel, DirectiveRequest
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.settings import WorkerSettings
@@ -209,9 +209,9 @@ def test_build_agent_runtimes_serves_every_cli_found_above_its_floor(tmp_path: P
 
     assert set(runtimes) == {"claude_code", "codex_cli"}
     assert isinstance(runtimes["claude_code"], ClaudeRuntime)
-    assert runtimes["claude_code"].auth_model == AuthModel.API_KEY
+    assert runtimes["claude_code"].auth_modes == {AuthMode.API_KEY}
     assert isinstance(runtimes["codex_cli"], CodexRuntime)
-    assert runtimes["codex_cli"].auth_model == AuthModel.DEVICE_LOGIN
+    assert runtimes["codex_cli"].auth_modes == {AuthMode.API_KEY, AuthMode.SUBSCRIPTION}
 
 
 def test_build_agent_runtimes_leaves_out_a_cli_below_its_floor(tmp_path: Path) -> None:

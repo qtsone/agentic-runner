@@ -23,8 +23,19 @@ spec:
         - name: fake
           image: agentic-runner:test
           imagePullPolicy: Never
-          command: ["python", "-m", "agentic_runner.testing", "8000"]
+          # The funder's OpenAI key the chart test's one API-key Directive spends.
+          command:
+            - python
+            - -m
+            - agentic_runner.testing
+            - "8000"
+            - --deliver
+            - OPENAI_API_KEY=sk-chart-test-funder-key
           ports: [{containerPort: 8000}]
+          volumeMounts: [{name: chart-test, mountPath: /chart-test}]
+      volumes:
+        - name: chart-test
+          configMap: {name: chart-test}
 ---
 apiVersion: v1
 kind: Service

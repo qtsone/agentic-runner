@@ -3,6 +3,8 @@
 # Runner image as agentic-runner:test (`kind load docker-image agentic-runner:test`):
 # install with replicas: 2 and assert both pods register as distinct Runners in the fake
 # control plane, under one Recipient Key the first replica's init container created.
+# Then (local-agents 04b) run one Codex Directive on an API key the fake control plane
+# delivered sealed, and assert it reached the provider through the LLM proxy.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -10,6 +12,9 @@ chart="$(cd "${here}/.." && pwd)"
 ns=runner-test
 release=rel
 
+kubectl create namespace "${ns}" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n "${ns}" create configmap chart-test \
+  --from-file="${here}/run-directive.py" --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f "${here}/manifests.yaml"
 kubectl -n "${ns}" rollout status deployment/fake-control-plane --timeout=180s
 kubectl -n "${ns}" rollout status deployment/temporal --timeout=180s
@@ -22,6 +27,7 @@ helm upgrade --install "${release}" "${chart}" -n "${ns}" \
   --set agentToken.value=chart-test-agent-token-0123456789 \
   --set tags.region=kind \
   --set storage.size=1Gi \
+  -f "${here}/values-directive.yaml" \
   --wait --timeout 5m
 
 # Ready means registered, heard and polling (agentic_runner.service.Readiness).
@@ -52,4 +58,38 @@ echo
 kubectl -n "${ns}" get statefulset "${release}-agentic-runner" \
   -o jsonpath='{.spec.template.spec.containers[0].securityContext.capabilities.add}' \
   | grep -q '"SETUID","SETGID","CHOWN","FOWNER","DAC_OVERRIDE"'
+
+# One Codex Directive on the shared Runner, on the key the fake delivered sealed. Its
+# outcome comes back through Temporal; what the provider saw comes from /stats.
+runner_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["runner_ids"][0])' "${stats}")"
+outcome="$(kubectl -n "${ns}" exec deployment/fake-control-plane -- \
+  python /chart-test/run-directive.py temporal:7233 org-00000000-0000-0000-0000-000000000001 "${runner_id}")"
+echo "directive: ${outcome}"
+
+# Usage rides the next heartbeat, so wait for it rather than for a fixed time.
+for _ in $(seq 1 30); do
+  stats="$(kubectl -n "${ns}" exec deployment/fake-control-plane -- \
+    python -c 'import json,urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/stats").read().decode())')"
+  python3 -c 'import json,sys; sys.exit(0 if json.loads(sys.argv[1])["usage"] else 1)' "${stats}" && break
+  sleep 5
+done
+echo "fake control plane: ${stats}"
+
+python3 - "${stats}" "${outcome}" <<'PY'
+import json, sys
+stats, outcome = json.loads(sys.argv[1]), json.loads(sys.argv[2].strip().splitlines()[-1])
+assert outcome["outcome"] == "proposed", outcome
+[run] = [e for e in stats["evidence_events"] if e["source"] == "learning.directive_run"]
+assert run["exit_code"] == 0, run
+# The proxy admits a call only on the attempt's bearer and spends the delivered key
+# upstream: the provider saw that key and nothing else, on Codex's Responses route.
+calls = [c for c in stats["provider_calls"] if c["path"] == "/v1/responses"]
+assert calls, stats["provider_calls"]
+assert {c["authorization"] for c in stats["provider_calls"]} == {"Bearer sk-chart-test-funder-key"}
+assert any(s["present"] and s["probe"] == "valid" and s["key_id"] == "OPENAI_API_KEY@v1"
+           for s in stats["slots"]), stats["slots"]
+assert any(u["contract_id"] == stats["contract_id"] and u["prompt_tokens"] == 42
+           for u in stats["usage"]), stats["usage"]
+print("one Codex Directive ran on the delivered API key through the LLM proxy")
+PY
 echo "chart test passed"

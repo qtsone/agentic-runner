@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic_runner.workers.agent_runtime import DirectiveRequest
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.codex_runtime import (
     CodexRuntime,
     SubprocessResult,
@@ -91,6 +91,7 @@ async def test_execute_directive_refuses_by_default_without_sandbox_and_policy_h
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Do not run without guards",
             base_branch="main",
@@ -116,6 +117,7 @@ async def test_execute_directive_invokes_codex_exec_in_workspace_without_shell(
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Update the worker runtime safely",
             base_branch="main",
@@ -175,6 +177,7 @@ async def test_execute_directive_accepts_pod_isolated_full_access_posture(
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Update the worker runtime safely",
             base_branch="main",
@@ -205,6 +208,7 @@ async def test_execute_directive_refuses_unknown_sandbox_mode(tmp_path: Path) ->
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Do not run without guards",
             base_branch="main",
@@ -231,6 +235,7 @@ async def test_execute_directive_env_carries_the_install_dir_on_path(
 
     await CodexRuntime(settings=settings, runner=runner).execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="do the thing",
             base_branch="main",
@@ -258,6 +263,7 @@ async def test_execute_directive_redacts_and_bounds_evidence(tmp_path: Path) -> 
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Do the thing",
             base_branch="main",
@@ -300,6 +306,7 @@ async def test_execute_directive_redacts_codex_config_path_forms(
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Do the thing",
             base_branch="main",
@@ -323,6 +330,7 @@ async def test_execute_directive_redacts_secret_looking_branch_evidence(tmp_path
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Do the thing",
             base_branch="main-token: base-secret",
@@ -351,6 +359,7 @@ async def test_execute_directive_returns_bounded_redacted_timeout_result(tmp_pat
 
     result = await runtime.execute_directive(
         DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
             workspace_path=workspace,
             prompt="Do the thing",
             base_branch="main",
@@ -379,6 +388,7 @@ async def test_execute_directive_propagates_cancellation_for_worker_shutdown(
     with pytest.raises(asyncio.CancelledError):
         await runtime.execute_directive(
             DirectiveRequest(
+                auth_mode=AuthMode.SUBSCRIPTION,
                 workspace_path=workspace,
                 prompt="Cancel this",
                 base_branch="main",
@@ -396,6 +406,7 @@ async def test_execute_directive_rejects_workspace_outside_worker_root(tmp_path:
     with pytest.raises(ValueError, match="workspace_path must be under WORKSPACE_ROOT"):
         await runtime.execute_directive(
             DirectiveRequest(
+                auth_mode=AuthMode.SUBSCRIPTION,
                 workspace_path=tmp_path / "other" / "repo",
                 prompt="Do not run",
                 base_branch="main",

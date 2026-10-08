@@ -69,6 +69,12 @@ docker run --rm -p 8000:8000 --entrypoint python \
 The Helm, Docker and workstation tests in this repository register Runners against it
 this way (`charts/agentic-runner/test/run.sh`, `tests/install/`).
 
+To run a Directive on an API key, deliver the key with `--deliver OPENAI_API_KEY=<value>`
+(or `FakeControlPlane.deliver(slot, value)`). The fake seals it to every Runner's
+Recipient Key and answers the runtime context for its one Contract. It also serves
+`/v1` as the LLM provider: point the Runner there with `AGENTIC_RUNNER_OPENAI_BASE_URL`,
+and `/stats` lists the credential each provider call presented.
+
 In your own tests, the extra's pytest plugin gives you two fixtures:
 `fake_control_plane` (the fake on a free port, with `.plane` and `.url`) and
 `runner_launcher` (starts the installed Runner against it). For in-process tests,

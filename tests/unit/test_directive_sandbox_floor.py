@@ -15,7 +15,7 @@ import pytest
 
 from agentic_runner.workers import claude_runtime, codex_runtime
 from agentic_runner.workers._runtime_support import SubprocessResult
-from agentic_runner.workers.agent_runtime import DirectiveRequest
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.settings import WorkerSettings
 
 
@@ -74,6 +74,9 @@ async def test_a_directive_whose_argv_breaks_the_floor_is_refused_before_it_spaw
             prompt="do the work",
             base_branch="main",
             work_branch="agent/work",
+            # The api_key refusal for a Codex Directive with no proxy endpoint comes first;
+            # this test is about the floor (LA-04).
+            auth_mode=AuthMode.SUBSCRIPTION if program == "codex" else AuthMode.API_KEY,
         )
     )
 

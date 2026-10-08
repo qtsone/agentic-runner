@@ -15,6 +15,12 @@ queue. What it answers is the same shape the platform answers, refusals included
 (``{"detail": {"reason", "detail"}}``). Everything it saw is kept for the test to read,
 and ``GET /stats`` -- the one route outside the prefix, and the fake's own -- summarises
 it for a shell script.
+
+Local-agents 04b adds what one Directive on a shared Runner needs: :meth:`deliver` seals a
+funder's value to every Runner's Recipient Key and pushes it on each ack, the runtime
+context and usage routes answer for one Contract, and ``/v1`` -- also outside the prefix
+-- is the LLM provider a Runner is pointed at, recording the credential each call
+presented, so a test sees the proxy spent the delivered key and not the attempt bearer.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
@@ -46,6 +52,7 @@ from agentic_runner.registration import (
     HEARTBEAT_PATH,
     RUNNER_REVOKED_REASON,
 )
+from agentic_runner.sealed_box import seal
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.public_metadata import runner_task_queue
 from agentic_runner_contracts.runner_registration import (
@@ -64,21 +71,35 @@ from agentic_runner_contracts.runner_signature import (
     SIGNED_AT_HEADER,
     canonical_request,
 )
+from agentic_runner_contracts.runtime_context import (
+    ProductVerifierCommandSource,
+    WorkerRuntimeContext,
+)
+from agentic_runner_contracts.sealed_credential import SealedCredential, delivery_binding
 
 __all__ = [
+    "DEFAULT_AGENT_ID",
+    "DEFAULT_CONTRACT_ID",
     "DEFAULT_NAMESPACE",
     "RUNNER_PREFIX",
     "Evidence",
     "FakeControlPlane",
+    "ProviderCall",
     "Refusal",
 ]
 
 RUNNER_PREFIX = "/api/runner/v1"
 STATS_PATH = "/stats"
+PROVIDER_PREFIX = "/v1"
+DEFAULT_CONTRACT_ID = UUID("00000000-0000-4000-8000-0000000000c1")
+DEFAULT_AGENT_ID = UUID("00000000-0000-4000-8000-0000000000a1")
 # The namespace the chart, Docker and workstation tests start their Temporal dev server
 # with: one Organisation, whose id is the first non-nil UUID.
 DEFAULT_NAMESPACE = "org-00000000-0000-0000-0000-000000000001"
 _EVIDENCE_PATH_SUFFIX = "/evidence"
+_RUNTIME_CONTEXT_PATH_SUFFIX = "/runtime-context"
+_DIRECTIVE_USAGE_PATH = f"{RUNNER_PREFIX}/usage/work-records/"
+_HARNESS_USAGE_PATH = f"{RUNNER_PREFIX}/usage/harness"
 _WORK_RECORDS_PATH = f"{RUNNER_PREFIX}/work-records/"
 _TOKEN_TTL = timedelta(hours=1)
 _DIRECTIVE_TOKEN_TTL = timedelta(minutes=15)
@@ -104,9 +125,17 @@ class Refusal:
 
 
 @dataclass(frozen=True)
+class ProviderCall:
+    path: str
+    authorization: str
+
+
+@dataclass(frozen=True)
 class _Answer:
     status: int
     body: dict[str, Any] | None = None
+    # A provider stream: sent as is, as ``text/event-stream``, in place of ``body``.
+    stream: bytes | None = None
 
 
 class _RefusedError(Exception):
@@ -135,6 +164,9 @@ class FakeControlPlane:
     host_party: str = "organisation"
     heartbeat_interval_seconds: int = 30
     contracts_floor: str = contracts_version
+    contract_id: UUID = DEFAULT_CONTRACT_ID
+    agent_id: UUID = DEFAULT_AGENT_ID
+    cli_kind: Literal["codex_cli", "claude_code"] = "codex_cli"
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)
     runner_ids: list[UUID] = field(default_factory=list)
@@ -143,11 +175,18 @@ class FakeControlPlane:
     directive_tokens: list[str] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
     refusals: list[Refusal] = field(default_factory=list)
+    provider_calls: list[ProviderCall] = field(default_factory=list)
+    slots: list[dict[str, Any]] = field(default_factory=list)
+    usage: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
         self._registered: dict[UUID, _Registered] = {}
         self._minted: set[str] = set()
+        self._delivered: dict[str, str] = {}
+        # One ciphertext per (Recipient Key, slot): the ack is authoritative, and a fresh
+        # seal every beat would read as a new value at the same version.
+        self._sealed: dict[tuple[str, str], str] = {}
 
     # ---------------------------------------------------------------- the test's levers
 
@@ -156,6 +195,12 @@ class FakeControlPlane:
 
         with self._lock:
             self._registered[runner_id].revoked = True
+
+    def deliver(self, slot: str, value: str) -> None:
+        """A funder delivers ``value`` to ``contract_id`` under ``slot``, at version 1."""
+
+        with self._lock:
+            self._delivered[slot] = value
 
     async def wait_for(self, condition: Callable[[], bool], *, timeout: float = 10.0) -> None:
         """Poll ``condition`` until it holds; works whether the fake is mounted or served."""
@@ -182,6 +227,13 @@ class FakeControlPlane:
                 "directive_tokens": len(self.directive_tokens),
                 "evidence": len(self.evidence),
                 "refusals": [f"{r.method} {r.path} {r.status} {r.reason}" for r in self.refusals],
+                "contract_id": str(self.contract_id),
+                "provider_calls": [
+                    {"path": c.path, "authorization": c.authorization} for c in self.provider_calls
+                ],
+                "slots": self.slots[-4:],
+                "usage": self.usage,
+                "evidence_events": [{"source": e.source, **e.payload} for e in self.evidence],
             }
 
     # ---------------------------------------------------------------- the two mounts
@@ -196,6 +248,12 @@ class FakeControlPlane:
                 request.headers,
                 request.content,
             )
+            if answer.stream is not None:
+                return httpx.Response(
+                    answer.status,
+                    content=answer.stream,
+                    headers={"content-type": "text/event-stream"},
+                )
             return httpx.Response(
                 answer.status,
                 json=answer.body,
@@ -227,10 +285,14 @@ class FakeControlPlane:
                 answer = plane.handle(
                     self.command, self.path, dict(self.headers), self.rfile.read(length)
                 )
-                raw = b"" if answer.body is None else json.dumps(answer.body).encode()
+                if answer.stream is not None:
+                    raw, content_type = answer.stream, "text/event-stream"
+                else:
+                    raw = b"" if answer.body is None else json.dumps(answer.body).encode()
+                    content_type = "application/json"
                 # send_response adds the `Date` header the Runner's clock-skew reading uses.
                 self.send_response(answer.status)
-                self.send_header("content-type", "application/json")
+                self.send_header("content-type", content_type)
                 self.send_header("content-length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
@@ -254,6 +316,8 @@ class FakeControlPlane:
         if method == "GET" and path == STATS_PATH:
             return _Answer(200, self.stats())
         headers = {key.lower(): value for key, value in headers.items()}
+        if path.startswith(f"{PROVIDER_PREFIX}/"):
+            return self._provider(method, path, headers)
         try:
             with self._lock:
                 return self._route(method, target, path, headers, body)
@@ -287,6 +351,20 @@ class FakeControlPlane:
         ):
             work_record_id = path[len(_WORK_RECORDS_PATH) : -len(_EVIDENCE_PATH_SUFFIX)]
             return self._evidence(work_record_id, method, target, headers, body)
+        if (
+            method == "GET"
+            and path.startswith(_WORK_RECORDS_PATH)
+            and path.endswith(_RUNTIME_CONTEXT_PATH_SUFFIX)
+        ):
+            self._directive_bearer(headers)
+            work_record_id = path[len(_WORK_RECORDS_PATH) : -len(_RUNTIME_CONTEXT_PATH_SUFFIX)]
+            return _Answer(200, self._runtime_context(work_record_id))
+        if method == "GET" and path.startswith(_DIRECTIVE_USAGE_PATH):
+            self._directive_bearer(headers)
+            return _Answer(200, {"tokens": 0})
+        if method == "POST" and path == _HARNESS_USAGE_PATH:
+            self._directive_bearer(headers)
+            return _Answer(200, {"records": []})
         raise _RefusedError(
             404, "not_served", f"the fake control plane does not serve {method} {path}"
         )
@@ -334,6 +412,10 @@ class FakeControlPlane:
             )
         self.heartbeats.append(envelope)
         self.heartbeat_runner_ids.append(runner_id)
+        self.slots.extend(
+            {"runner_id": str(runner_id), **slot.model_dump(mode="json")} for slot in envelope.slots
+        )
+        self.usage.extend(record.model_dump(mode="json") for record in envelope.usage)
         runner.tokens += 1
         ack = HeartbeatAck(
             runner_id=runner_id,
@@ -345,6 +427,7 @@ class FakeControlPlane:
             accepts_new_directives=True,
             # Every Usage Record committed, so the Runner's outbox drops exactly these.
             usage_accepted=[f"{u.directive_id}:{u.sequence}" for u in envelope.usage],
+            sealed_credentials=self._sealed_credentials(runner_id),
         )
         return _Answer(200, ack.model_dump(mode="json"))
 
@@ -404,6 +487,61 @@ class FakeControlPlane:
             },
         )
 
+    def _sealed_credentials(self, runner_id: UUID) -> list[SealedCredential]:
+        bootstrap = self.bootstraps[self.runner_ids.index(runner_id)]
+        key = bootstrap.recipient_key
+        sealed = []
+        for slot, value in sorted(self._delivered.items()):
+            if (key.key_id, slot) not in self._sealed:
+                self._sealed[(key.key_id, slot)] = seal(
+                    public_key=key.public_key,
+                    binding=delivery_binding(
+                        contract_id=self.contract_id, slot=slot, recipient_key_id=key.key_id
+                    ),
+                    plaintext=value,
+                )
+            sealed.append(
+                SealedCredential(
+                    contract_id=self.contract_id,
+                    slot=slot,
+                    recipient_key_id=key.key_id,
+                    version=1,
+                    ciphertext=self._sealed[(key.key_id, slot)],
+                )
+            )
+        return sealed
+
+    def _runtime_context(self, work_record_id: str) -> dict[str, Any]:
+        context = WorkerRuntimeContext(
+            work_record_id=work_record_id,
+            contract_id=str(self.contract_id),
+            agent_id=str(self.agent_id),
+            profile_slug="learner",
+            cli_kind=self.cli_kind,
+            repo="conformance/repo",
+            base_branch="main",
+            task_queue="",
+            worker_secret_refs=[],
+            product_verifier_command_source=ProductVerifierCommandSource(
+                source="runtime-profile", available=True, metadata={"command": "true"}
+            ),
+        )
+        return context.model_dump(mode="json")
+
+    def _provider(self, method: str, path: str, headers: dict[str, str]) -> _Answer:
+        with self._lock:
+            self.provider_calls.append(ProviderCall(path, headers.get("authorization", "")))
+        if method == "GET" and path == f"{PROVIDER_PREFIX}/models":
+            return _Answer(200, {"object": "list", "data": [{"id": "gpt-5", "object": "model"}]})
+        if method == "POST" and path == f"{PROVIDER_PREFIX}/responses":
+            return _Answer(200, stream=_responses_stream())
+        return _Answer(404, {"detail": f"the fake provider does not serve {method} {path}"})
+
+    def _directive_bearer(self, headers: dict[str, str]) -> None:
+        scheme, _, token = headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer" or token not in self._minted:
+            raise _RefusedError(401, "directive_token_invalid", "no Directive token minted here")
+
     def _signed(
         self, method: str, target: str, headers: dict[str, str], body: bytes
     ) -> tuple[UUID, _Registered]:
@@ -443,3 +581,36 @@ def _parse[Model: BaseModel](model: type[Model], body: bytes) -> Model:
         return model.model_validate_json(body)
     except ValidationError as error:
         raise _RefusedError(422, "request_invalid", str(error)) from None
+
+
+def _responses_stream() -> bytes:
+    """The smallest Responses stream Codex finishes a turn on."""
+
+    events: list[dict[str, Any]] = [
+        {"type": "response.created", "response": {"id": "resp_fake"}},
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "id": "msg_fake",
+                "content": [{"type": "output_text", "text": "No lessons."}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_fake",
+                "usage": {
+                    "input_tokens": 42,
+                    "input_tokens_details": None,
+                    "output_tokens": 7,
+                    "output_tokens_details": None,
+                    "total_tokens": 49,
+                },
+            },
+        },
+    ]
+    return b"".join(
+        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode() for event in events
+    )

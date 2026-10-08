@@ -28,7 +28,7 @@ from agentic_runner.attempts import AttemptRecords, PriorAttemptAliveError, proc
 from agentic_runner.workers._runtime_support import SubprocessResult, run_subprocess_exec
 from agentic_runner.workers.agent_runtime import (
     AgentRuntime,
-    AuthModel,
+    AuthMode,
     DirectiveRequest,
     DirectiveResult,
 )
@@ -55,7 +55,8 @@ class _RecordingClient:
 class _Runtime:
     """Stands in for a harness that may or may not still hold the session."""
 
-    auth_model = AuthModel.API_KEY
+    auth_modes = frozenset({AuthMode.API_KEY})
+    host_api_key = False
 
     def __init__(self, *, holds: set[str]) -> None:
         self.holds = holds
@@ -68,7 +69,8 @@ class _Runtime:
 
 
 class _NonResumableRuntime:
-    auth_model = AuthModel.API_KEY
+    auth_modes = frozenset({AuthMode.API_KEY})
+    host_api_key = False
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         raise AssertionError("not run here")
@@ -351,7 +353,7 @@ def _request(tmp_path: Path, **fields: Any) -> DirectiveRequest:
         prompt="Apply the fix",
         base_branch="main",
         work_branch="wr/a",
-        **fields,
+        **({"auth_mode": AuthMode.SUBSCRIPTION} | fields),
     )
 
 

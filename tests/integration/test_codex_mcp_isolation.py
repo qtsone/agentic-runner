@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic_runner.workers.agent_runtime import DirectiveRequest
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
@@ -94,6 +94,9 @@ async def _run_directive(
             work_branch="agent/work",
             mcp_servers=mcp_servers,
             extra_env=(("HTTPS_PROXY", _UNREACHABLE_PROXY), ("HTTP_PROXY", _UNREACHABLE_PROXY)),
+            # A Codex api_key Directive with no proxy endpoint is refused before spawn (LA-04);
+            # this test is about MCP isolation, so it runs the mode that reaches the child.
+            auth_mode=AuthMode.SUBSCRIPTION,
         )
     )
     assert "thread.started" in result.stdout, result.stderr or result.error
