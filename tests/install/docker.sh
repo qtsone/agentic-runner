@@ -5,7 +5,8 @@
 # 1. The doc's `docker run` without the five capabilities refuses to start, naming
 #    CAP_SETUID, and registers nothing.
 # 2. The doc's `docker run` registers a contract_uid Runner that heartbeats.
-# 3. examples/compose.yaml does the same, and `docker compose stop` drains to exit 0.
+# 3. examples/compose.yaml does the same, `docker compose stop` drains to exit 0, and a
+#    Contract's harness root on the volume outlives the container (local-agents 05).
 # 4. examples/compose.isolation-none.yaml registers an isolation: none Runner as uid 65532
 #    with no capabilities.
 #
@@ -104,6 +105,13 @@ python3 "${repo}/tests/install/await_runner.py" "${stats}" --isolation contract_
 "${compose[@]}" stop --timeout 60
 exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$("${compose[@]}" ps -aq runner)")"
 [ "${exit_code}" = 0 ] || { echo "expected the drain to exit 0, got ${exit_code}"; exit 1; }
+# Local-agents 05: a console sign-in lives in the Contract's harness root under the
+# workspace root, on the named volume, so a new container on the volume still has it.
+harness=/var/lib/agentic-os/workspaces/11111111-2222-4333-8444-555555555555/harness/claude_code
+"${compose[@]}" run --rm --no-deps --entrypoint sh runner -c \
+  "mkdir -p ${harness} && echo kept >${harness}/oauth-token"
+kept="$("${compose[@]}" run --rm --no-deps --entrypoint cat runner "${harness}/oauth-token")"
+[ "${kept}" = kept ] || { echo "the harness root did not survive a new container"; exit 1; }
 "${compose[@]}" down -v
 
 echo "== examples/compose.isolation-none.yaml: none, uid 65532, no capabilities"
