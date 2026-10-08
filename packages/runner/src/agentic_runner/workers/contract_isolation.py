@@ -34,9 +34,11 @@ from typing import Any, Final
 from uuid import UUID
 
 from agentic_runner.integrations.git.workspace import contract_workspace_path
+from agentic_runner.private_state import ensure_private_dir, private_read, private_write
 
 __all__ = [
     "NO_CONTRACT",
+    "UID_MAP_FILENAME",
     "ContractIsolation",
     "ContractIsolationError",
     "ContractResidue",
@@ -62,7 +64,7 @@ _GIT_DIR: Final[str] = ".git"
 # `.agentic-os-git-home`), so it only ever relaxes a check for the Contract's own uid.
 _CONTRACT_GITCONFIG: Final[str] = ".gitconfig"
 _CONTRACT_GITCONFIG_BODY: Final[str] = "[safe]\n\tdirectory = *\n"
-_UID_MAP_FILE: Final[str] = "contract-uids.json"
+UID_MAP_FILENAME: Final[str] = "contract-uids.json"
 _UID_LOCK_FILE: Final[str] = "contract-uids.lock"
 # Path segments are platform ids (map ticket 07), i.e. UUIDs — plus the sentinel above.
 _PATH_SEGMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -472,29 +474,28 @@ class ContractIsolation:
         Contracts the same uid — and one uid is the whole isolation boundary.
         """
 
-        self._state_dir.mkdir(parents=True, exist_ok=True)
-        with (self._state_dir / _UID_LOCK_FILE).open("w") as handle:
+        ensure_private_dir(self._state_dir)
+        descriptor = os.open(
+            self._state_dir / _UID_LOCK_FILE, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "w") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             yield
 
     def _uid_map_path(self) -> Path:
-        return self._state_dir / _UID_MAP_FILE
+        return self._state_dir / UID_MAP_FILENAME
 
     def _read_uid_map(self) -> dict[str, int]:
         path = self._uid_map_path()
-        if not path.is_file():
+        raw = private_read(path)
+        if raw is None:
             return {}
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(raw)
         if not isinstance(loaded, dict):
             raise ContractIsolationError(f"contract uid map at {path} is not an object")
         return {str(key): int(value) for key, value in loaded.items()}
 
     def _write_uid_map(self, allocated: dict[str, int]) -> None:
-        self._state_dir.mkdir(parents=True, exist_ok=True)
-        path = self._uid_map_path()
         # Atomic: a crash mid-write must not leave a half-parsed map that would hand a
         # second Contract a uid another Contract's files are already owned by.
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(allocated, sort_keys=True))
-        temporary.chmod(0o600)
-        temporary.replace(path)
+        private_write(self._uid_map_path(), json.dumps(allocated, sort_keys=True).encode("utf-8"))

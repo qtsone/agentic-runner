@@ -59,12 +59,19 @@ from agentic_runner.heartbeat_link import WAKE_DIVERGENCE, HeartbeatLink
 from agentic_runner.hooks import AttemptFacts, HookName, HookRunner
 from agentic_runner.integrations.git.workspace import LocalGitWorkspace
 from agentic_runner.integrations.github.gh_client import GitHubAppClient
-from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.lifecycle import LIFECYCLE_FILENAME, LifecycleOutbox
 from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOutbox
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
+from agentic_runner.private_state import (
+    UnsafeStateError,
+    ensure_private_dir,
+    private_write,
+    require_private_files,
+)
 from agentic_runner.registration import (
     RUNNER_REVOKED_REASON,
+    STATE_FILENAME,
     RunnerRegistrationClient,
     RunnerRegistrationError,
     RunnerState,
@@ -74,14 +81,18 @@ from agentic_runner.registration import (
     require_isolation_supported,
     save_state,
 )
-from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialStream
+from agentic_runner.sealed_box import (
+    RECIPIENT_KEY_FILENAME,
+    RecipientKeyStore,
+    SealedCredentialStream,
+)
 from agentic_runner.tiny_http import HttpRequest, read_request, write_json
 from agentic_runner.triage_activities import RunnerTriageActivities
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
-from agentic_runner.workers.contract_isolation import ContractIsolation
+from agentic_runner.workers.contract_isolation import UID_MAP_FILENAME, ContractIsolation
 from agentic_runner.workers.fastapi_client import DirectiveTokenSource, RunnerFastApiClient
 from agentic_runner.workers.settings import WorkerSettings, get_worker_settings
 from agentic_runner_contracts import __version__ as contracts_version
@@ -169,6 +180,15 @@ _SHUTDOWN_HEADROOM_SECONDS = 60
 # process touches on every acknowledged heartbeat, whose mtime is the heartbeat age.
 PIDFILE_NAME = "runner.pid"
 HEARTBEAT_STAMP_NAME = "last-heartbeat"
+# Every top-level state file the Runner reads back. A workstation's state directory also
+# holds files the Runner only writes or the OS service manager owns (`runner.log`), so the
+# start check names these rather than refusing whatever else sits beside them.
+_PRIVATE_STATE_FILES = (
+    STATE_FILENAME,
+    RECIPIENT_KEY_FILENAME,
+    LIFECYCLE_FILENAME,
+    UID_MAP_FILENAME,
+)
 
 
 # ------------------------------------------------------------------ environment
@@ -615,7 +635,7 @@ class ControlPlaneStream:
         if self.lifecycle is not None:
             self.lifecycle.acknowledge(lifecycle)
         if self.heartbeat_stamp is not None:
-            self.heartbeat_stamp.touch()
+            self.heartbeat_stamp.touch(mode=0o600)
         self.proxy.outbox.acknowledge(ack.usage_accepted)
         for refused in self.sealed.apply(ack.sealed_credentials):
             _logger.warning(
@@ -745,7 +765,11 @@ async def run(
     try:
         require_isolation_supported(mode, can_separate_uids=can)
         control_plane = _require_env(CONTROL_PLANE_ENV)
-    except RunnerRegistrationError as error:
+        ensure_private_dir(config.state_dir)
+        # Some of these are first read only after registration (the lifecycle outbox, the
+        # uid map); one left 0644 by an earlier release must refuse here, not crash later.
+        require_private_files(config.state_dir, _PRIVATE_STATE_FILES)
+    except (RunnerRegistrationError, UnsafeStateError) as error:
         print(f"refusing to start ({error.reason}): {error}", flush=True)
         return 1
     # The control plane the activities call back is the one this process registered
@@ -801,13 +825,16 @@ async def _serve(
     except RunnerRegistrationError as error:
         print(f"registration refused ({error.reason}): {error}", flush=True)
         return 1
+    except UnsafeStateError as error:
+        print(f"refusing to start ({error.reason}): {error}", flush=True)
+        return 1
     print(outcome, flush=True)
     interval = (
         heartbeat_interval if heartbeat_interval is not None else state.heartbeat_interval_seconds
     )
     # `status` reads these two (issue 47); the process is the only writer of either.
     pidfile = state_dir / PIDFILE_NAME
-    pidfile.write_text(str(os.getpid()), encoding="utf-8")
+    private_write(pidfile, str(os.getpid()).encode("utf-8"))
     lifecycle = LifecycleOutbox(state_dir)
     lifecycle.add(LifecycleKind.START, datetime.now(UTC))
     try:

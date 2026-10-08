@@ -32,6 +32,7 @@ from uuid import UUID, uuid4
 
 from temporalio.client import Client
 
+from agentic_runner.private_state import private_write
 from agentic_runner_contracts.channel_messages import (
     PENDING_MESSAGES_SIGNAL,
     MessageEnvelope,
@@ -134,9 +135,11 @@ class MessageStore:
         )
         path = self._path(contract_id, work_record_id)
         _ensure_dir(path.parent)
-        with path.open("a", encoding="utf-8") as handle:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, _FILE_MODE
+        )
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
             handle.write(envelope.model_dump_json() + "\n")
-        path.chmod(_FILE_MODE)
         return envelope
 
     def read(
@@ -187,9 +190,7 @@ class MessageStore:
         cursors = self._cursors(contract_id, work_record_id)
         cursors[agent_id] = str(through.message_id)
         path = self._cursor_path(contract_id, work_record_id)
-        _ensure_dir(path.parent)
-        path.write_text(json.dumps(cursors), encoding="utf-8")
-        path.chmod(_FILE_MODE)
+        private_write(path, json.dumps(cursors).encode("utf-8"))
 
     def transcript(self, request: TranscriptRequest) -> TranscriptDelivery:
         """The pull-through's answer: every body, or the Contract state that seals them."""
@@ -222,8 +223,7 @@ class MessageStore:
         if not stores:
             return 0
         marker = contract_dir / SEALED_MARKER
-        marker.write_text(json.dumps({"contract_state": contract_state}), encoding="utf-8")
-        marker.chmod(_FILE_MODE)
+        private_write(marker, json.dumps({"contract_state": contract_state}).encode("utf-8"))
         return len(stores)
 
     def sealed_state(self, contract_id: str) -> str | None:

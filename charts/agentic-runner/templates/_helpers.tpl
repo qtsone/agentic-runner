@@ -68,6 +68,9 @@ runAsNonRoot: true
 runAsUser: 65532
 runAsGroup: 65532
 fsGroup: 65532
+# Once, on the empty volume: the default re-applies g+rw to every file on every mount,
+# and the Runner refuses an identity file a group can read.
+fsGroupChangePolicy: OnRootMismatch
 seccompProfile:
   type: RuntimeDefault
 {{- end }}

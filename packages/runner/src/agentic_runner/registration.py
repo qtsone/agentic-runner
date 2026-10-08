@@ -33,6 +33,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel, ConfigDict
 
 from agentic_runner import __version__ as runner_version
+from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.channel_messages import TRANSCRIPT_DELIVERIES_PATH, TranscriptDelivery
 from agentic_runner_contracts.runner_registration import (
@@ -212,19 +213,12 @@ def _version(value: str) -> tuple[int, ...]:
 def load_state(state_dir: Path) -> RunnerState | None:
     """The persisted identity, or ``None`` on a first boot."""
 
-    path = state_dir / STATE_FILENAME
-    if not path.exists():
-        return None
-    return RunnerState.model_validate_json(path.read_text(encoding="utf-8"))
+    raw = private_read(state_dir / STATE_FILENAME)
+    return None if raw is None else RunnerState.model_validate_json(raw)
 
 
 def save_state(state_dir: Path, state: RunnerState) -> None:
-    state_dir.mkdir(parents=True, exist_ok=True)
-    path = state_dir / STATE_FILENAME
-    path.write_text(state.model_dump_json(), encoding="utf-8")
-    # The private key is in this file; a shared PVC or a workstation home is not a place
-    # to leave it group-readable.
-    path.chmod(0o600)
+    private_write(state_dir / STATE_FILENAME, state.model_dump_json().encode("utf-8"))
 
 
 class RunnerRegistrationClient:

@@ -19,7 +19,6 @@ operator's act, through ``agentic-runner credential set``.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +27,7 @@ from pathlib import Path
 from typing import Protocol
 
 from agentic_runner.credentials import DirectoryCredentialStore
+from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts.runner_registration import StoreKind
 
 __all__ = [
@@ -66,16 +66,12 @@ class FileCredentialStore(DirectoryCredentialStore):
         super().__init__(root)
         self.root = root
 
+    def get(self, reference: str) -> str | None:
+        raw = private_read(self.root / _single_segment(reference))
+        return None if raw is None else raw.decode("utf-8").strip()
+
     def put(self, reference: str, value: str) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.root.chmod(0o700)
-        path = self.root / _single_segment(reference)
-        # Created 0600 rather than chmod-ed after: there is no instant at which the value
-        # sits in a file another uid can open.
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(value)
-        path.chmod(0o600)
+        private_write(self.root / _single_segment(reference), value.encode("utf-8"))
 
 
 class KeychainStore:

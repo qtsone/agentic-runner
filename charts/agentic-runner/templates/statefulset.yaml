@@ -61,8 +61,7 @@ spec:
             {{- include "agentic-runner.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
             - name: state
-              mountPath: /var/lib/agentic-os/state
-              subPath: state
+              mountPath: /var/lib/agentic-os
             - name: kube-api
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
@@ -168,17 +167,20 @@ spec:
               mountPath: /tmp
             - name: sockets
               mountPath: /run/agentic-runner
+            # The volume root, not a `state` subPath: kubelet would create that directory as
+            # root with the volume's mode, and the Runner refuses a state directory that is
+            # not its own and 0700. It creates `state` itself, holding the identity, the
+            # Recipient Key and the Contract->uid map, never readable by a Contract uid
+            # (ADR-0015 §1). An existing release's `state` is the same directory.
+            - name: state
+              mountPath: /var/lib/agentic-os
+            # Kept so kubelet creates both directories, as it always has.
             - name: state
               mountPath: /var/lib/agentic-os/workspaces
               subPath: workspaces
             - name: state
               mountPath: /var/lib/agentic-os/codex
               subPath: codex
-            # The Runner's own state, never readable by a Contract uid: the identity, the
-            # Recipient Key and the Contract->uid map live here (ADR-0015 §1).
-            - name: state
-              mountPath: /var/lib/agentic-os/state
-              subPath: state
             {{- if .Values.hooks }}
             - name: hooks
               mountPath: /etc/agentic-runner/hooks

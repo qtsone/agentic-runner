@@ -154,6 +154,26 @@ def test_isolation_none_runs_unprivileged_with_no_capabilities() -> None:
     assert _env(container)["AGENTIC_RUNNER_ISOLATION"] == "none"
 
 
+@pytest.mark.parametrize("isolation", ["contract_uid", "none"])
+def test_the_runner_creates_its_own_state_directory(isolation: str) -> None:
+    """Runner-repo 08: a kubelet-made `state` subPath is root's, with the volume's mode,
+    and the Runner refuses it; mounting the volume root lets the Runner make it 0700."""
+
+    spec = _runner(_render("--set", f"isolation={isolation}"))["spec"]["template"]["spec"]
+    for container in [*spec["initContainers"], *spec["containers"]]:
+        [root] = [
+            mount
+            for mount in container["volumeMounts"]
+            if mount["mountPath"] == "/var/lib/agentic-os"
+        ]
+        assert root["name"] == "state"
+        assert "subPath" not in root
+        assert _env(container)["AGENTIC_RUNNER_STATE_DIR"] == "/var/lib/agentic-os/state"
+    # fsGroup's default walk would add g+rw to the identity file on every mount.
+    if "fsGroup" in spec["securityContext"]:
+        assert spec["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
+
+
 def test_an_unknown_isolation_mode_and_a_missing_token_are_refused() -> None:
     with pytest.raises(subprocess.CalledProcessError) as refused:
         _render("--set", "isolation=auto")

@@ -99,6 +99,7 @@ Runners page within one heartbeat (30 seconds).
 | Symptom | Cause |
 | --- | --- |
 | NotReady, `refusing to start (isolation_unavailable)` | The namespace cannot grant `CAP_SETUID`. Set `isolation: none`. |
+| NotReady, `refusing to start (unsafe_state_dir)` | The state directory or a file in it is a symlink, belongs to another uid, or is open to group or others. A volume made by an earlier release holds a `state` directory kubelet created with the volume's mode: `chown` it to the Runner's uid, `chmod 700` it and `chmod 600` its files. |
 | NotReady, `registration refused (…)` | The Agent Token is revoked or expired, the Account is on hold, or the Organisation has reached its Runner limit. |
 | `heartbeat failed before start` | The control plane URL is wrong or unreachable. The Runner retries every 30 seconds. |
 | Ready, but no Directives arrive | The tags do not match the Product's selector, or an `isolation: none` Runner already holds another Contract's work. |
