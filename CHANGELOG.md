@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.2](https://github.com/qtsone/agentic-runner/compare/v3.4.1...v3.4.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **runner:** spawn without RLIMIT_NPROC where no Contract uid holds it (QTS-1321) ([#35](https://github.com/qtsone/agentic-runner/issues/35)) ([eaedae8](https://github.com/qtsone/agentic-runner/commit/eaedae8d1424de192e581d1a3bdf9ad4a2888383))
+
 ## [3.4.1](https://github.com/qtsone/agentic-runner/compare/v3.4.0...v3.4.1) (2026-10-08)
 
 

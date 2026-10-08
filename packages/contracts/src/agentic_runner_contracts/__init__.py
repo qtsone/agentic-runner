@@ -32,6 +32,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Additive; an older payload parses with no Skills. But the context forbids extra keys,
 # so a Runner one minor behind refuses a context that carries `skills` -- the platform
 # must not send the field until its Runners are on 2.7.
-__version__ = "3.4.1"
+__version__ = "3.4.2"
 
 __all__ = ["__version__"]
