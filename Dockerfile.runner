@@ -71,10 +71,11 @@ RUN uv venv /opt/agentic-runner \
     && rm -rf /build
 
 # The uid an `isolation: none` deployment runs as (ADR-0015 §5). `contract_uid` runs as
-# root with five capabilities and needs no user of its own (17 A1).
+# root with five capabilities and needs no user of its own (17 A1). No `state` directory:
+# the Runner creates it 0700 as whichever uid it runs as, and refuses one another uid owns.
 RUN groupadd --system --gid 65532 runner \
     && useradd --system --uid 65532 --gid runner --home-dir /var/lib/agentic-os runner \
-    && mkdir -p /var/lib/agentic-os/workspaces /var/lib/agentic-os/state \
+    && mkdir -p /var/lib/agentic-os/workspaces \
         /run/agentic-runner /etc/agentic-runner/hooks /etc/agentic-runner/credentials \
     && chown -R runner:runner /var/lib/agentic-os /run/agentic-runner
 
