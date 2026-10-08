@@ -1,0 +1,301 @@
+# One release, every artifact: both packages to PyPI, the image, the chart, and the digests on
+# the GitHub Release. The file name is part of both PyPI trusted publishers (workflow
+# `publish-pypi.yml`, environments `pypi` and `pypi-contracts`); renaming it breaks the publish.
+#
+# A `v*` tag publishes. `workflow_dispatch`, and a pull request that edits this file, run the
+# same builds and checks and publish nothing.
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [.github/workflows/publish-pypi.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/qtsone/agentic-runner
+  CHART_REGISTRY: oci://ghcr.io/qtsone/charts
+  PUBLISH: ${{ github.event_name == 'push' }}
+
+jobs:
+  build:
+    name: Build and check the distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+
+      # semantic-release writes one version into all four fields (scripts/set-version.py); a
+      # tag that disagrees with any of them would publish metadata that lies about the tag.
+      - name: Read the release version
+        id: version
+        run: |
+          set -euo pipefail
+          versions="$(
+            grep -h '^__version__' packages/runner/src/agentic_runner/__init__.py \
+              packages/contracts/src/agentic_runner_contracts/__init__.py | cut -d'"' -f2
+            grep -E '^(version|appVersion):' charts/agentic-runner/Chart.yaml \
+              | awk '{print $2}' | tr -d '"'
+          )"
+          version="$(head -n1 <<< "$versions")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "$PUBLISH" = true ]; then
+            if [ "$(sort -u <<< "$versions")" != "$version" ] \
+              || [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match the versions: ${versions//$'\n'/ }"
+              exit 1
+            fi
+          fi
+
+      - name: Build
+        run: |
+          uv build --package agentic-runner-contracts --out-dir dist/contracts
+          uv build --package agentic-runner --out-dir dist/runner
+
+      - name: twine check
+        run: uvx twine check --strict dist/*/*
+
+      # The wheels alone, from a clean venv, against PyPI for third-party dependencies: what a
+      # workstation install gets, with no workspace source in reach.
+      - name: Install both wheels into a clean venv
+        run: |
+          uv venv "$RUNNER_TEMP/venv"
+          uv pip install --python "$RUNNER_TEMP/venv" --no-sources dist/contracts/*.whl dist/runner/*.whl
+          "$RUNNER_TEMP/venv/bin/agentic-runner" --version
+
+      - name: Upload the contracts distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-contracts
+          path: dist/contracts/
+          if-no-files-found: error
+
+      - name: Upload the runner distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-runner
+          path: dist/runner/
+          if-no-files-found: error
+
+  publish-contracts:
+    name: Publish agentic-runner-contracts to PyPI
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-contracts
+      url: https://pypi.org/p/agentic-runner-contracts
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-contracts
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  # After the contracts: the runner requires them, so the reverse order would briefly publish
+  # a runner that cannot be installed.
+  publish-runner:
+    name: Publish agentic-runner to PyPI
+    if: github.event_name == 'push'
+    needs: publish-contracts
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/agentic-runner
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-runner
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  image:
+    name: Runner image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The contracts tag is what the control plane's floor check names (issue 41); with one
+      # version for both packages it equals the runner tag, and stays for those who pin it.
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.runner
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUBLISH == 'true' }}
+          sbom: true
+          provenance: mode=max
+          build-args: |
+            RUNNER_VERSION=${{ env.VERSION }}
+            CONTRACTS_VERSION=${{ env.VERSION }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:contracts-${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        if: env.PUBLISH == 'true'
+
+      - name: Sign the image
+        if: env.PUBLISH == 'true'
+        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
+
+      - name: Attest build provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  chart:
+    name: Chart
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v5
+
+      - name: helm package
+        run: helm package charts/agentic-runner --destination dist/
+
+      # Both logins: helm keeps its own credential store, and cosign and the attestation push
+      # read Docker's.
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: helm push
+        id: push
+        if: env.PUBLISH == 'true'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          helm registry login ghcr.io --username "$GHCR_USER" --password-stdin <<< "$GHCR_TOKEN"
+          helm push "dist/agentic-runner-${VERSION}.tgz" "$CHART_REGISTRY" 2>&1 | tee push.log
+          digest="$(grep -oE 'sha256:[0-9a-f]{64}' push.log | head -n1)"
+          [ -n "$digest" ] || { echo "::error::helm push printed no digest"; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        if: env.PUBLISH == 'true'
+
+      - name: Sign the chart
+        if: env.PUBLISH == 'true'
+        run: cosign sign --yes "ghcr.io/qtsone/charts/agentic-runner@${{ steps.push.outputs.digest }}"
+
+      - name: Attest build provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/qtsone/charts/agentic-runner
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # semantic-release created the Release with the changelog when it pushed the tag; this
+  # appends what an installer checks against.
+  release-notes:
+    name: Digests on the GitHub Release
+    if: github.event_name == 'push'
+    needs: [build, publish-runner, image, chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Append the floor and the digests
+        run: |
+          set -euo pipefail
+          {
+            gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq .body
+            echo
+            echo "## Artifacts"
+            echo
+            echo "Contracts version (the compatibility floor): **${VERSION}**"
+            echo
+            echo "| Artifact | Digest |"
+            echo "|---|---|"
+            echo "| \`${IMAGE}:${VERSION}\` | \`${{ needs.image.outputs.digest }}\` |"
+            echo "| \`${CHART_REGISTRY}/agentic-runner:${VERSION}\` | \`${{ needs.chart.outputs.digest }}\` |"
+            (cd dist && sha256sum -- *) | while read -r sum file; do
+              echo "| \`${file}\` (PyPI) | \`sha256:${sum}\` |"
+            done
+          } > notes.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
