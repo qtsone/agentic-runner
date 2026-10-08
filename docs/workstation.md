@@ -14,8 +14,10 @@ macOS (`tests/install/workstation.sh`).
 2. **An Agent Token.** Your Organisation's Admin mints it on the Organisation Console's
    **Runners** page, labelled after you (`alice-laptop`), and sends it to you over a
    channel you both trust, such as a password manager share. It is shown once.
-3. **The control plane URL and the Temporal address**, `https://api.agentic.<zone>` and
-   `temporal-grpc.<zone>:443`, from the same page.
+3. **The install command.** The same page shows it for your Organisation, with the
+   control plane URL and the Temporal address filled in. Copy both values from there: they
+   are set independently and need not share a domain, so neither can be guessed from the
+   other.
 
 ## Install
 
@@ -29,8 +31,8 @@ lowercase letters, digits and `-`.
 
 ```sh
 agentic-runner install acme \
-  --control-plane https://api.agentic.<zone> \
-  --temporal-address temporal-grpc.<zone>:443
+  --control-plane <control-plane URL from the Runners page> \
+  --temporal-address <Temporal address from the Runners page>
 # Agent Token (issued to you by the Organisation's Admin): ********
 ```
 
