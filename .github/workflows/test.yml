@@ -165,10 +165,71 @@ jobs:
           kubectl -n runner-test logs statefulset/rel-agentic-runner --all-containers --prefix || true
           kubectl -n runner-test logs deployment/fake-control-plane || true
 
+  # docs/docker.md: the doc's `docker run` refused without the five capabilities, then
+  # registering and heartbeating with them; examples/compose.yaml likewise, draining to exit
+  # 0 on stop; and the isolation: none override running unprivileged.
+  docker:
+    name: Docker run and Compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build the Runner image
+        run: docker build -f Dockerfile.runner -t "$RUNNER_IMAGE" .
+
+      - name: Run the Docker guide
+        run: tests/install/docker.sh "$RUNNER_IMAGE"
+
+  # docs/workstation.md: `uv tool install` from the built wheels, `agentic-runner install`,
+  # and the Runner registering and heartbeating -- as a plain process on Linux, where a CI
+  # host has no user systemd instance, and as the launchd LaunchAgent on macOS.
+  workstation:
+    name: Workstation (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            mode: process
+            temporal: linux_amd64
+          - name: macOS launchd
+            os: macos-latest
+            mode: launchd
+            temporal: darwin_arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the Temporal CLI
+        env:
+          TEMPORAL_CLI_VERSION: 1.9.1
+        run: |
+          curl -fsSL "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_${{ matrix.temporal }}.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" temporal
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Build the wheels
+        run: |
+          uv build --package agentic-runner-contracts --out-dir dist
+          uv build --package agentic-runner --out-dir dist
+
+      - name: Run the workstation guide
+        run: tests/install/workstation.sh dist ${{ matrix.mode }}
+
   summary:
     name: Summary
     runs-on: ubuntu-latest
-    needs: [tests, quality, contract-uid-isolation, image, chart]
+    needs: [tests, quality, contract-uid-isolation, image, chart, docker, workstation]
     if: always()
     steps:
       - name: Report results
@@ -183,9 +244,13 @@ jobs:
             echo "| Contract uid isolation | ${{ needs.contract-uid-isolation.result }} |"
             echo "| Runner image | ${{ needs.image.result }} |"
             echo "| Helm chart on kind | ${{ needs.chart.result }} |"
+            echo "| Docker run and Compose | ${{ needs.docker.result }} |"
+            echo "| Workstation | ${{ needs.workstation.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
           [ "${{ needs.tests.result }}" = success ] \
             && [ "${{ needs.quality.result }}" = success ] \
             && [ "${{ needs.contract-uid-isolation.result }}" = success ] \
             && [ "${{ needs.image.result }}" = success ] \
-            && [ "${{ needs.chart.result }}" = success ]
+            && [ "${{ needs.chart.result }}" = success ] \
+            && [ "${{ needs.docker.result }}" = success ] \
+            && [ "${{ needs.workstation.result }}" = success ]
