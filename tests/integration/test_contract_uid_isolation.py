@@ -13,6 +13,7 @@ a root container and the skip becomes a failure there.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from agentic_runner.integrations.git.workspace import (
 )
 from agentic_runner.workers._runtime_support import run_subprocess_exec
 from agentic_runner.workers.contract_isolation import ContractIsolation
+from agentic_runner.workers.skills import SkillDeliveryError, remove_skills, write_skills
+from agentic_runner_contracts.runtime_context import SkillVersionSpec
 
 CONTRACT_A = "11111111-2222-4333-8444-555555555555"
 CONTRACT_B = "66666666-7777-4888-8999-aaaaaaaaaaaa"
@@ -284,3 +287,43 @@ async def test_a_directive_that_swaps_the_git_directory_stops_the_runners_next_g
     assert (workspace / ".git").stat().st_uid == sandbox.uid
     with pytest.raises(GitWorkspacePolicyError, match="tampered"):
         require_runner_owned_git_dir(workspace)
+
+
+@pytest.mark.asyncio
+async def test_skills_are_written_as_the_contracts_uid_and_never_through_its_symlink(
+    tmp_path: Path,
+) -> None:
+    """Console-v2 issue 28: the harness root is the Contract's, so it may hold a symlink."""
+
+    require_uid_separation()
+    isolation = ContractIsolation(
+        workspace_root=tmp_path / "workspaces",
+        state_dir=tmp_path / "state",
+        uid_min=60_030,
+        uid_max=60_039,
+        max_processes=512,
+        memory_limit_bytes=4 * 1024**3,
+    )
+    _make_traversable(tmp_path)
+    sandbox = isolation.sandbox(CONTRACT_A, runtime_kind="codex_cli")
+    body = "Read the diff first.\n"
+    skill = SkillVersionSpec(
+        slug="review", version=1, sha256=hashlib.sha256(body.encode()).hexdigest(), body=body
+    )
+    skills_dir = sandbox.harness_config_dir / "skills"
+
+    await write_skills(sandbox.harness_config_dir, [skill], uid=sandbox.uid)
+    written = skills_dir / "review" / "SKILL.md"
+    assert written.stat().st_uid == sandbox.uid
+    assert written.read_text() == body
+    await remove_skills(sandbox.harness_config_dir, [skill], uid=sandbox.uid)
+    assert not written.parent.exists()
+
+    runner_only = tmp_path / "runner-only"
+    runner_only.mkdir()
+    runner_only.chmod(0o755)
+    skills_dir.rmdir()
+    skills_dir.symlink_to(runner_only)
+    with pytest.raises(SkillDeliveryError):
+        await write_skills(sandbox.harness_config_dir, [skill], uid=sandbox.uid)
+    assert list(runner_only.iterdir()) == []

@@ -19,8 +19,19 @@ dependencies = [
   "temporalio>=1.10,<2.0",
 ]
 
+[project.optional-dependencies]
+# The conformance kit (`agentic_runner.testing`, docs/conformance.md): the fake control
+# plane needs nothing beyond the dependencies above; the scenario suite needs these.
+testing = [
+  "pytest>=8.0,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+]
+
 [project.scripts]
 agentic-runner = "agentic_runner.cli:main"
+
+[project.entry-points.pytest11]
+agentic_runner = "agentic_runner.testing.plugin"
 
 [build-system]
 requires = ["hatchling>=1.27,<2.0"]

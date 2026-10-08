@@ -38,6 +38,7 @@ from uuid import UUID
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from agentic_runner.attempts import AttemptRecords, PriorAttemptAliveError, fence_work_record
 from agentic_runner.callback import (
     CALLBACK_TOKEN_ENV,
     AnnotateRequest,
@@ -128,6 +129,14 @@ from agentic_runner.workers.fastapi_client import (
 )
 from agentic_runner.workers.harness_usage import extract_claude_result, extract_codex_turn_usage
 from agentic_runner.workers.mcp_config import McpServerEntry
+from agentic_runner.workers.skills import (
+    SkillDelivery,
+    delivery_for,
+    first_digest_mismatch,
+    remove_skills,
+    skills_preamble,
+    write_skills,
+)
 from agentic_runner_contracts.activity_io import (
     LEARNER_CHILDREN_BUDGET_BYTES,
     LEARNING_FAILED,
@@ -237,6 +246,7 @@ from agentic_runner_contracts.routing import (
 from agentic_runner_contracts.runtime_context import (
     EGRESS_ALLOW_LIST_KEY,
     McpServerSpec,
+    SkillVersionSpec,
     WorkerRuntimeContext,
     WorkerRuntimeContextResolver,
     work_branch_name,
@@ -490,6 +500,8 @@ class _RuntimeContextState:
     experience: str = ""
     experience_lesson_ids: tuple[str, ...] = ()
     experience_truncated: bool = False
+    # Console-v2 issue 28: the Skill versions attached to the Agent.
+    skills: tuple[SkillVersionSpec, ...] = ()
     workspace_path: Path | None = None
     branch_head_sha: str | None = None
     # The Autonomy Policy's tier source (PRD issue 14) -- see WorkerRuntimeContext for
@@ -532,6 +544,9 @@ class _DirectiveAttempt:
     # PRD issue 58: what config assembly wrote for the CLI, and where it may reach.
     mcp_servers: tuple[McpServerEntry, ...] | None = None
     egress_allow_list: tuple[str, ...] = ()
+    # Console-v2 issue 28: the attached Skills, for a runtime with no skills directory to
+    # write them into. Prefixed to the Directive prompt; empty when there is none.
+    skills_preamble: str = ""
 
     async def run_environment_hook(self) -> None:
         self.extra_env.update(await self.hooks.environment())
@@ -1321,8 +1336,10 @@ def wipe_contract_residue(
 
 # Where a Runner-side routing refusal lands in the trail (PRD issue 42, 17 A11).
 _ROUTING_EVIDENCE_SOURCE = "runner.routing"
+PRIOR_ATTEMPT_ALIVE_EVIDENCE_SOURCE = "runner.prior_attempt_alive"
 DIRECTIVE_TOKEN_EVIDENCE_SOURCE = "runner.directive_token"
 AGENT_RUNTIME_EVIDENCE_SOURCE = "runner.agent_runtime"
+SKILLS_EVIDENCE_SOURCE = "runner.skills"
 
 
 class _EvidenceWriter(Protocol):
@@ -1435,6 +1452,7 @@ class RunnerRalphActivities:
         mcp_spawner: Spawner | None = None,
         egress_resolver: Resolver | None = None,
         tool_server_health: ToolServerHealthLog | None = None,
+        attempt_records: AttemptRecords | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
         # Wall-clock source for per-Directive runtime, accrued against the Budget's
@@ -1494,6 +1512,9 @@ class RunnerRalphActivities:
         self._mcp_spawner = mcp_spawner
         self._egress_resolver = egress_resolver
         self._tool_server_health = tool_server_health
+        # The retry fence (runner-repo 05). None fences nothing: a process that never
+        # registered has no state directory to keep the records in.
+        self._attempt_records = attempt_records
 
     def activity_callables(self) -> list[Callable[..., Any]]:
         """Return decorated activity callables for Temporal worker registration."""
@@ -1561,6 +1582,37 @@ class RunnerRalphActivities:
             else "runner"
         )
 
+    @contextlib.asynccontextmanager
+    async def _fenced(self, work_record_id: str) -> AsyncIterator[None]:
+        """Refuse this attempt's spawns while an earlier attempt's group lives (RR-05).
+
+        The refusal is retryable on purpose: the earlier attempt either finishes or is
+        killed, and the next retry then finds the Workspace free.
+        """
+
+        if self._attempt_records is None:
+            yield
+            return
+        attempt = activity.info().attempt if activity.in_activity() else 1
+        try:
+            with fence_work_record(self._attempt_records, work_record_id, attempt=attempt):
+                yield
+        except PriorAttemptAliveError as refusal:
+            await _raise_recorded(
+                refusal,
+                self._fastapi_client,
+                work_record_id,
+                source=PRIOR_ATTEMPT_ALIVE_EVIDENCE_SOURCE,
+                actor=self._actor(),
+                payload={
+                    "event": "directive.prior_attempt_alive",
+                    "work_record_id": work_record_id,
+                    "attempt": attempt,
+                    "prior_attempt": refusal.prior.attempt,
+                    "prior_pgid": refusal.prior.pgid,
+                },
+            )
+
     @activity.defn(name="create_or_update_branch_pr")
     async def create_or_update_branch_pr(
         self,
@@ -1570,7 +1622,9 @@ class RunnerRalphActivities:
         await self._assert_routed(request)
         asked: list[QuestionAsked] = []
         try:
-            return _with_question(await self._run_branch_pr_directive(request, asked), asked)
+            async with self._fenced(request.work_record_id):
+                ran = await self._run_branch_pr_directive(request, asked)
+            return _with_question(ran, asked)
         except HookRefusedError:
             # A Runner Hook at or before `pre_runtime` exited non-zero, `pre_directive`
             # being the reject gate (PRD issue 45). Refusing the Directive is the point,
@@ -1754,7 +1808,8 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
-                    prompt=_directive_prompt(
+                    prompt=attempt.skills_preamble
+                    + _directive_prompt(
                         completion_criteria=runtime_state.completion_criteria,
                         pr_body=request.pr_body,
                         persona_preamble=_persona_prompt_preamble(
@@ -2219,6 +2274,7 @@ class RunnerRalphActivities:
                 work_record_id, source=source, payload=dict(payload)
             )
 
+        await self._refuse_skill_digest_mismatch(work_record_id, state)
         credentials = await self._resolve_credentials(work_record_id, state)
         if credentials is not None:
             # Names only, at the moment they resolved (22 A1's Evidence): a support read
@@ -2282,6 +2338,13 @@ class RunnerRalphActivities:
                 credentials=credentials,
                 env=callback_env,
             )
+            delivered_preamble = await self._deliver_skills(
+                stack,
+                work_record_id=work_record_id,
+                state=state,
+                sandbox=sandbox,
+                directive_number=directive_number,
+            )
             session = await stack.enter_async_context(
                 DirectiveHookSession(
                     hooks=self._hooks,
@@ -2303,7 +2366,84 @@ class RunnerRalphActivities:
                 credentials=credentials,
                 mcp_servers=mcp_servers,
                 egress_allow_list=egress_allow_list,
+                skills_preamble=delivered_preamble,
             )
+
+    async def _refuse_skill_digest_mismatch(
+        self, work_record_id: str, state: _RuntimeContextState
+    ) -> None:
+        """A Skill whose body is not the version that was published fails the Directive
+        non-retryably (console-v2 issue 28): a retry would fetch the same body, and
+        running on it would hand the Agent prompt material no person reviewed."""
+
+        mismatch = first_digest_mismatch(state.skills)
+        if mismatch is None:
+            return
+        await _raise_recorded(
+            ApplicationError(
+                f"Skill {mismatch.slug} version {mismatch.version} does not match its sha256",
+                non_retryable=True,
+            ),
+            self._fastapi_client,
+            work_record_id,
+            source=SKILLS_EVIDENCE_SOURCE,
+            actor=self._actor(),
+            payload={
+                "event": "skills.digest_mismatch",
+                "agent_id": state.agent_id,
+                "slug": mismatch.slug,
+                "version": mismatch.version,
+                "sha256": mismatch.sha256,
+            },
+        )
+
+    async def _deliver_skills(
+        self,
+        stack: contextlib.AsyncExitStack,
+        *,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        sandbox: DirectiveSandbox | None,
+        directive_number: int,
+    ) -> str:
+        """Put the attached Skills where this runtime reads them; return any preamble.
+
+        Written files are removed on the attempt's exit, success or failure. A Runner
+        with no Contract sandbox has no harness root it owns, so it falls back to the
+        preamble rather than writing into a shared ``CODEX_HOME``.
+        """
+
+        if not state.skills:
+            return ""
+        delivery = delivery_for(state.cli_kind)
+        if delivery is SkillDelivery.DIRECTORY and sandbox is None:
+            delivery = SkillDelivery.PROMPT_PREAMBLE
+        preamble = ""
+        if delivery is SkillDelivery.DIRECTORY:
+            assert sandbox is not None
+            # Registered before the write, so a write that fails half-way is cleaned too.
+            stack.push_async_callback(
+                remove_skills, sandbox.harness_config_dir, state.skills, uid=sandbox.uid
+            )
+            await write_skills(sandbox.harness_config_dir, state.skills, uid=sandbox.uid)
+        else:
+            preamble = skills_preamble(state.skills)
+        await self._fastapi_client.append_evidence(
+            work_record_id,
+            source=SKILLS_EVIDENCE_SOURCE,
+            payload={
+                "event": "skills.delivered",
+                "directive_number": directive_number,
+                "agent_id": state.agent_id,
+                "cli_kind": state.cli_kind,
+                "delivery": delivery.value,
+                "skills": [
+                    {"slug": skill.slug, "version": skill.version, "sha256": skill.sha256}
+                    for skill in state.skills
+                ],
+            },
+        )
+        return preamble
 
     async def _plan_mcp(
         self,
@@ -2956,6 +3096,7 @@ class RunnerRalphActivities:
             experience=runtime_context.experience,
             experience_lesson_ids=tuple(runtime_context.experience_lesson_ids),
             experience_truncated=runtime_context.experience_truncated,
+            skills=tuple(runtime_context.skills),
             workspace_path=resolved_workspace,
             branch_head_sha=branch_head_sha,
             product_id=runtime_context.product_id,
@@ -3811,7 +3952,7 @@ class RunnerRalphActivities:
     async def run_verifier(self, request: VerifierRunInput) -> VerifierRunOutput:
         """Run product-owned verifier config and record bounded redacted evidence."""
         await self._assert_routed(request)
-        async with _liveness_heartbeats():
+        async with _liveness_heartbeats(), self._fenced(request.work_record_id):
             if self._runtime_dependencies_ready():
                 state = await self._runtime_state(
                     request.work_record_id, workspace_path=request.workspace_path
@@ -3909,7 +4050,7 @@ class RunnerRalphActivities:
                     sandbox=verifier_sandbox,
                 )
                 try:
-                    # Run in a thread: subprocess.run inline would block the worker
+                    # Run in a thread: waiting on the verifier inline would block the worker
                     # event loop for up to the verifier timeout, starving the liveness
                     # heartbeats above (and every other activity on this pod).
                     result = await asyncio.to_thread(
@@ -3981,7 +4122,8 @@ class RunnerRalphActivities:
         repair a verifier failure, then re-push. Exactly one runtime turn (ADR-0007)."""
         await self._assert_routed(request)
         try:
-            return await self._run_fix_directive(request)
+            async with self._fenced(request.work_record_id):
+                return await self._run_fix_directive(request)
         except HookRefusedError as refusal:
             # Same posture as the first Directive: a hook refusal ends the loop
             # attributably instead of raising into an endless retry (PRD issue 45).
@@ -4071,25 +4213,26 @@ class RunnerRalphActivities:
             )
 
         try:
-            ran = await self._run_in_place_directive(
-                request,
-                _InPlaceDirective(
-                    lifecycle_source="ralph.execute_member_directive",
-                    run_source="ralph.member_directive.codex_run",
-                    push_source="ralph.member_directive.git_commit_push",
-                    commit_message=(
-                        f"feat(task): directive {request.directive_number} by Agent "
-                        f"{request.agent_id} for work record {request.work_record_id}"
+            async with self._fenced(request.work_record_id):
+                ran = await self._run_in_place_directive(
+                    request,
+                    _InPlaceDirective(
+                        lifecycle_source="ralph.execute_member_directive",
+                        run_source="ralph.member_directive.codex_run",
+                        push_source="ralph.member_directive.git_commit_push",
+                        commit_message=(
+                            f"feat(task): directive {request.directive_number} by Agent "
+                            f"{request.agent_id} for work record {request.work_record_id}"
+                        ),
+                        push_summary=(
+                            f"Push Directive {request.directive_number} ({request.role or 'member'}"
+                            f", woken by {request.wake_reason or 'pending messages'}) to "
+                            f"{request.repository}."
+                        ),
+                        prompt=prompt,
+                        push_when_clean=False,
                     ),
-                    push_summary=(
-                        f"Push Directive {request.directive_number} ({request.role or 'member'}"
-                        f", woken by {request.wake_reason or 'pending messages'}) to "
-                        f"{request.repository}."
-                    ),
-                    prompt=prompt,
-                    push_when_clean=False,
-                ),
-            )
+                )
         except HookRefusedError as refusal:
             return MemberDirectiveOutput(
                 work_record_id=request.work_record_id,
@@ -4163,7 +4306,8 @@ class RunnerRalphActivities:
                 summary="directive unavailable: runtime dependencies missing",
             )
         try:
-            return await self._run_learning_directive(request)
+            async with self._fenced(request.work_record_id):
+                return await self._run_learning_directive(request)
         except HookRefusedError as refusal:
             return self._learning_output(
                 request,
@@ -4211,7 +4355,8 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
-                    prompt=_learning_prompt(
+                    prompt=attempt.skills_preamble
+                    + _learning_prompt(
                         request,
                         base_branch=state.base_branch or request.base_ref,
                         transcript=self._learner_transcript(state, request.work_record_id),
@@ -4446,7 +4591,7 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
-                    prompt=await kind.prompt(state, prompt_notes),
+                    prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
                     base_branch=request.base_ref,
                     work_branch=state.work_branch,
                 )

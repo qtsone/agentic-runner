@@ -1,6 +1,6 @@
-# The chart test's neighbours (PRD issue 46): a fake control plane served from the Runner
-# image itself (fake-control-plane.py, mounted from the ConfigMap run.sh creates) and a
-# Temporal dev server holding the one namespace the fake hands out.
+# The chart test's neighbours (PRD issue 46): the conformance kit's fake control plane,
+# served from the Runner image itself (`python -m agentic_runner.testing`), and a Temporal
+# dev server holding the one namespace the fake hands out.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -23,12 +23,8 @@ spec:
         - name: fake
           image: agentic-runner:test
           imagePullPolicy: Never
-          command: ["python", "/fake/fake-control-plane.py", "8000"]
+          command: ["python", "-m", "agentic_runner.testing", "8000"]
           ports: [{containerPort: 8000}]
-          volumeMounts: [{name: script, mountPath: /fake}]
-      volumes:
-        - name: script
-          configMap: {name: fake-control-plane}
 ---
 apiVersion: v1
 kind: Service

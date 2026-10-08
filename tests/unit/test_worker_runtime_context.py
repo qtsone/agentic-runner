@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from agentic_runner_contracts.runtime_context import (
+    SKILL_BODY_LIMIT_BYTES,
     WorkerRuntimeContext,
     WorkerRuntimeContextResolver,
 )
@@ -70,3 +72,43 @@ async def test_runtime_context_resolver_fetches_context_through_fastapi_client()
     assert context == WorkerRuntimeContext.model_validate(
         valid_context_payload() | {"work_record_id": "wr_123"}
     )
+
+
+def _skill(**overrides: Any) -> dict[str, Any]:
+    body = "---\nname: review\ndescription: How we review.\n---\nRead the diff first.\n"
+    return {
+        "slug": "review",
+        "version": 3,
+        "sha256": hashlib.sha256(body.encode()).hexdigest(),
+        "body": body,
+    } | overrides
+
+
+def test_a_context_from_a_control_plane_without_skills_still_parses() -> None:
+    assert WorkerRuntimeContext.model_validate(valid_context_payload()).skills == []
+
+
+def test_attached_skills_round_trip_through_the_context() -> None:
+    payload = valid_context_payload() | {"skills": [_skill()]}
+
+    context = WorkerRuntimeContext.model_validate(payload)
+
+    assert WorkerRuntimeContext.model_validate(context.model_dump()) == context
+    assert context.skills[0].model_dump() == _skill()
+
+
+@pytest.mark.parametrize("slug", ["../escape", "a/b", ".system", "Review", ""])
+def test_a_skill_slug_that_is_not_a_safe_directory_name_is_refused(slug: str) -> None:
+    with pytest.raises(ValidationError):
+        WorkerRuntimeContext.model_validate(
+            valid_context_payload() | {"skills": [_skill(slug=slug)]}
+        )
+
+
+def test_a_skill_body_over_64_kib_is_refused() -> None:
+    body = "é" * (SKILL_BODY_LIMIT_BYTES // 2 + 1)
+
+    with pytest.raises(ValidationError):
+        WorkerRuntimeContext.model_validate(
+            valid_context_payload() | {"skills": [_skill(body=body)]}
+        )

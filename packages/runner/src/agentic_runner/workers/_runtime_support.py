@@ -19,6 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from agentic_runner.attempts import (
+    PriorAttemptAliveError,
+    recorded_group,
+    refuse_if_prior_attempt_alive,
+)
 from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV
 from agentic_runner.egress import EGRESS_ENV_NAMES
 from agentic_runner.llm_proxy import PROXY_ENV_NAMES
@@ -110,6 +115,7 @@ async def run_subprocess_exec(
     output_limit_bytes: int,
     sandbox: DirectiveSandbox | None = None,
 ) -> SubprocessResult:
+    refuse_if_prior_attempt_alive()
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
@@ -121,14 +127,23 @@ async def run_subprocess_exec(
         **({} if sandbox is None else sandbox.spawn_kwargs()),
     )
     try:
-        stdout_bytes, stderr_bytes, stdout_truncated, stderr_truncated = await asyncio.wait_for(
-            _collect_process_output(process, stdin=stdin, output_limit_bytes=output_limit_bytes),
-            timeout=timeout_seconds,
-        )
-    except TimeoutError:
-        await _terminate_process_tree(process)
-        raise
-    except asyncio.CancelledError:
+        with recorded_group(process.pid):
+            try:
+                (
+                    stdout_bytes,
+                    stderr_bytes,
+                    stdout_truncated,
+                    stderr_truncated,
+                ) = await asyncio.wait_for(
+                    _collect_process_output(
+                        process, stdin=stdin, output_limit_bytes=output_limit_bytes
+                    ),
+                    timeout=timeout_seconds,
+                )
+            except (TimeoutError, asyncio.CancelledError):
+                await _terminate_process_tree(process)
+                raise
+    except PriorAttemptAliveError:
         await _terminate_process_tree(process)
         raise
 

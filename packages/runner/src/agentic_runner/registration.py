@@ -65,6 +65,10 @@ DIRECTIVE_TOKEN_PATH = "/api/runner/v1/runners/directive-token"
 INTAKE_WORK_RECORDS_PATH = "/api/runner/v1/runners/intake/work-records"
 INTAKE_IGNORED_PATH = "/api/runner/v1/runners/intake/ignored"
 
+# The refusal a revoked Runner's heartbeat earns (06 §2: revocation *is* the refused
+# heartbeat). The one reason this process stops on rather than retries.
+RUNNER_REVOKED_REASON = "runner_revoked"
+
 # What the state directory holds after a successful bootstrap. One file, mode 0600: the
 # private key is in it, and a Runner that loses it re-bootstraps rather than recovering.
 STATE_FILENAME = "runner-identity.json"
