@@ -69,6 +69,7 @@ INTAKE_IGNORED_PATH = "/api/runner/v1/runners/intake/ignored"
 # The refusal a revoked Runner's heartbeat earns (06 §2: revocation *is* the refused
 # heartbeat). The one reason this process stops on rather than retries.
 RUNNER_REVOKED_REASON = "runner_revoked"
+CONTROL_PLANE_OLDER_REASON = "control_plane_older"
 
 # What the state directory holds after a successful bootstrap. One file, mode 0600: the
 # private key is in it, and a Runner that loses it re-bootstraps rather than recovering.
@@ -346,7 +347,27 @@ def _refusal(response: httpx.Response) -> tuple[str, str]:
         detail = None
     if isinstance(detail, dict) and "reason" in detail:
         return str(detail["reason"]), str(detail.get("detail", detail["reason"]))
+    if unknown := _fields_the_control_plane_does_not_know(response.status_code, detail):
+        return CONTROL_PLANE_OLDER_REASON, (
+            f"the control plane is older than this Runner (agentic-runner {runner_version}, "
+            f"agentic-runner-contracts {contracts_version}): it does not know "
+            f"{', '.join(unknown)}. Install the agentic-runner release that matches the "
+            "control plane, or ask your Organisation's Admin to upgrade it."
+        )
     return "refused", f"{response.status_code}: {response.text[:200]}"
+
+
+def _fields_the_control_plane_does_not_know(status_code: int, detail: Any) -> list[str]:
+    # A strict request model (extra="forbid") answering 422 with nothing but
+    # `extra_forbidden` errors is version skew, not a bad token: this Runner's contracts
+    # added fields the control plane's pinned contracts have not caught up to (RR-13).
+    if status_code != 422 or not isinstance(detail, list) or not detail:
+        return []
+    if not all(
+        isinstance(error, dict) and error.get("type") == "extra_forbidden" for error in detail
+    ):
+        return []
+    return [str(error.get("loc", ["?"])[-1]) for error in detail]
 
 
 class SignedIntakeStream:
