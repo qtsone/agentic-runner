@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.1.0](https://github.com/qtsone/agentic-runner/compare/v3.0.0...v3.1.0) (2026-10-08)
+
+
+### Features
+
+* **runner:** every Runner reports a 64-hex build_id the release publishes (RR-06) ([#21](https://github.com/qtsone/agentic-runner/issues/21)) ([a48f573](https://github.com/qtsone/agentic-runner/commit/a48f573676cdeee01b9e73b56ec7a2d863f97eb5))
+
 # [3.0.0](https://github.com/qtsone/agentic-runner/compare/v2.8.0...v3.0.0) (2026-10-08)
 
 
