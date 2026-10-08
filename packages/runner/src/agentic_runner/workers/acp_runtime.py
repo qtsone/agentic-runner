@@ -79,6 +79,7 @@ from agentic_runner.workers.agent_runtime import (
     DirectiveResult,
     ModelUsage,
     PermissionFallback,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.command_policy import CommandPolicy, evaluate_command_policy
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
@@ -256,6 +257,19 @@ class AcpRuntime:
         if self._is_codex:
             return self._settings.CODEX_CLI_OUTPUT_LIMIT_BYTES
         return self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES
+
+    def capabilities(self) -> RuntimeCapabilities:
+        # Every escalation is a `session/request_permission` answered from the command
+        # policy; Codex additionally starts in `workspace-write` so its own reviewer never
+        # approves one. There is no unguarded configuration to report as refused.
+        return RuntimeCapabilities(
+            auth_modes=self.auth_modes,
+            permission_mode=(
+                "acp;mode=workspace-write;permission=policy"
+                if self._is_codex
+                else "acp;permission=policy"
+            ),
+        )
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         workspace_path = request.workspace_path.resolve(strict=False)

@@ -8,6 +8,7 @@ internals.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import replace
@@ -21,6 +22,7 @@ from agentic_runner.service import build_agent_runtimes
 from agentic_runner.workers._runtime_support import RESERVED_DIRECTIVE_ENV
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime
 from agentic_runner.workers.agent_runtime import (
+    REFUSED_PERMISSION_MODE,
     AuthMode,
     DirectiveRequest,
     ModelUsage,
@@ -637,6 +639,17 @@ def test_acp_cli_kinds_picks_the_bridge_per_kind(tmp_path: Path) -> None:
         isinstance(runtime, AcpRuntime)
         for runtime in build_agent_runtimes(_settings(tmp_path), clis).values()
     )
+
+
+@pytest.mark.parametrize("cli_kind", sorted(ACP_BRIDGES))
+def test_capabilities_report_a_permission_mode_the_heartbeat_admits(
+    tmp_path: Path, cli_kind: str
+) -> None:
+    capabilities = _runtime(tmp_path, cli_kind).capabilities()
+
+    assert capabilities.auth_modes == {AuthMode.API_KEY, AuthMode.SUBSCRIPTION}
+    assert re.fullmatch(r"[a-z][a-z0-9_=;.-]{0,95}", capabilities.permission_mode)
+    assert capabilities.permission_mode != REFUSED_PERMISSION_MODE
 
 
 def test_the_image_ships_the_bridge_versions_the_runtime_pins() -> None:
