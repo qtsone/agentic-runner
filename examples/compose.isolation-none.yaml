@@ -1,0 +1,12 @@
+# isolation: none, for a host that cannot grant the five capabilities (docs/docker.md).
+# The Runner runs as the image's unprivileged uid with no capabilities, and takes one
+# Contract at a time:
+#   docker compose -f compose.yaml -f compose.isolation-none.yaml up -d
+services:
+  runner:
+    user: "65532:65532"
+    environment:
+      AGENTIC_RUNNER_ISOLATION: none
+    cap_add: !reset []
+    security_opt:
+      - no-new-privileges:true

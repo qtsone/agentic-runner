@@ -39,8 +39,9 @@ Each needs an Agent Token, which your Organisation's Admin issues in the Organis
 3. **On your own machine** — a per-user login agent, one per Organisation
    (`agentic-runner install <org>`). Guide: [docs/workstation.md](docs/workstation.md).
 
-The guides, and the published packages, image and chart they install, arrive with the first
-release. Until then, run from a checkout: `uv sync && uv run agentic-runner --help`.
+Each guide installs only published artifacts, and CI runs each one to a Runner that
+registers and heartbeats against a fake control plane. Before the first release, run from a
+checkout: `uv sync && uv run agentic-runner --help`.
 
 ## The compatibility floor
 
