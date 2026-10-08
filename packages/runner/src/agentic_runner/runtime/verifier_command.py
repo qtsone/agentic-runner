@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -11,6 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from agentic_runner.attempts import (
+    PriorAttemptAliveError,
+    recorded_group,
+    refuse_if_prior_attempt_alive,
+)
 from agentic_runner_contracts.redaction import redact_secret_like_text
 
 DEFAULT_OUTPUT_LIMIT_BYTES = 16_384
@@ -91,21 +98,44 @@ def _subprocess_runner(
     that cannot separate uids still verifies, and they arrive together from
     ``DirectiveSandbox.spawn_kwargs`` — the uid drop in subprocess's own C fork-exec path,
     only the rlimits in the Python hook.
+
+    Its own session, killed as a group on timeout, like a Directive: the test suite
+    forks workers into the Workspace, and the attempt fence (``attempts.py``) records
+    the group by its pgid.
     """
 
-    return subprocess.run(
+    refuse_if_prior_attempt_alive()
+    with subprocess.Popen(
         list(argv),
         cwd=cwd,
         env=env,
-        timeout=timeout_seconds,
-        check=False,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
         preexec_fn=preexec_fn,
         user=user,
         group=group,
         extra_groups=extra_groups,
-    )
+    ) as process:
+        try:
+            with recorded_group(process.pid):
+                try:
+                    stdout, stderr = process.communicate(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    _kill_group(process)
+                    raise
+        except PriorAttemptAliveError:
+            _kill_group(process)
+            raise
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+
+def _kill_group(process: subprocess.Popen[str]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.kill()
+    process.communicate()
 
 
 def run(

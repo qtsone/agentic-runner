@@ -44,6 +44,7 @@ from temporalio.worker import (
 
 from agentic_runner import __version__ as runner_version
 from agentic_runner.activities import RunnerRalphActivities
+from agentic_runner.attempts import AttemptRecords
 from agentic_runner.child_watcher import install_stop_tolerant_child_watcher
 from agentic_runner.config import RunnerConfig
 from agentic_runner.config import load as load_config
@@ -1021,6 +1022,10 @@ def _activities(
     )
     static_git_token = os.getenv("AGENTIC_OS_GIT_TOKEN") or None
     isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
+    attempt_records = AttemptRecords(config.state_dir, workspace_root=settings.WORKSPACE_ROOT)
+    # Only the dead go: a live record is a harness this process lost on restart, still
+    # writing its Workspace, and the next attempt must keep being refused (RR-05).
+    attempt_records.sweep()
     ralph = RunnerRalphActivities(
         fastapi,
         runtime_context_resolver=WorkerRuntimeContextResolver(fastapi),
@@ -1056,6 +1061,7 @@ def _activities(
         message_store=messages,
         workflow_signaller=signaller,
         tool_server_health=tool_servers,
+        attempt_records=attempt_records,
     )
     return [
         *ralph.activity_callables(),
