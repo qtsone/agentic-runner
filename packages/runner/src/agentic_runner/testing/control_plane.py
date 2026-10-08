@@ -175,6 +175,10 @@ class FakeControlPlane:
                 "isolation_modes": sorted({b.isolation_mode.value for b in self.bootstraps}),
                 "heartbeats": len(self.heartbeats),
                 "heartbeat_runner_ids": sorted({str(r) for r in self.heartbeat_runner_ids}),
+                "bootstrap_build_ids": sorted({b.build_id or "" for b in self.bootstraps}),
+                "heartbeat_build_ids": sorted(
+                    {h.attestation.build_id if h.attestation else "" for h in self.heartbeats}
+                ),
                 "directive_tokens": len(self.directive_tokens),
                 "evidence": len(self.evidence),
                 "refusals": [f"{r.method} {r.path} {r.status} {r.reason}" for r in self.refusals],

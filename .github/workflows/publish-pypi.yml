@@ -1,5 +1,5 @@
 # One release, every artifact: both packages to PyPI, the image, the chart, and the digests on
-# the GitHub Release. The file name is part of both PyPI trusted publishers (workflow
+# the GitHub Release, `build-id.txt` among them. The file name is part of both PyPI trusted publishers (workflow
 # `publish-pypi.yml`, environments `pypi` and `pypi-contracts`); renaming it breaks the publish.
 #
 # A `v*` tag publishes. `workflow_dispatch`, and a pull request that edits this file, run the
@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
+      build_id: ${{ steps.build_id.outputs.build_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -78,6 +79,18 @@ jobs:
           uv venv "$RUNNER_TEMP/venv"
           uv pip install --python "$RUNNER_TEMP/venv" --no-sources dist/contracts/*.whl dist/runner/*.whl
           "$RUNNER_TEMP/venv/bin/agentic-runner" --version
+
+      # What every Runner of this release reports (runner-repo 06), read off the installed
+      # wheel rather than the source tree; the image job checks its own install agrees.
+      - name: Read the build_id
+        id: build_id
+        run: |
+          set -euo pipefail
+          build_id="$("$RUNNER_TEMP/venv/bin/python" -c \
+            'from agentic_runner.build import build_id; print(build_id())')"
+          [[ "$build_id" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::not a build_id: ${build_id}"; exit 1; }
+          echo "build_id=${build_id}" >> "$GITHUB_OUTPUT"
+          echo "wheel build_id: ${build_id}"
 
       - name: Upload the contracts distributions
         uses: actions/upload-artifact@v7
@@ -149,12 +162,37 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
     env:
       VERSION: ${{ needs.build.outputs.version }}
+      BUILD_ID: ${{ needs.build.outputs.build_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
+
+      # One platform, loaded locally, before the multi-platform push: the push reuses its
+      # layers from the builder's cache, and a mismatch stops the release before it ships.
+      - name: Build for the build_id check
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.runner
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            RUNNER_VERSION=${{ env.VERSION }}
+            CONTRACTS_VERSION=${{ env.VERSION }}
+          tags: agentic-runner:build-id-check
+
+      - name: The image reports the wheel's build_id
+        run: |
+          set -euo pipefail
+          image_build_id="$(docker run --rm --entrypoint python agentic-runner:build-id-check -c \
+            'from agentic_runner.build import build_id; print(build_id())')"
+          echo "wheel build_id: ${BUILD_ID}"
+          echo "image build_id: ${image_build_id}"
+          [ "$image_build_id" = "$BUILD_ID" ] \
+            || { echo "::error::the image's build_id differs from the wheel's"; exit 1; }
 
       - name: Log in to GHCR
         if: env.PUBLISH == 'true'
@@ -272,6 +310,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.build.outputs.version }}
+      BUILD_ID: ${{ needs.build.outputs.build_id }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/download-artifact@v8
@@ -290,6 +329,8 @@ jobs:
             echo
             echo "Contracts version (the compatibility floor): **${VERSION}**"
             echo
+            echo "Runner \`build_id\` (what every Runner of this release reports; also \`build-id.txt\`): \`${BUILD_ID}\`"
+            echo
             echo "| Artifact | Digest |"
             echo "|---|---|"
             echo "| \`${IMAGE}:${VERSION}\` | \`${{ needs.image.outputs.digest }}\` |"
@@ -299,3 +340,10 @@ jobs:
             done
           } > notes.md
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+
+      # The asset a platform fills its published-build set from (runner-repo 06).
+      - name: Attach build-id.txt
+        run: |
+          set -euo pipefail
+          echo "$BUILD_ID" > build-id.txt
+          gh release upload "$GITHUB_REF_NAME" build-id.txt --repo "$GITHUB_REPOSITORY" --clobber

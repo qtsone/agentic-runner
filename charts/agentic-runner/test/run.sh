@@ -32,14 +32,17 @@ stats="$(kubectl -n "${ns}" exec deployment/fake-control-plane -- \
 echo "fake control plane: ${stats}"
 
 python3 - "${stats}" <<'PY'
-import json, sys
+import json, re, sys
 stats = json.loads(sys.argv[1])
 assert stats["bootstraps"] == 2, f"expected two registrations, saw {stats['bootstraps']}"
 assert len(set(stats["runner_ids"])) == 2, "the two pods must be two distinct Runners"
 assert len(stats["recipient_key_ids"]) == 1, f"one Recipient Key per release, saw {stats['recipient_key_ids']}"
 assert stats["isolation_modes"] == ["contract_uid"], stats["isolation_modes"]
 assert len(stats["heartbeat_runner_ids"]) == 2, "both Runners must have heartbeat"
-print("both replicas registered as distinct Runners under one Recipient Key")
+builds = stats["bootstrap_build_ids"]
+assert len(builds) == 1 and re.fullmatch(r"[0-9a-f]{64}", builds[0]), f"one full build_id, saw {builds}"
+assert stats["heartbeat_build_ids"] == builds, f"the attestation must carry it, saw {stats['heartbeat_build_ids']}"
+print(f"both replicas registered as distinct Runners under one Recipient Key, build {builds[0]}")
 PY
 
 kubectl -n "${ns}" get secret "${release}-agentic-runner-recipient-key" -o jsonpath='{.data.key_id}' | base64 -d
