@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.2.0](https://github.com/qtsone/agentic-runner/compare/v3.1.1...v3.2.0) (2026-10-08)
+
+
+### Features
+
+* **workstation:** install and status point to the console's next step (QTS-1314) ([#29](https://github.com/qtsone/agentic-runner/issues/29)) ([efe0f36](https://github.com/qtsone/agentic-runner/commit/efe0f362eadda0a41a7cfd5e451d0617b4620c72))
+
 ## [3.1.1](https://github.com/qtsone/agentic-runner/compare/v3.1.0...v3.1.1) (2026-10-08)
 
 
