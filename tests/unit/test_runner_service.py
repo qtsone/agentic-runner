@@ -1,9 +1,9 @@
 """The Runner process against a fake control plane (PRD issue 46).
 
 ``agentic-runner run`` is stood up in-process with its seams injected: the HTTP transport
-is an ``httpx.MockTransport`` playing the control plane, the Temporal connection and the
-Worker are fakes, and the capability check is told what it would have found. What this
-pins:
+is the conformance kit's fake control plane mounted as an ``httpx.MockTransport``, the
+Temporal connection and the Worker are fakes, and the capability check is told what it
+would have found. What this pins:
 
 * a ``contract_uid`` Runner that lacks ``CAP_SETUID`` exits non-zero naming the
   capability, before any bootstrap is attempted (17 A2);
@@ -23,82 +23,17 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from agentic_runner import service
 from agentic_runner.recipient_key_secret import KubernetesSecrets, ensure_recipient_key
 from agentic_runner.registration import can_separate_uids
 from agentic_runner.sealed_box import RecipientKeyStore, generate_recipient_key
-from agentic_runner_contracts import __version__ as contracts_version
-from agentic_runner_contracts.runner_registration import (
-    BootstrapRequest,
-    BootstrapResponse,
-    FloorState,
-    HeartbeatAck,
-    HeartbeatEnvelope,
-    RunnerIdentityMaterial,
-)
+from agentic_runner.testing import FakeControlPlane
 
 CONTROL_PLANE = "http://control-plane.test"
-
-
-class FakeControlPlane:
-    """Bootstrap and heartbeat, answered the way the platform would (issue 41)."""
-
-    def __init__(self) -> None:
-        self.bootstraps: list[BootstrapRequest] = []
-        self.heartbeats: list[HeartbeatEnvelope] = []
-        self.runner_ids: list[str] = []
-        self.heard = asyncio.Event()
-
-    def transport(self) -> httpx.MockTransport:
-        return httpx.MockTransport(self._handle)
-
-    def _handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/runner/v1/runners/bootstrap":
-            body = BootstrapRequest.model_validate_json(request.content)
-            self.bootstraps.append(body)
-            runner_id = uuid4()
-            key = Ed25519PrivateKey.generate()
-            pem = key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.PKCS8,
-                serialization.NoEncryption(),
-            ).decode("ascii")
-            response = BootstrapResponse(
-                identity=RunnerIdentityMaterial(
-                    runner_id=runner_id, identity_id=f"identity-{runner_id}", private_key_pem=pem
-                ),
-                temporal_namespace=f"org-{uuid4()}",
-                task_queue=f"runner.{runner_id}",
-                runner_token="runner-token-at-bootstrap",
-                runner_token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                tag_set_version=1,
-                floor_state=FloorState.OK,
-                contracts_floor=contracts_version,
-                host_party="organisation",
-            )
-            return httpx.Response(200, json=json.loads(response.model_dump_json()))
-        if request.url.path == "/api/runner/v1/runners/heartbeat":
-            self.heartbeats.append(HeartbeatEnvelope.model_validate_json(request.content))
-            self.runner_ids.append(request.headers["X-Runner-Id"])
-            self.heard.set()
-            ack = HeartbeatAck(
-                runner_id=request.headers["X-Runner-Id"],
-                runner_token=f"runner-token-{len(self.heartbeats)}",
-                runner_token_expires_at=datetime.now(UTC) + timedelta(hours=1),
-                floor_state=FloorState.OK,
-                contracts_floor=contracts_version,
-                tag_set_version=1,
-                accepts_new_directives=True,
-            )
-            return httpx.Response(200, json=json.loads(ack.model_dump_json()))
-        return httpx.Response(404, json={"detail": "unexpected"})
 
 
 class FakeWorker:
@@ -180,7 +115,7 @@ async def test_an_isolation_none_runner_starts_and_heartbeats_none(
     readiness = service.Readiness(0)
 
     async def stop_once_heard() -> None:
-        await plane.heard.wait()
+        await plane.wait_for(lambda: bool(plane.heartbeats))
         # Ready means registered, heard and polling -- observed over the probe itself.
         while not readiness.ready:
             await asyncio.sleep(0.01)
@@ -198,12 +133,14 @@ async def test_an_isolation_none_runner_starts_and_heartbeats_none(
     assert bootstrap.isolation_mode == "none"
     assert bootstrap.tags == {"region": "eu-west-1"}
     assert plane.heartbeats[0].isolation_mode == "none"
-    assert plane.heartbeats[0].hosted_task_queue == f"runner.{plane.runner_ids[0]}"
+    [runner_id] = plane.runner_ids
+    assert plane.heartbeats[0].hosted_task_queue == f"runner.{runner_id}"
     [connect] = harness.connects
     assert connect["address"] == "temporal.test:7233"
-    assert connect["api_key"] == "runner-token-1"
+    # The Runner Token from the first ack, not the one bootstrap handed out.
+    assert connect["api_key"] == f"runner-token-{runner_id}-1"
     [worker] = harness.workers
-    assert worker.kwargs["task_queue"] == f"runner.{plane.runner_ids[0]}"
+    assert worker.kwargs["task_queue"] == f"runner.{runner_id}"
     assert connect["namespace"].startswith("org-")
     # Off again once the drain finished, so a restarting pod is not routed to early.
     assert readiness.ready is False
@@ -264,10 +201,10 @@ async def test_two_replicas_register_as_distinct_runners_under_one_recipient_key
     for state_dir in (first_dir, second_dir):
         _environment(monkeypatch, state_dir, isolation="none")
         harness = Harness(plane)
-        plane.heard.clear()
+        heard = len(plane.heartbeats)
 
-        async def stop_once_heard(harness: Harness = harness) -> None:
-            await plane.heard.wait()
+        async def stop_once_heard(harness: Harness = harness, heard: int = heard) -> None:
+            await plane.wait_for(lambda: len(plane.heartbeats) > heard)
             harness.stop.set()
 
         stopper = asyncio.create_task(stop_once_heard())
@@ -277,15 +214,15 @@ async def test_two_replicas_register_as_distinct_runners_under_one_recipient_key
     first, second = plane.bootstraps
     assert first.recipient_key == second.recipient_key
     assert first.recipient_key.key_id == first_key.key_id
-    assert len(set(plane.runner_ids)) == 2
+    assert len(set(plane.heartbeat_runner_ids)) == 2
 
     # A restart re-reads the identity rather than registering a third Runner.
     _environment(monkeypatch, second_dir, isolation="none")
     harness = Harness(plane)
-    plane.heard.clear()
+    heard = len(plane.heartbeats)
 
     async def stop_again() -> None:
-        await plane.heard.wait()
+        await plane.wait_for(lambda: len(plane.heartbeats) > heard)
         harness.stop.set()
 
     stopper = asyncio.create_task(stop_again())
