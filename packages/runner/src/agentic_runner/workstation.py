@@ -570,7 +570,7 @@ def status_lines(paths: OrgPaths, *, now: datetime | None = None) -> list[str]:
     pid = process_id(paths)
     state = load_state(paths.state_dir)
     age = heartbeat_age(paths, now=now)
-    return [
+    lines = [
         f"organisation   {paths.org} ({paths.state_dir})",
         f"process        {'running, pid ' + str(pid) if pid else 'not running'}",
         (
@@ -580,6 +580,30 @@ def status_lines(paths: OrgPaths, *, now: datetime | None = None) -> list[str]:
         ),
         f"heartbeat      {'never' if age is None else f'{age:.0f}s ago'}",
     ]
+    if pid and state is not None:
+        lines.extend(next_step_lines(state.host_party))
+    return lines
+
+
+def next_step_lines(host_party: str) -> list[str]:
+    """Where to go once the Runner is live (QTS-1314): the dogfood install ended at
+    ``started`` and left the person with no idea what the console wanted next.
+
+    Paths, not URLs: the Runner knows its control plane, not the console, and the two need
+    not share a domain (QTS-1300) -- the person minted the token on that console anyway.
+    """
+
+    if host_party == "user":
+        return [
+            "next           open /me/runners in the console to see this Runner, then "
+            "/me/work/new and pick a Contract that says it runs on a Runner you host"
+        ]
+    if host_party:
+        return [
+            "next           this Runner takes the work of Contracts whose Runner is hosted by "
+            f"the {host_party}; it shows on the Organisation Console's Runners page"
+        ]
+    return []
 
 
 # ------------------------------------------------------------------ the verbs
@@ -598,15 +622,17 @@ async def install(
 ) -> list[str]:
     """Register this Organisation's process and install its login agent.
 
-    Registration happens here, once, with the Agent Token the Organisation's Admin issued
-    to this user (12 A6) -- pasted at the prompt, never stored: the identity bootstrap
-    hands back is what every later start uses, and a lost state directory means a
-    reinstall and a re-delivery of any sealed value (22 A4), by design.
+    Registration happens here, once, with the Agent Token this user minted on /me/runners
+    or the Organisation's Admin issued them (12 A6, QTS-1304) -- pasted at the prompt,
+    never stored: the identity bootstrap hands back is what every later start uses, and a
+    lost state directory means a reinstall and a re-delivery of any sealed value (22 A4),
+    by design.
     """
 
     require_any_cli(settings.path)
     paths.create()
     settings.save(paths)
+    already_registered = load_state(paths.state_dir) is not None
     state, outcome = await service.register(
         state_dir=paths.state_dir,
         can_separate_uids=False,
@@ -619,10 +645,20 @@ async def install(
     definition = service_definition(paths, settings, platform=platform, home=home)
     definition.path.parent.mkdir(parents=True, exist_ok=True)
     definition.path.write_bytes(definition.content)
-    lines = [outcome, f"login agent    {definition.path}"]
+    lines = [outcome]
+    if already_registered:
+        # QTS-1314: the dogfood reinstall kept an Organisation-hosted identity while the
+        # person believed the user-hosted token they had just pasted had taken effect.
+        lines.append(
+            f"token          not used: {paths.state_dir} already holds Runner "
+            f"{state.runner_id}; to register a new one, stop it and move that directory "
+            "aside (docs/workstation.md, Switch to a new token)"
+        )
+    lines.append(f"login agent    {definition.path}")
     if start_service:
         drive(definition.install + definition.start, run=run)
         lines.append(f"started        {state.runner_id}")
+        lines.extend(next_step_lines(state.host_party))
     return lines
 
 

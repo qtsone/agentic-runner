@@ -333,7 +333,8 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
         return 2
     # Pasted, never a flag: a flag is in the process table for every uid on the box.
     token = os.environ.get(AGENT_TOKEN_ENV, "").strip() or getpass.getpass(
-        "Agent Token (issued to you by the Organisation's Admin): "
+        "Agent Token (yours from /me/runners, or the Organisation Admin's for an "
+        "Organisation Runner): "
     )
     settings = workstation.WorkstationSettings(
         org=paths.org,

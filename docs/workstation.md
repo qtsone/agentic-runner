@@ -11,15 +11,17 @@ macOS (`tests/install/workstation.sh`).
 1. **Codex or Claude Code.** Install `codex`, `claude`, or both, the usual way. The Runner
    finds them on your `PATH`; it does not bundle them. It serves every CLI it finds, and
    refuses to install if it finds neither.
-2. **An Agent Token hosted by you.** Your Organisation's Admin mints it on the
-   Organisation Console's **Runners** page, labelled after you (`alice-laptop`), with
-   **Hosted by** set to you, and sends it to you over a channel you both trust, such as a
-   password manager share. It is shown once. The Runner takes its host from the token: a
+2. **An Agent Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in
+   the console, labelled after the machine (`alice-laptop`). It is shown once and installs
+   for 7 days. Your Organisation's Admin can also mint one on the Organisation Console's
+   **Runners** page with **Hosted by** set to you, and send it over a channel you both
+   trust, such as a password manager share. The Runner takes its host from the token: a
    token hosted by the Organisation makes an Organisation Runner, which never takes your
    Contracts' work.
 3. **A Contract whose Runner is hosted by you.** Only your Contracts with `runner_host:
    user` route to your Runner. If yours says the Organisation, ask the Admin to change it.
-4. **The install command.** The same page shows it for your Organisation, with the
+4. **The install command.** **/me/runners** (after minting) and the Organisation
+   Console's Runners page show it for your Organisation, with the
    control plane URL and the Temporal address filled in. Copy both values from there: they
    are set independently and need not share a domain, so neither can be guessed from the
    other.
@@ -38,13 +40,12 @@ lowercase letters, digits and `-`.
 agentic-runner install acme \
   --control-plane <control-plane URL from the Runners page> \
   --temporal-address <Temporal address from the Runners page>
-# Agent Token (issued to you by the Organisation's Admin): ********
+# Agent Token (yours from /me/runners, or the Organisation Admin's for an Organisation Runner): ********
 ```
 
 You paste the token at the prompt. It is never a flag, because every user on the machine
 can read the process table, and it is never stored: `install` exchanges it once for this
-Runner's own identity. Your Admin can revoke the token once your Runner shows on the
-Runners page.
+Runner's own identity. Revoke the token on **/me/runners** once your Runner shows there.
 
 `install` registers the Runner, then installs and starts its login agent:
 
@@ -64,6 +65,22 @@ Each Contract's CLI runs under a sign-in made **from the console**: on the Contr
 start the sign-in and finish it in your browser. The Runner keeps that sign-in in the
 Contract's own directory under its state root. It does not read your own `~/.codex` or
 `~/.claude`, and there is no sign-in command in the terminal.
+
+## Give it work
+
+`install` ends with a `next` line, and `agentic-runner status acme` repeats it while the
+Runner is running:
+
+1. Open **/me/runners** in the console. Your Runner is listed there, online.
+2. Sign in the Contract's CLI from the Contract's page, as above.
+3. Open **/me/work/new** and pick a Contract the page says *runs on a Runner you host*.
+   Describe the work and create the Work Record.
+4. On **/me/work/[id]**, the Evidence names the Runner that took it.
+
+The Contract's **Runner hosted by** decides which Runner gets the work, not the Runner:
+a Contract hosted by the Organisation runs on an Organisation Runner even while yours is
+idle. If no Contract on /me/work/new runs on a Runner you host, ask the Admin to set the
+Contract's Runner to be hosted by you.
 
 ## Operate
 
@@ -106,6 +123,22 @@ agentic-runner stop acme && agentic-runner start acme
 
 There is no self-update. The control plane warns when a Runner falls one contracts minor
 behind and stops sending it new work at two.
+
+### Switch to a new token
+
+Running `install` again over the same Organisation's directory keeps the identity it
+already holds: it prints `already registered …` and `token not used`, and the token you
+pasted never reaches the control plane. There is no `uninstall`. To swap an Organisation
+Runner for one hosted by you (or any Runner for a new token):
+
+1. `agentic-runner stop acme`.
+2. Move the Organisation's directory aside rather than deleting it, so the old identity,
+   Recipient Key and credentials stay recoverable:
+   `mv "<state root>/acme" "<state root>/acme.organisation"`.
+3. `agentic-runner install acme …` again with the new token.
+4. Check `agentic-runner status acme` shows the new identity and a `next` line, and that
+   the Runner shows on **/me/runners**. Then ask your Admin to revoke the old Runner on the
+   Runners page.
 
 To remove a Runner: `agentic-runner stop acme`, delete the plist or the unit file, delete
 the Organisation's directory under the state root, then ask your Admin to revoke the

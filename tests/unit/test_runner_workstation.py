@@ -187,6 +187,9 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     assert plist.is_file()
     assert commands.ran == [["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)]]
     assert any("registered" in line for line in lines)
+    # QTS-1314: the dogfood install stopped at `started`, and the person was stuck.
+    assert lines[-2].startswith("started")
+    assert "/me/runners" in lines[-1] and "/me/work/new" in lines[-1]
     assert paths.state_dir.stat().st_mode & 0o777 == 0o700
     assert [event.kind for event in LifecycleOutbox(paths.state_dir).pending()] == [
         LifecycleKind.INSTALL
@@ -197,6 +200,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     assert "not running" in status[1]
     assert "on runner." in status[2] and "in org-" in status[2]
     assert status[3].endswith("never")
+    assert len(status) == 4, "no next step while the Runner is not running"
 
     paths.pidfile.write_text(str(os.getpid()))
     paths.heartbeat_stamp.touch()
@@ -204,6 +208,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     status = workstation.status_lines(paths, now=now)
     assert status[1].endswith(f"running, pid {os.getpid()}")
     assert status[3].endswith("42s ago")
+    assert status[4] == lines[-1]
 
     # The CLI verb prints the same lines.
     assert cli.main(["status", "acme", "--root", str(paths.root)]) == 0
@@ -211,6 +216,74 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
 
     workstation.stop(paths, platform="darwin", home=home, run=commands)
     assert commands.ran[-1] == ["launchctl", "bootout", f"gui/{os.getuid()}/agentic-runner.acme"]
+
+
+@pytest.mark.asyncio
+async def test_reinstalling_over_a_registered_state_dir_says_the_token_was_not_used(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    plane = FakeControlPlane(host_party="organisation")
+
+    async def install(token: str) -> list[str]:
+        async with httpx.AsyncClient(transport=plane.transport()) as http:
+            return await workstation.install(
+                paths,
+                _settings(paths, str(bin_dir)),
+                agent_token=token,
+                platform="darwin",
+                home=tmp_path / "home",
+                run=Commands(),
+                http_client=http,
+            )
+
+    first = await install("organisation-hosted-token-1")
+    assert not any(line.startswith("token") for line in first)
+
+    second = await install("user-hosted-token-of-sixteen")
+
+    assert len(plane.bootstraps) == 1, "the pasted token never reaches the control plane"
+    assert second[0].startswith("already registered")
+    assert second[1].startswith("token          not used")
+    assert str(paths.state_dir) in second[1] and "Switch to a new token" in second[1]
+
+
+def test_the_next_step_follows_who_hosts_the_runner() -> None:
+    [user] = workstation.next_step_lines("user")
+    assert "/me/work/new" in user and "a Runner you host" in user
+    [organisation] = workstation.next_step_lines("organisation")
+    assert "hosted by the organisation" in organisation and "/me/" not in organisation
+    # A control plane older than issue 42 names no host party; nothing to point at.
+    assert workstation.next_step_lines("") == []
+
+
+def test_the_token_prompt_names_both_places_a_token_comes_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompts: list[str] = []
+
+    def refuse(prompt: str) -> str:
+        prompts.append(prompt)
+        raise KeyboardInterrupt
+
+    monkeypatch.delenv(cli.AGENT_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(cli.getpass, "getpass", refuse)
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(
+            [
+                "install",
+                "acme",
+                "--control-plane",
+                CONTROL_PLANE,
+                "--temporal-address",
+                "temporal.test:443",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+
+    [prompt] = prompts
+    assert "/me/runners" in prompt and "Organisation Admin" in prompt
 
 
 # ------------------------------------------------------------------ the CLIs
