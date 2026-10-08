@@ -133,6 +133,13 @@ class WorkerSettings(BaseSettings):
         ge=1,
         description="Maximum retained stdout and stderr bytes from Claude Code CLI evidence",
     )
+    ACP_CLI_KINDS: str = Field(
+        default="",
+        description=(
+            "Comma-separated cli_kinds (`codex_cli`, `claude_code`) this Runner serves through "
+            "the pinned ACP bridge instead of the per-CLI runtime (local-agents 12)."
+        ),
+    )
     CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS: bool = Field(
         default=False,
         description=(

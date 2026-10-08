@@ -36,6 +36,33 @@ class AuthMode(StrEnum):
     SUBSCRIPTION = "subscription"
 
 
+class PermissionFallback(StrEnum):
+    """What a runtime that is asked per command does when the command policy has no
+    answer (PRD decision 12): the Profile's ``permission_fallback``, ``deny`` by default.
+
+    ``deny`` refuses the command and names it in the Directive's Evidence; ``hold`` asks a
+    person through the Question hold, and the answer reaches the next Directive.
+    """
+
+    DENY = "deny"
+    HOLD = "hold"
+
+
+@dataclass(frozen=True, slots=True)
+class ModelUsage:
+    """One model's tokens over one Directive, as the harness itself reported them.
+
+    ``input_tokens`` excludes the cached counts, which are reported beside it.
+    """
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cached_read_tokens: int = 0
+    cached_write_tokens: int = 0
+    reasoning_output_tokens: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class DirectiveRequest:
     """The input to one Directive: a single runtime turn in a prepared workspace."""
@@ -73,6 +100,8 @@ class DirectiveRequest:
     # a runtime that cannot name its session.
     on_session_started: Callable[[str], None] | None = None
     auth_mode: AuthMode = AuthMode.API_KEY
+    # Read only by a runtime the harness asks per command (the ACP runtime).
+    permission_fallback: PermissionFallback = PermissionFallback.DENY
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +128,9 @@ class DirectiveResult:
     error: str
     command_hash: str
     evidence: DirectiveEvidence
+    # The harness's own per-model usage, where its protocol carries one (ACP). Empty means
+    # the caller reads usage off ``stdout`` as before.
+    model_usage: tuple[ModelUsage, ...] = ()
 
 
 @runtime_checkable

@@ -15,6 +15,10 @@ FROM node:22-bookworm-slim AS cli
 ARG TARGETARCH
 ARG CODEX_CLI_VERSION=0.141.0
 ARG CLAUDE_CODE_VERSION=2.1.280
+# The ACP bridges (local-agents 12): pinned here and in `workers/acp_runtime.ACP_BRIDGES`,
+# which a unit test holds equal.
+ARG CODEX_ACP_VERSION=2.1.1
+ARG CLAUDE_AGENT_ACP_VERSION=0.88.0
 
 # Both CLIs ship a native binary per platform as an optional dependency; the arch-specific
 # package is named explicitly so a build for one platform never pulls every other.
@@ -29,6 +33,10 @@ RUN case "${TARGETARCH}" in \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@anthropic-ai/claude-code-linux-${node_arch}@${CLAUDE_CODE_VERSION}" \
         --include=optional --omit=dev --no-audit --no-fund \
+    && npm install --global \
+        "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
+        "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}" \
+        --omit=optional --omit=dev --no-audit --no-fund \
     && npm cache clean --force
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
@@ -59,6 +67,11 @@ COPY --from=cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
 COPY --from=cli /usr/local/bin/claude /usr/local/bin/claude
 RUN ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+# The bridges run the image's own `codex` and `claude` (CODEX_PATH, CLAUDE_CODE_EXECUTABLE),
+# so their bundled native copies are omitted above.
+COPY --from=cli /usr/local/lib/node_modules/@agentclientprotocol /usr/local/lib/node_modules/@agentclientprotocol
+RUN ln -s ../lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js /usr/local/bin/codex-acp \
+    && ln -s ../lib/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js /usr/local/bin/claude-agent-acp
 
 # The two shipped distributions and nothing else (ADR-0013 §4). `uv pip`, not `uv sync`:
 # there is no workspace root here, so no platform package and no dev group can be pulled

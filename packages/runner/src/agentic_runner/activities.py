@@ -29,7 +29,7 @@ import shlex
 import shutil
 import tempfile
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, NoReturn, Protocol
@@ -126,6 +126,8 @@ from agentic_runner.workers.agent_runtime import (
     AuthMode,
     DirectiveRequest,
     DirectiveResult,
+    ModelUsage,
+    PermissionFallback,
     ResumableAgentRuntime,
 )
 from agentic_runner.workers.contract_device_login import login_file_counts
@@ -584,6 +586,9 @@ class _RuntimeContextState:
     # on the Profile's `command_policy` blob — the sandbox floor already lives there, and
     # a ceiling is exactly a floor rule. None means the Runner's own default applies.
     memory_limit_bytes: int | None = None
+    # PRD decision 12: what a runtime asked per command does when the command policy has
+    # no answer. Carried on the same `command_policy` blob as the ceiling above.
+    permission_fallback: PermissionFallback = PermissionFallback.DENY
     # Pushed on change and applied on receipt (ADR-0011 §11, PRD issue 44): the evaluator
     # is local, so a narrowing lands on the next verb this state is read for.
     grant_snapshot: GrantSnapshot = UNENFORCED_SNAPSHOT
@@ -1292,6 +1297,56 @@ def _profile_memory_limit_bytes(command_policy: Mapping[str, object]) -> int | N
     return None
 
 
+def _model_usage_reports(
+    cli_kind: str, model_usage: Sequence[ModelUsage]
+) -> list[tuple[dict[str, Any], str | None]]:
+    """A harness's per-model usage in the shapes the harness usage route already prices.
+
+    Claude Code: one ``result`` message whose ``modelUsage`` names every model. Codex: one
+    ``turn.completed.usage`` per model, whose ``input_tokens`` includes the cached reads,
+    with the model the harness itself named rather than the Agent's configured one.
+    """
+
+    if cli_kind == "claude_code":
+        return [
+            (
+                {
+                    "type": "result",
+                    "modelUsage": {
+                        row.model: {
+                            "inputTokens": row.input_tokens,
+                            "outputTokens": row.output_tokens,
+                            "cacheReadInputTokens": row.cached_read_tokens,
+                            "cacheCreationInputTokens": row.cached_write_tokens,
+                        }
+                        for row in model_usage
+                    },
+                },
+                None,
+            )
+        ]
+    return [
+        (
+            {
+                "input_tokens": row.input_tokens + row.cached_read_tokens,
+                "cached_input_tokens": row.cached_read_tokens,
+                "output_tokens": row.output_tokens,
+                "reasoning_output_tokens": row.reasoning_output_tokens,
+            },
+            row.model,
+        )
+        for row in model_usage
+    ]
+
+
+def _profile_permission_fallback(command_policy: Mapping[str, object]) -> PermissionFallback:
+    """The Profile's `permission_fallback`; anything but exactly ``hold`` is ``deny``."""
+
+    if command_policy.get("permission_fallback") == PermissionFallback.HOLD.value:
+        return PermissionFallback.HOLD
+    return PermissionFallback.DENY
+
+
 def _contract_workspace_path(
     *,
     workspace_root: Path,
@@ -1984,6 +2039,7 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
+                    permission_fallback=runtime_state.permission_fallback,
                     prompt=attempt.skills_preamble
                     + _directive_prompt(
                         completion_criteria=runtime_state.completion_criteria,
@@ -3329,6 +3385,7 @@ class RunnerRalphActivities:
             cli_kind=runtime_context.cli_kind,
             model=runtime_context.model,
             memory_limit_bytes=_profile_memory_limit_bytes(runtime_context.command_policy),
+            permission_fallback=_profile_permission_fallback(runtime_context.command_policy),
             grant_snapshot=snapshot,
             grant_snapshot_payload=snapshot_payload,
             persona_slug=runtime_context.persona_slug,
@@ -4596,6 +4653,7 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
+                    permission_fallback=state.permission_fallback,
                     prompt=attempt.skills_preamble
                     + _learning_prompt(
                         request,
@@ -4846,6 +4904,7 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
+                    permission_fallback=state.permission_fallback,
                     prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
                     base_branch=request.base_ref,
                     work_branch=state.work_branch,
@@ -5081,38 +5140,41 @@ class RunnerRalphActivities:
         if auth_mode == AuthMode.API_KEY:
             return
         directive = directive_id(work_record_id=work_record_id, directive_number=directive_number)
-        if runtime_state.cli_kind == "claude_code":
+        reports: list[tuple[dict[str, Any], str | None]]
+        if result.model_usage:
+            reports = _model_usage_reports(runtime_state.cli_kind, result.model_usage)
+        elif runtime_state.cli_kind == "claude_code":
             usage_event = extract_claude_result(result.stdout)
-            model_name = None
+            reports = [(usage_event, None)] if usage_event else []
         else:
             usage_event = extract_codex_turn_usage(result.stdout)
-            model_name = runtime_state.model or None
-        if not usage_event:
-            return
-        if runtime_state.cli_kind != "claude_code" and model_name is None:
-            # The backend 422s a Codex harness report with no model (`report_harness_usage`
-            # requires one to price it), and the `suppress` below swallows that -- an Agent
-            # with no model configured would otherwise lose this Usage Record with no trace.
-            activity.logger.warning(
-                "harness usage unreported: Agent %s has no model configured for a Codex "
-                "harness Directive (work record %s)",
-                runtime_state.agent_id,
-                work_record_id,
-            )
-        with contextlib.suppress(Exception):  # noqa: BLE001 - metering never fails a Directive
-            await self._fastapi_client.report_harness_usage(
-                {
-                    "work_record_id": work_record_id,
-                    "agent_id": runtime_state.agent_id,
-                    "contract_id": runtime_state.contract_id,
-                    "directive_id": directive,
-                    "runner_id": None,
-                    "runtime_kind": runtime_state.cli_kind,
-                    "provider_name": runtime_state.cli_kind,
-                    "model_name": model_name,
-                    "usage_event": usage_event,
-                }
-            )
+            reports = [(usage_event, runtime_state.model or None)] if usage_event else []
+        for usage_event, model_name in reports:
+            if runtime_state.cli_kind != "claude_code" and model_name is None:
+                # The backend 422s a Codex harness report with no model
+                # (`report_harness_usage` requires one to price it), and the `suppress`
+                # below swallows that -- an Agent with no model configured would otherwise
+                # lose this Usage Record with no trace.
+                activity.logger.warning(
+                    "harness usage unreported: Agent %s has no model configured for a Codex "
+                    "harness Directive (work record %s)",
+                    runtime_state.agent_id,
+                    work_record_id,
+                )
+            with contextlib.suppress(Exception):  # noqa: BLE001 - metering never fails a Directive
+                await self._fastapi_client.report_harness_usage(
+                    {
+                        "work_record_id": work_record_id,
+                        "agent_id": runtime_state.agent_id,
+                        "contract_id": runtime_state.contract_id,
+                        "directive_id": directive,
+                        "runner_id": None,
+                        "runtime_kind": runtime_state.cli_kind,
+                        "provider_name": runtime_state.cli_kind,
+                        "model_name": model_name,
+                        "usage_event": usage_event,
+                    }
+                )
 
     @activity.defn(name="wipe_contract_residue")
     async def wipe_contract_residue(self, request: ContractResidueInput) -> ContractResidueOutput:
