@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts.runner_registration import LifecycleEvent, LifecycleKind
 
 __all__ = ["LIFECYCLE_FILENAME", "LifecycleOutbox"]
@@ -33,9 +34,8 @@ class LifecycleOutbox:
         self._write(events[-_KEEP:])
 
     def pending(self) -> list[LifecycleEvent]:
-        if not self._path.is_file():
-            return []
-        return _EVENTS.validate_json(self._path.read_bytes())
+        raw = private_read(self._path)
+        return [] if raw is None else _EVENTS.validate_json(raw)
 
     def acknowledge(self, sent: list[LifecycleEvent]) -> None:
         """Drop what an acknowledged heartbeat carried; keep anything added meanwhile."""
@@ -44,5 +44,4 @@ class LifecycleOutbox:
         self._write(remaining)
 
     def _write(self, events: list[LifecycleEvent]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_bytes(_EVENTS.dump_json(events))
+        private_write(self._path, _EVENTS.dump_json(events))

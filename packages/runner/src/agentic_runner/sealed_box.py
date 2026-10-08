@@ -52,6 +52,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts.runner_registration import RecipientKey
 from agentic_runner_contracts.sealed_credential import (
     RENEWAL_INTERVAL,
@@ -231,7 +232,7 @@ class RecipientKeyStore:
         re-seal confirms (22 A7), and the process never rotates on its own after this.
         """
 
-        if not self._path.exists():
+        if private_read(self._path) is None:
             # A first boot: adopt outright, rather than let `_load` mint a key nobody
             # registered only to demote it.
             self._save(
@@ -278,8 +279,9 @@ class RecipientKeyStore:
     def _load(self) -> dict[str, object]:
         if self._state is not None:
             return self._state
-        if self._path.exists():
-            self._state = json.loads(self._path.read_text(encoding="utf-8"))
+        raw = private_read(self._path)
+        if raw is not None:
+            self._state = json.loads(raw)
         else:
             self._state = {
                 "current": _raw(generate_recipient_key()),
@@ -290,11 +292,7 @@ class RecipientKeyStore:
         return self._state
 
     def _save(self, state: dict[str, object]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(state), encoding="utf-8")
-        # The private half is in this file; a shared PVC or a workstation home is not a
-        # place to leave it group-readable (the same rule `registration.save_state` keeps).
-        self._path.chmod(0o600)
+        private_write(self._path, json.dumps(state).encode("utf-8"))
         self._state = state
 
 

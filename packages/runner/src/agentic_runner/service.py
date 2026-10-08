@@ -62,6 +62,7 @@ from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOutbox
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
+from agentic_runner.private_state import UnsafeStateError, ensure_private_dir, private_write
 from agentic_runner.registration import (
     RunnerRegistrationClient,
     RunnerRegistrationError,
@@ -613,7 +614,7 @@ class ControlPlaneStream:
         if self.lifecycle is not None:
             self.lifecycle.acknowledge(lifecycle)
         if self.heartbeat_stamp is not None:
-            self.heartbeat_stamp.touch()
+            self.heartbeat_stamp.touch(mode=0o600)
         self.proxy.outbox.acknowledge(ack.usage_accepted)
         for refused in self.sealed.apply(ack.sealed_credentials):
             _logger.warning(
@@ -743,7 +744,8 @@ async def run(
     try:
         require_isolation_supported(mode, can_separate_uids=can)
         control_plane = _require_env(CONTROL_PLANE_ENV)
-    except RunnerRegistrationError as error:
+        ensure_private_dir(config.state_dir)
+    except (RunnerRegistrationError, UnsafeStateError) as error:
         print(f"refusing to start ({error.reason}): {error}", flush=True)
         return 1
     # The control plane the activities call back is the one this process registered
@@ -799,13 +801,16 @@ async def _serve(
     except RunnerRegistrationError as error:
         print(f"registration refused ({error.reason}): {error}", flush=True)
         return 1
+    except UnsafeStateError as error:
+        print(f"refusing to start ({error.reason}): {error}", flush=True)
+        return 1
     print(outcome, flush=True)
     interval = (
         heartbeat_interval if heartbeat_interval is not None else state.heartbeat_interval_seconds
     )
     # `status` reads these two (issue 47); the process is the only writer of either.
     pidfile = state_dir / PIDFILE_NAME
-    pidfile.write_text(str(os.getpid()), encoding="utf-8")
+    private_write(pidfile, str(os.getpid()).encode("utf-8"))
     lifecycle = LifecycleOutbox(state_dir)
     lifecycle.add(LifecycleKind.START, datetime.now(UTC))
     try:
