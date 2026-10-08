@@ -223,8 +223,36 @@ class BootstrapResponse(BaseModel):
     stale_after_seconds: int = int(HEARTBEAT_STALE_AFTER.total_seconds())
 
 
+class SelfTestFailure(StrEnum):
+    """Why a harness's ``--version`` under a Contract's uid did not answer (local-agents 17)."""
+
+    NOT_FOUND = "not_found"
+    BELOW_FLOOR = "below_floor"
+    SPAWN_FAILED = "spawn_failed"
+    TIMEOUT = "timeout"
+
+
+class HarnessSelfTest(BaseModel):
+    """The last ``--version`` run as the Contract would run it: a result, never its output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    at: datetime
+    reason: SelfTestFailure | None = None
+
+
+_HARNESS_DESCRIPTOR_FIELDS: Final = ("auth_modes", "permission_mode", "self_test")
+
+
 class HarnessVersion(BaseModel):
-    """One CLI as it stands under one Contract root (ADR-0015 §4, 23 item 5)."""
+    """One CLI as it stands under one Contract root (ADR-0015 §4, 23 item 5).
+
+    ``auth_modes``, ``permission_mode`` and ``self_test`` are the runtime's descriptor
+    (local-agents 17), self-reported like everything else here. The permission mode is
+    what the Runner passes the harness, reported and never trusted as a gate (ADR-0011
+    §12).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -232,6 +260,25 @@ class HarnessVersion(BaseModel):
     cli_kind: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
     version: Annotated[str, StringConstraints(max_length=64)]
     auth_mode: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
+    auth_modes: (
+        list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]] | None
+    ) = Field(default=None, max_length=8)
+    permission_mode: (
+        Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_=;.-]{0,95}$")] | None
+    ) = None
+    self_test: HarnessSelfTest | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_descriptor(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A control plane on contracts 3.3 forbids extra keys, so a row without the
+        # descriptor is the body it already parses. One with it needs the control plane
+        # on this minor first -- upgrade the control plane before the Runner.
+        body = handler(self)
+        if isinstance(body, dict):
+            for name in _HARNESS_DESCRIPTOR_FIELDS:
+                if body.get(name) is None:
+                    body.pop(name, None)
+        return body
 
 
 class ResourcePressure(BaseModel):
