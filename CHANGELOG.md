@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.4.1](https://github.com/qtsone/agentic-runner/compare/v3.4.0...v3.4.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **runner:** spawn without the memory ceiling where macOS refuses RLIMIT_DATA (QTS-1319) ([#34](https://github.com/qtsone/agentic-runner/issues/34)) ([63fe3ca](https://github.com/qtsone/agentic-runner/commit/63fe3ca1b5be628a3e292352f69c857c2f7922ca))
+
 # [3.4.0](https://github.com/qtsone/agentic-runner/compare/v3.3.0...v3.4.0) (2026-10-08)
 
 
