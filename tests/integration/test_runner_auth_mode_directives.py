@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -23,6 +25,7 @@ from temporalio.exceptions import ApplicationError
 from agentic_runner import service
 from agentic_runner.activities import (
     AGENT_RUNTIME_EVIDENCE_SOURCE,
+    HARNESS_HOLD_SOURCE,
     HARNESS_LOGIN_RESIDUE_SOURCE,
     RunnerRalphActivities,
 )
@@ -41,7 +44,11 @@ from agentic_runner.workers.agent_runtime import (
 )
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts import __version__ as contracts_version
-from agentic_runner_contracts.activity_io import BranchPullRequestInput
+from agentic_runner_contracts.activity_io import (
+    BranchPullRequestInput,
+    HarnessHold,
+    HarnessHoldKind,
+)
 from agentic_runner_contracts.routing import DirectiveRouting, RunnerRoutingIdentity
 from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
 from agentic_runner_contracts.runtime_context import work_branch_name
@@ -420,3 +427,68 @@ async def test_a_delivered_key_puts_the_next_shared_directive_on_the_proxy(
     assert seen == ["Bearer sk-funder-key"]
     [record] = proxy.outbox.pending()
     assert (record.contract_id, record.prompt_tokens) == (UUID(CONTRACT_ID), 12)
+
+
+_CODEX_LIMIT_STDOUT = (
+    '{"type": "error", "message": "You\'ve hit your usage limit for GPT-5. Switch to another '
+    'model now, or try again at 11:31 PM (America/Chicago)."}'
+)
+
+
+@dataclass
+class _LimitedCodex(_Codex):
+    """A Codex whose person's plan is spent: it prints the limit and exits 1."""
+
+    async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
+        result = await super().execute_directive(request)
+        return replace(result, exit_code=1, stdout=_CODEX_LIMIT_STDOUT)
+
+
+@pytest.mark.asyncio
+async def test_a_subscription_usage_limit_returns_a_hold_and_pushes_nothing(
+    tmp_path: Path,
+) -> None:
+    client = _Client()
+    activities = _activities(client, _LimitedCodex(), tmp_path=tmp_path, host_party="user")
+
+    output = await activities.create_or_update_branch_pr(_branch_pr_input("user"))
+
+    assert output.harness_hold == HarnessHold(
+        kind=HarnessHoldKind.USAGE_LIMIT, retry_not_before=_next_chicago_2331()
+    )
+    assert (output.pr_created, output.branch_head_sha) == (False, "")
+    git = activities._git_workspace
+    assert isinstance(git, FakeGitWorkspace)
+    assert not {"commit_all", "push_branch"} & {call.operation for call in git.calls}
+    [event] = client.payloads(HARNESS_HOLD_SOURCE)
+    assert event == {
+        "event": "directive.harness_hold",
+        "kind": "usage_limit",
+        "cli_kind": "codex_cli",
+        "retry_not_before": output.harness_hold.retry_not_before,
+        "directive_number": 1,
+        "agent_id": None,
+        "contract_id": CONTRACT_ID,
+    }
+    assert "usage limit" not in repr(event)
+
+
+@pytest.mark.asyncio
+async def test_an_api_key_directive_is_never_classified(tmp_path: Path) -> None:
+    # The same output on the proxy is the proxy's limit, so it fails as it did before.
+    client = _Client()
+
+    with pytest.raises(RuntimeError, match="Codex CLI edit failed"):
+        await _activities(
+            client, _LimitedCodex(), tmp_path=tmp_path, host_party="user", proxy=_Proxy(holds=True)
+        ).create_or_update_branch_pr(_branch_pr_input("user"))
+
+    assert client.payloads(HARNESS_HOLD_SOURCE) == []
+
+
+def _next_chicago_2331() -> str:
+    chicago = datetime.now(ZoneInfo("America/Chicago"))
+    reset = chicago.replace(hour=23, minute=31, second=0, microsecond=0)
+    if reset <= chicago:
+        reset += timedelta(days=1)
+    return reset.astimezone(UTC).isoformat()
