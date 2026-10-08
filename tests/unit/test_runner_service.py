@@ -27,12 +27,20 @@ from typing import Any
 import httpx
 import pytest
 
+from agentic_runner import __version__ as runner_version
 from agentic_runner import service
 from agentic_runner.build import build_id
 from agentic_runner.recipient_key_secret import KubernetesSecrets, ensure_recipient_key
-from agentic_runner.registration import can_separate_uids
+from agentic_runner.registration import (
+    CONTROL_PLANE_OLDER_REASON,
+    RunnerRegistrationClient,
+    RunnerRegistrationError,
+    can_separate_uids,
+)
 from agentic_runner.sealed_box import RecipientKeyStore, generate_recipient_key
 from agentic_runner.testing import FakeControlPlane
+from agentic_runner_contracts import __version__ as contracts_version
+from agentic_runner_contracts.runner_registration import IsolationMode, RecipientKey
 
 CONTROL_PLANE = "http://control-plane.test"
 
@@ -272,3 +280,42 @@ def test_can_separate_uids_reads_the_effective_capability_set(tmp_path: Path) ->
 
     status.write_text("Name:\tagentic-runner\nCapEff:\t0000000000000000\n")
     assert can_separate_uids(proc_status=status) is False
+
+
+@pytest.mark.asyncio
+async def test_a_control_plane_older_than_the_runner_is_named_not_dumped_as_a_422() -> None:
+
+    def older_control_plane(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422,
+            json={
+                "detail": [
+                    {
+                        "type": "extra_forbidden",
+                        "loc": ["body", "build_id"],
+                        "msg": "Extra inputs are not permitted",
+                        "input": build_id(),
+                    }
+                ]
+            },
+        )
+
+    key = generate_recipient_key()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(older_control_plane)) as client:
+        registration = RunnerRegistrationClient(base_url="https://cp.test", client=client)
+        with pytest.raises(RunnerRegistrationError) as refused:
+            await registration.bootstrap(
+                agent_token="agent-token-from-the-admin",
+                tags={},
+                isolation_mode=IsolationMode.NONE,
+                recipient_key=RecipientKey(key_id=key.key_id, public_key=key.public_key),
+                can_separate_uids=False,
+            )
+
+    message = str(refused.value)
+    assert refused.value.reason == CONTROL_PLANE_OLDER_REASON
+    assert "control plane is older than this Runner" in message
+    assert f"agentic-runner {runner_version}" in message
+    assert f"agentic-runner-contracts {contracts_version}" in message
+    assert "build_id" in message
+    assert "extra_forbidden" not in message
