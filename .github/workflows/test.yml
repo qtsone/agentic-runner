@@ -232,6 +232,12 @@ jobs:
       - name: Run the conformance suite
         run: tests/install/conformance.sh dist
 
+      # The attempt fence reads a process's start time with `ps -o lstart=` on macOS; the
+      # Tests job covers the Linux `/proc/<pid>/stat` reader (runner-repo 05).
+      - name: Attempt fence on macOS
+        if: runner.os == 'macOS'
+        run: uv run --locked pytest -q tests/unit/test_runner_attempt_fence.py
+
   summary:
     name: Summary
     runs-on: ubuntu-latest
