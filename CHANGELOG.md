@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.1](https://github.com/qtsone/agentic-runner/compare/v2.6.0...v2.6.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **runner:** refuse a retry while the prior attempt's process group lives (RR-05) ([#15](https://github.com/qtsone/agentic-runner/issues/15)) ([48ff4bb](https://github.com/qtsone/agentic-runner/commit/48ff4bbae760b868d023ce278060c8e29ebee60a))
+
 # [2.6.0](https://github.com/qtsone/agentic-runner/compare/v2.5.0...v2.6.0) (2026-10-08)
 
 

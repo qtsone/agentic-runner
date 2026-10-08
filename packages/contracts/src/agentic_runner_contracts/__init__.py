@@ -28,6 +28,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Additive; the envelope omits the key while it is empty, so a control plane on 2.5 parses
 # a beat unchanged until the Runner has started a Tool Server -- upgrade the control plane
 # before the Runner.
-__version__ = "2.6.0"
+__version__ = "2.6.1"
 
 __all__ = ["__version__"]
