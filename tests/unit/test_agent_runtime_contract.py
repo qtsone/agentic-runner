@@ -8,6 +8,7 @@ describing how to drive it. Codex is the first case here; issue 11 appends Claud
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -15,11 +16,13 @@ from pathlib import Path
 import pytest
 
 from agentic_runner.workers.agent_runtime import (
+    REFUSED_PERMISSION_MODE,
     AgentRuntime,
     AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime, SubprocessResult
@@ -32,6 +35,7 @@ class RuntimeContractCase:
 
     cli_kind: str
     auth_modes: frozenset[AuthMode]
+    permission_mode: str
     make_success: Callable[[Path], tuple[AgentRuntime, DirectiveRequest]]
     make_refusal: Callable[[Path], tuple[AgentRuntime, DirectiveRequest]]
     make_outside_root: Callable[[Path], tuple[AgentRuntime, DirectiveRequest]]
@@ -162,6 +166,7 @@ RUNTIME_CASES: list[RuntimeContractCase] = [
     RuntimeContractCase(
         cli_kind="codex_cli",
         auth_modes=frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION}),
+        permission_mode="sandbox=workspace-write;approval=never",
         make_success=_codex_success,
         make_refusal=_codex_refusal,
         make_outside_root=_codex_outside_root,
@@ -169,6 +174,7 @@ RUNTIME_CASES: list[RuntimeContractCase] = [
     RuntimeContractCase(
         cli_kind="claude_code",
         auth_modes=frozenset({AuthMode.API_KEY}),
+        permission_mode="permission=skip;output=json",
         make_success=_claude_success,
         make_refusal=_claude_refusal,
         make_outside_root=_claude_outside_root,
@@ -183,6 +189,47 @@ def test_runtime_satisfies_agent_runtime_port(case: RuntimeContractCase, tmp_pat
     runtime, _ = case.make_success(tmp_path)
     assert isinstance(runtime, AgentRuntime)
     assert runtime.auth_modes == case.auth_modes
+
+
+@_case
+def test_capabilities_declare_the_auth_modes_and_the_permission_mode_passed(
+    case: RuntimeContractCase, tmp_path: Path
+) -> None:
+    runtime, _ = case.make_success(tmp_path)
+
+    assert runtime.capabilities() == RuntimeCapabilities(
+        auth_modes=case.auth_modes, permission_mode=case.permission_mode
+    )
+    # What the heartbeat carries must fit its pattern, or the whole beat is refused.
+    assert re.fullmatch(r"[a-z][a-z0-9_=;.-]{0,95}", case.permission_mode)
+
+
+@_case
+def test_an_unguarded_runtime_passes_no_permission_mode(
+    case: RuntimeContractCase, tmp_path: Path
+) -> None:
+    runtime, _ = case.make_refusal(tmp_path)
+
+    assert runtime.capabilities().permission_mode == REFUSED_PERMISSION_MODE
+
+
+@dataclass
+class _FakeRuntime:
+    auth_modes: frozenset[AuthMode] = frozenset({AuthMode.API_KEY})
+    host_api_key: bool = False
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(auth_modes=self.auth_modes, permission_mode="fake")
+
+    async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
+        raise AssertionError("not run here")
+
+
+def test_a_fake_runtime_satisfies_the_port_with_its_own_capabilities() -> None:
+    runtime = _FakeRuntime()
+
+    assert isinstance(runtime, AgentRuntime)
+    assert runtime.capabilities().auth_modes == {AuthMode.API_KEY}
 
 
 @_case

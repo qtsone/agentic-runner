@@ -26,6 +26,7 @@ from agentic_runner.workers.agent_runtime import (
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts.activity_io import BranchPullRequestInput
@@ -103,6 +104,9 @@ class _SkillReadingRuntime:
     auth_modes: frozenset[AuthMode] = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     requests: list[DirectiveRequest] = field(default_factory=list)
     seen_sha256: str | None = None
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(auth_modes=self.auth_modes, permission_mode="fake")
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         self.requests.append(request)
