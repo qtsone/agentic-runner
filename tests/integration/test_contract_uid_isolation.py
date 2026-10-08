@@ -200,7 +200,8 @@ async def test_the_acp_bridge_and_its_harness_run_as_the_contracts_uid(tmp_path:
             WORKSPACE_ROOT=tmp_path / "workspaces",
             CODEX_HOME=tmp_path / "codex-home",
         ),
-        bridge_argv=[sys.executable, str(fake_agent)],
+        # The interpreter itself, not the venv's link to it: the fake needs only stdlib.
+        bridge_argv=[os.path.realpath(sys.executable), str(fake_agent)],
     )
 
     result = await runtime.execute_directive(
