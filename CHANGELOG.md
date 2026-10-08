@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [2.8.0](https://github.com/qtsone/agentic-runner/compare/v2.7.0...v2.8.0) (2026-10-08)
+
+
+### Features
+
+* **testing:** publish the fake control plane as a conformance kit (RR-07) ([#17](https://github.com/qtsone/agentic-runner/issues/17)) ([0c70412](https://github.com/qtsone/agentic-runner/commit/0c704126ae83a4f2ce529dcd041fff8fca2284fe)), closes [#15](https://github.com/qtsone/agentic-runner/issues/15)
+
 # [2.7.0](https://github.com/qtsone/agentic-runner/compare/v2.6.1...v2.7.0) (2026-10-08)
 
 
