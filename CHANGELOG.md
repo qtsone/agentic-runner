@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.0.0](https://github.com/qtsone/agentic-runner/compare/v2.8.0...v3.0.0) (2026-10-08)
+
+
+### Bug Fixes
+
+* **state:** private, atomic state directory; refuse an unsafe one at start (RR-08) ([#16](https://github.com/qtsone/agentic-runner/issues/16)) ([8babcb4](https://github.com/qtsone/agentic-runner/commit/8babcb4669666fcfe7157311d8d370d729510f3c))
+
+
+### Features
+
+* **runner:** resume the harness session when a Directive attempt retries (local-agents 16) ([#19](https://github.com/qtsone/agentic-runner/issues/19)) ([55146de](https://github.com/qtsone/agentic-runner/commit/55146de334b5cd3a04b19baab41f9f12713f590f))
+
+
+### BREAKING CHANGES
+
+* **state:** the Runner refuses to start on a state directory that is not 0700, or on a state file that is not 0600, that is a symlink, or that another uid owns. Fix a volume from an earlier release with `chmod 700 <state>`, `chmod 600 <state>/*.json <state>/runner.pid`, and `chown` to the Runner's uid.
+
 # [2.8.0](https://github.com/qtsone/agentic-runner/compare/v2.7.0...v2.8.0) (2026-10-08)
 
 
