@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.1.1](https://github.com/qtsone/agentic-runner/compare/v3.1.0...v3.1.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **runner:** name a control plane older than the Runner instead of a raw 422 (RR-13) ([#24](https://github.com/qtsone/agentic-runner/issues/24)) ([950ad65](https://github.com/qtsone/agentic-runner/commit/950ad6587be55f11590956f88388b120ede8c51b))
+
 # [3.1.0](https://github.com/qtsone/agentic-runner/compare/v3.0.0...v3.1.0) (2026-10-08)
 
 
