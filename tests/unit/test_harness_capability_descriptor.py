@@ -63,6 +63,14 @@ def _isolation(tmp_path: Path) -> ContractIsolation:
     )
 
 
+def _with_roots(isolation: ContractIsolation, *contract_ids: str) -> ContractIsolation:
+    """The harness roots a Contract's first Directive leaves, which the sweep then lists."""
+
+    for contract_id in contract_ids or (CONTRACT,):
+        isolation.sandbox(contract_id, runtime_kind="codex_cli")
+    return isolation
+
+
 def _fake_cli(bin_dir: Path, name: str, body: str) -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / name
@@ -87,7 +95,7 @@ def _self_tests(
     **overrides: Any,
 ) -> HarnessSelfTests:
     return HarnessSelfTests(
-        sandbox_for=lambda contract_id, cli_kind: isolation.sandbox(
+        sandbox_for=lambda contract_id, cli_kind: isolation.existing_sandbox(
             contract_id, runtime_kind=cli_kind
         ),
         in_flight=in_flight or DirectivesInFlight(),
@@ -105,7 +113,7 @@ def _self_tests(
 async def test_the_self_test_runs_the_cli_in_the_contracts_harness_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    isolation = _isolation(tmp_path)
+    isolation = _with_roots(_isolation(tmp_path))
     seen = tmp_path / "seen"
     _fake_cli(
         tmp_path / "bin",
@@ -174,7 +182,7 @@ async def test_a_failed_self_test_reports_its_reason_code_and_never_the_output(
 ) -> None:
     _fake_cli(tmp_path / "bin", "codex", body)
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/bin:/usr/bin")
-    self_tests = _self_tests(_isolation(tmp_path))
+    self_tests = _self_tests(_with_roots(_isolation(tmp_path)))
 
     await self_tests.run_due([(CONTRACT, "codex_cli")])
 
@@ -188,7 +196,7 @@ async def test_a_cli_missing_from_path_is_not_found(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
-    self_tests = _self_tests(_isolation(tmp_path))
+    self_tests = _self_tests(_with_roots(_isolation(tmp_path)))
 
     await self_tests.run_due([(CONTRACT, "codex_cli")])
 
@@ -218,7 +226,7 @@ async def test_a_spawn_that_times_out_or_fails_reports_it(
     async def run(**_kwargs: Any) -> SubprocessResult:
         raise raised
 
-    self_tests = _self_tests(_isolation(tmp_path), run=run)
+    self_tests = _self_tests(_with_roots(_isolation(tmp_path)), run=run)
 
     await self_tests.run_due([(CONTRACT, "codex_cli")])
 
@@ -237,7 +245,7 @@ async def test_the_self_test_never_runs_while_the_contract_has_a_directive_runni
         return SubprocessResult(exit_code=0, stdout="0.141.0", stderr="")
 
     in_flight = DirectivesInFlight()
-    self_tests = _self_tests(_isolation(tmp_path), in_flight=in_flight, run=run)
+    self_tests = _self_tests(_with_roots(_isolation(tmp_path)), in_flight=in_flight, run=run)
 
     with in_flight.running(CONTRACT):
         await self_tests.run_due([(CONTRACT, "codex_cli")])
@@ -250,6 +258,61 @@ async def test_the_self_test_never_runs_while_the_contract_has_a_directive_runni
 
 
 @pytest.mark.asyncio
+async def test_a_contract_wiped_mid_sweep_is_neither_recreated_nor_given_a_uid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Sorts after CONTRACT, so the sweep reaches it only after the wipe.
+    wiped = "22222222-2222-4222-8222-222222222222"
+    isolation = ContractIsolation(
+        workspace_root=tmp_path / "workspaces",
+        state_dir=tmp_path / "state",
+        uid_min=61_000,
+        uid_max=61_009,
+        max_processes=4096,
+        memory_limit_bytes=resource.RLIM_INFINITY,
+        can_separate_uids=True,
+    )
+    # Not root here: let the tree be prepared without the chown a real uid needs.
+    monkeypatch.setattr("os.chown", lambda *_args: None)
+    _with_roots(isolation, CONTRACT, wiped)
+    targets = isolation.harness_roots()
+
+    spawns: list[str] = []
+
+    async def run(**kwargs: Any) -> SubprocessResult:
+        spawns.append(kwargs["cwd"].name)
+        if len(spawns) == 1:
+            # The termination wipe, landing while the sweep awaits the first spawn.
+            isolation.wipe(wiped)
+        return SubprocessResult(exit_code=0, stdout="codex-cli 0.141.0", stderr="")
+
+    self_tests = _self_tests(isolation, run=run)
+    await self_tests.run_due(targets)
+
+    assert spawns == [CONTRACT]
+    assert not isolation.contract_dir(wiped).exists()
+    assert not isolation.has_uid(wiped)
+    assert self_tests.result(wiped, "codex_cli") is None
+    assert isolation.harness_roots() == [(CONTRACT, "codex_cli")]
+
+
+@pytest.mark.asyncio
+async def test_a_root_gone_from_the_sweep_drops_its_last_result(tmp_path: Path) -> None:
+    async def run(**_kwargs: Any) -> SubprocessResult:
+        return SubprocessResult(exit_code=0, stdout="0.141.0", stderr="")
+
+    isolation = _with_roots(_isolation(tmp_path))
+    self_tests = _self_tests(isolation, run=run)
+    await self_tests.run_due(isolation.harness_roots())
+    assert self_tests.result(CONTRACT, "codex_cli") is not None
+
+    isolation.wipe(CONTRACT)
+    await self_tests.run_due(isolation.harness_roots())
+
+    assert self_tests.result(CONTRACT, "codex_cli") is None
+
+
+@pytest.mark.asyncio
 async def test_the_self_test_runs_at_most_once_per_interval_per_contract(tmp_path: Path) -> None:
     other = str(uuid4())
     runs: list[str] = []
@@ -259,7 +322,9 @@ async def test_the_self_test_runs_at_most_once_per_interval_per_contract(tmp_pat
         return SubprocessResult(exit_code=0, stdout="0.141.0", stderr="")
 
     clock = _Clock()
-    self_tests = _self_tests(_isolation(tmp_path), run=run, monotonic=clock)
+    self_tests = _self_tests(
+        _with_roots(_isolation(tmp_path), CONTRACT, other), run=run, monotonic=clock
+    )
     targets = [(CONTRACT, "codex_cli"), (other, "codex_cli")]
 
     await self_tests.run_due(targets)

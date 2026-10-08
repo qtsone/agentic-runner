@@ -964,7 +964,7 @@ async def _serve_registered(
     runtimes = build_agent_runtimes(settings, attestation.clis if attestation is not None else [])
     in_flight = DirectivesInFlight()
     self_tests = HarnessSelfTests(
-        sandbox_for=lambda contract_id, cli_kind: isolation.sandbox(
+        sandbox_for=lambda contract_id, cli_kind: isolation.existing_sandbox(
             contract_id, runtime_kind=cli_kind
         ),
         in_flight=in_flight,

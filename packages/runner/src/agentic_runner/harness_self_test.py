@@ -40,7 +40,7 @@ _OUTPUT_LIMIT_BYTES: Final = 4096
 # Where each harness reads its config root from; the same variable its runtime sets.
 _HARNESS_ROOT_ENV: Final = {"codex_cli": "CODEX_HOME", "claude_code": "CLAUDE_CONFIG_DIR"}
 
-SandboxFor = Callable[[str, str], DirectiveSandbox]
+SandboxFor = Callable[[str, str], DirectiveSandbox | None]
 
 
 class DirectivesInFlight:
@@ -92,18 +92,33 @@ class HarnessSelfTests:
         return self._results.get((str(contract_id), cli_kind))
 
     async def run_due(self, targets: Sequence[tuple[str, str]]) -> None:
+        for gone in (self._results.keys() | self._last_run.keys()) - set(targets):
+            self._forget(gone)
         for contract_id, cli_kind in targets:
             key = (contract_id, cli_kind)
             last = self._last_run.get(key)
             if last is not None and self._monotonic() - last < self._interval:
                 continue
+            # Checked before the spawn only: a Directive that starts during the (at most
+            # _TIMEOUT_SECONDS) spawn overlaps it. Accepted -- `--version` neither reads
+            # nor writes the harness root's state and holds one process slot briefly.
             if self._in_flight.busy(contract_id):
                 # Not stamped: it runs on the first sweep after the Directive ends.
                 continue
-            self._results[key] = await self._self_test(contract_id, cli_kind)
+            result = await self._self_test(contract_id, cli_kind)
+            if result is None:
+                self._forget(key)
+                continue
+            self._results[key] = result
             self._last_run[key] = self._monotonic()
 
-    async def _self_test(self, contract_id: str, cli_kind: str) -> HarnessSelfTest:
+    def _forget(self, key: tuple[str, str]) -> None:
+        self._results.pop(key, None)
+        self._last_run.pop(key, None)
+
+    async def _self_test(self, contract_id: str, cli_kind: str) -> HarnessSelfTest | None:
+        """``None`` when the harness root is gone, wiped since the sweep listed it."""
+
         name = CLI_NAMES.get(cli_kind)
         if name is None or cli_kind not in self._served:
             return self._failed(SelfTestFailure.NOT_FOUND)
@@ -111,6 +126,8 @@ class HarnessSelfTests:
             sandbox = self._sandbox_for(contract_id, cli_kind)
         except (ContractIsolationError, OSError):
             return self._failed(SelfTestFailure.SPAWN_FAILED)
+        if sandbox is None:
+            return None
         env = {
             "PATH": os.environ.get("PATH") or os.defpath,
             "HOME": str(sandbox.home_dir),
