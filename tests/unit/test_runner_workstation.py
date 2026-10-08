@@ -2,7 +2,7 @@
 
 What this pins, per acceptance criterion:
 
-* the formula and the three service definitions install a **user-level** service -- no
+* the three service definitions install a **user-level** service -- no
   ``sudo``, no ``/Library/LaunchDaemons``, no system unit -- and ``status <org>`` reports
   the process, its identity and its heartbeat age;
 * ``codex`` and ``claude`` are located on ``PATH``, a missing one the Profile names
@@ -152,16 +152,6 @@ def test_every_service_definition_is_user_level(tmp_path: Path, platform: str) -
         assert "<LogonType>InteractiveToken</LogonType>" in text
         assert "<RunLevel>LeastPrivilege</RunLevel>" in text
         assert "<UserId>dev</UserId>" in text
-
-
-def test_the_homebrew_formula_installs_no_daemon_and_asks_for_no_root() -> None:
-    formula = (REPO / "packaging/homebrew/agentic-runner.rb").read_text()
-    code = "\n".join(line for line in formula.splitlines() if not line.lstrip().startswith("#"))
-
-    for forbidden in ('"sudo"', "LaunchDaemons", "require_root", "service do"):
-        assert forbidden not in code
-    assert 'bin.install_symlink libexec/"bin/agentic-runner"' in formula
-    assert "agentic-runner install <org>" in formula
 
 
 def test_the_cli_floors_are_the_versions_the_runner_image_pins() -> None:
@@ -530,7 +520,7 @@ def test_the_build_id_is_a_full_digest_of_the_package_sources(tmp_path: Path) ->
     assert re.fullmatch(r"[0-9a-f]{64}", original)
     assert original == build_id()  # the copy is this build
 
-    # Bytecode is not the build: a wheel, the image and a Homebrew install compile their own.
+    # Bytecode is not the build: a wheel, the image and a `uv tool install` compile their own.
     (package / "stray.pyc").write_bytes(b"compiled")
     assert build_id(package) == original
 

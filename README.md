@@ -24,9 +24,8 @@ This repository holds two Python distributions:
 | `agentic-runner-contracts` | [`packages/contracts`](packages/contracts) | The wire between the control plane and a Runner: activity I/O, the payloads a Runner parses, the Grant evaluator and the Public Metadata name builders. |
 | `agentic-runner` | [`packages/runner`](packages/runner) | The Runner process (`agentic-runner run`), Workspaces, Agent Runtimes, the GitHub client, the Verifier and the verb seams. |
 
-It also holds the image ([`Dockerfile.runner`](Dockerfile.runner)), the Helm chart
-([`charts/agentic-runner`](charts/agentic-runner)) and the Homebrew formula
-([`packaging/homebrew`](packaging/homebrew)).
+It also holds the image ([`Dockerfile.runner`](Dockerfile.runner)) and the Helm chart
+([`charts/agentic-runner`](charts/agentic-runner)).
 
 ## Three ways to run
 
