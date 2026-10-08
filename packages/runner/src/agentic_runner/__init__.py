@@ -7,6 +7,6 @@ stay on the platform; this package imports none of them, and a CI partition test
 (``tests/test_package_partition.py``) fails the build if that changes.
 """
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 __all__ = ["__version__"]

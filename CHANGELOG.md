@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.4.0](https://github.com/qtsone/agentic-runner/compare/v3.3.0...v3.4.0) (2026-10-08)
+
+
+### Features
+
+* **runner:** classify a subscription usage limit and an expired sign-in (QTS-891) ([#33](https://github.com/qtsone/agentic-runner/issues/33)) ([218c329](https://github.com/qtsone/agentic-runner/commit/218c329a87ce4129d051c74ede42d7395cb3110d))
+* **runner:** harness capability descriptor and per-Contract self-test in the heartbeat (QTS-894) ([#31](https://github.com/qtsone/agentic-runner/issues/31)) ([1f15b21](https://github.com/qtsone/agentic-runner/commit/1f15b2199fe965c84a43bcd701ac92494742a840))
+
 # [3.3.0](https://github.com/qtsone/agentic-runner/compare/v3.2.0...v3.3.0) (2026-10-08)
 
 
