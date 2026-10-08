@@ -28,6 +28,7 @@ import httpx
 import pytest
 
 from agentic_runner import service
+from agentic_runner.build import build_id
 from agentic_runner.recipient_key_secret import KubernetesSecrets, ensure_recipient_key
 from agentic_runner.registration import can_separate_uids
 from agentic_runner.sealed_box import RecipientKeyStore, generate_recipient_key
@@ -132,6 +133,8 @@ async def test_an_isolation_none_runner_starts_and_heartbeats_none(
     [bootstrap] = plane.bootstraps
     assert bootstrap.isolation_mode == "none"
     assert bootstrap.tags == {"region": "eu-west-1"}
+    # Sent before an identity exists, so a platform can refuse an unpublished build there.
+    assert bootstrap.build_id == build_id()
     assert plane.heartbeats[0].isolation_mode == "none"
     [runner_id] = plane.runner_ids
     assert plane.heartbeats[0].hosted_task_queue == f"runner.{runner_id}"

@@ -33,6 +33,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel, ConfigDict
 
 from agentic_runner import __version__ as runner_version
+from agentic_runner.build import build_id
 from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.channel_messages import TRANSCRIPT_DELIVERIES_PATH, TranscriptDelivery
@@ -252,6 +253,7 @@ class RunnerRegistrationClient:
             runner_version=runner_version,
             recipient_key=recipient_key,
             max_concurrent_directives=max_concurrent_directives,
+            build_id=build_id(),
         )
         payload = await self._post(BOOTSTRAP_PATH, content=request.model_dump_json(), headers={})
         response = BootstrapResponse.model_validate(payload)
