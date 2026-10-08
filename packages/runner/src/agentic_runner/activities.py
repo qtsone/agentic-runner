@@ -96,6 +96,7 @@ from agentic_runner.mcp import (
     McpPlan,
     RunnerHostedServer,
     Spawner,
+    ToolServerHealthLog,
     entry_for,
     plan_mcp,
 )
@@ -1433,6 +1434,7 @@ class RunnerRalphActivities:
         monotonic: Callable[[], float] = time.monotonic,
         mcp_spawner: Spawner | None = None,
         egress_resolver: Resolver | None = None,
+        tool_server_health: ToolServerHealthLog | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
         # Wall-clock source for per-Directive runtime, accrued against the Budget's
@@ -1491,6 +1493,7 @@ class RunnerRalphActivities:
         # proxy resolves a name -- the process and the network, seamed for tests.
         self._mcp_spawner = mcp_spawner
         self._egress_resolver = egress_resolver
+        self._tool_server_health = tool_server_health
 
     def activity_callables(self) -> list[Callable[..., Any]]:
         """Return decorated activity callables for Temporal worker registration."""
@@ -2417,6 +2420,7 @@ class RunnerRalphActivities:
                     credential_env=credentials.runner_hosted_server_env([reference]),
                     token=env[CALLBACK_TOKEN_ENV],
                     spawner=self._mcp_spawner,
+                    health=self._tool_server_health,
                 )
             )
             entries.append(entry_for(spec, hosted_url=hosted.url, bearer_env=CALLBACK_TOKEN_ENV))
