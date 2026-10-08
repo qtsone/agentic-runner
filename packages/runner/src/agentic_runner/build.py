@@ -23,7 +23,7 @@ def build_id(package: Path = _PACKAGE) -> str:
 
     Self-reported build identity (12 B7), not a signature: the consoles say
     "self-reported" beside it. Only ``.py`` files count, so a wheel, the image and a
-    Homebrew install of one release give the same value whatever bytecode each compiled.
+    ``uv tool install`` of one release give the same value whatever bytecode each compiled.
     """
 
     digest = sha256()

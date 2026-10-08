@@ -25,7 +25,6 @@ with the synonyms to avoid. Use those terms.
   (`integrations/`), the LLM proxy and the workstation install.
 - `charts/agentic-runner/` — the Helm chart; `test/run.sh` is the kind test.
 - `Dockerfile.runner`, `scripts/check-runner-images.sh` — the barebones image and its test.
-- `packaging/homebrew/` — the workstation formula.
 - `tests/` — unit and integration tests; `tests/test_package_partition.py` is the partition gate.
 - `packages/runner/src/agentic_runner/testing/` — the conformance kit: the fake control plane
   every test registers against, and the scenario suite (`docs/conformance.md`).
