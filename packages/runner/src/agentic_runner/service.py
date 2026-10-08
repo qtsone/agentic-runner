@@ -101,7 +101,9 @@ from agentic_runner.triage_activities import RunnerTriageActivities
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
+from agentic_runner.workers.claude_sign_in import ClaudeSignIns
 from agentic_runner.workers.codex_runtime import CodexRuntime
+from agentic_runner.workers.contract_device_login import ContractDeviceLogin
 from agentic_runner.workers.contract_isolation import UID_MAP_FILENAME, ContractIsolation
 from agentic_runner.workers.fastapi_client import DirectiveTokenSource, RunnerFastApiClient
 from agentic_runner.workers.settings import WorkerSettings, get_worker_settings
@@ -123,7 +125,11 @@ from agentic_runner_contracts.runner_registration import (
     ResourcePressure,
 )
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContextResolver
-from agentic_runner_contracts.sealed_credential import key_fingerprint
+from agentic_runner_contracts.sealed_credential import (
+    SignInCodeOutcome,
+    SignInCodeRelay,
+    key_fingerprint,
+)
 
 __all__ = [
     "AGENT_TOKEN_ENV",
@@ -568,6 +574,11 @@ class ControlPlaneStream:
     self_tests: HarnessSelfTests | None = None
     # Local-agents 04b: which delivered references fill the LLM proxy's slot, and where.
     llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
+    # Local-agents 05: the Claude Code sign-ins a relayed code is typed into.
+    sign_ins: ClaudeSignIns | None = None
+    # Reported once, on the beat after the relay: a lost beat loses the outcome, and the
+    # console's own wait on the sign-in is what tells the person.
+    _sign_in_outcomes: list[SignInCodeRelay] = field(default_factory=list)
     _delivered: set[tuple[str, str]] = field(default_factory=set)
     _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
     _last_seen: tuple[float, datetime] | None = None
@@ -670,11 +681,14 @@ class ControlPlaneStream:
             clock_skew_seconds=self._clock_skew(now),
             source_status=self.sources.statuses() if self.sources is not None else [],
             tool_servers=self.tool_servers.latest() if self.tool_servers is not None else [],
+            sign_in_codes=self._sign_in_outcomes,
         )
+        self._sign_in_outcomes = []
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
             self.sources.assign(ack.user_sources)
         await self._deliver_transcripts(ack)
+        await self._relay_sign_in_codes(ack)
         if self.lifecycle is not None:
             self.lifecycle.acknowledge(lifecycle)
         if self.heartbeat_stamp is not None:
@@ -720,6 +734,28 @@ class ControlPlaneStream:
                 _logger.warning(
                     "transcript %s could not be delivered: %s", request.request_id, error
                 )
+
+    async def _relay_sign_in_codes(self, ack: HeartbeatAck) -> None:
+        """Type each relayed code into the sign-in it names (local-agents 05).
+
+        The code is opened, written to that sign-in's PTY and dropped here; nothing logs
+        it and only its outcome travels back.
+        """
+
+        for sealed in ack.sign_in_codes:
+            code = self.sealed.open_sign_in_code(sealed)
+            if code is None:
+                outcome = SignInCodeOutcome.UNOPENABLE
+            elif self.sign_ins is None:
+                outcome = SignInCodeOutcome.UNKNOWN
+            else:
+                outcome = await self.sign_ins.relay(
+                    str(sealed.contract_id), sealed.sign_in_id, code
+                )
+            del code
+            self._sign_in_outcomes.append(
+                SignInCodeRelay(sign_in_id=sealed.sign_in_id, outcome=outcome)
+            )
 
     def _sync_delivered(self) -> None:
         """The resolver holds exactly what the last ack let this installation open."""
@@ -1010,6 +1046,8 @@ async def _serve_registered(
     )
     messages = MessageStore(state_dir / MESSAGES_DIR)
     stream.messages = messages
+    sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can_change_uid))
+    stream.sign_ins = sign_ins
     tool_servers = ToolServerHealthLog()
     stream.tool_servers = tool_servers
     link = HeartbeatLink(stream, ceilings=proxy.ceilings)
@@ -1056,6 +1094,7 @@ async def _serve_registered(
                 token_source=stream,
                 messages=messages,
                 tool_servers=tool_servers,
+                sign_ins=sign_ins,
                 # The wake signal rides the connection this process polls with: one
                 # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
                 signaller=TemporalWorkflowSignaller(client),
@@ -1083,6 +1122,7 @@ async def _serve_registered(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            await sign_ins.close()
             await run_runner_lifecycle_hook(hooks, HookName.RUNNER_SHUTDOWN)
             await _report_stop(link, lifecycle)
     return 1 if revoked.is_set() else 0
@@ -1195,6 +1235,7 @@ def _activities(
     messages: MessageStore | None = None,
     signaller: TemporalWorkflowSignaller | None = None,
     tool_servers: ToolServerHealthLog | None = None,
+    sign_ins: ClaudeSignIns | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1246,7 +1287,9 @@ def _activities(
     return [
         *ralph.activity_callables(),
         *ContractDeviceLoginActivities(
-            contract_isolation=isolation, host_party=state.host_party or None
+            contract_isolation=isolation,
+            device_login=ContractDeviceLogin(isolation, claude=sign_ins),
+            host_party=state.host_party or None,
         ).activity_callables(),
         *RunnerTriageActivities(
             proxy=proxy,

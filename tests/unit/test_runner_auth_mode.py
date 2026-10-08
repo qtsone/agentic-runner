@@ -37,6 +37,7 @@ from agentic_runner.sealed_box import (
 from agentic_runner.workers._runtime_support import RESERVED_DIRECTIVE_ENV, apply_extra_env
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
+from agentic_runner.workers.claude_sign_in import ClaudeAuthStatus
 from agentic_runner.workers.codex_runtime import CodexRuntime, SubprocessResult
 from agentic_runner.workers.command_policy import CommandPolicy, evaluate_command_policy
 from agentic_runner.workers.contract_device_login import DeviceLoginPrompt
@@ -312,14 +313,28 @@ def test_the_command_floor_admits_the_ephemeral_store_and_nothing_shaped_like_it
 # ------------------------------------------------------------------ refusals
 
 
+class _FakeClaudeSignIns:
+    def __init__(self, login: _FakeDeviceLogin) -> None:
+        self._login = login
+
+    async def status(self, contract_id: str) -> ClaudeAuthStatus:
+        self._login.calls += 1
+        return ClaudeAuthStatus(logged_in=True, auth_method="oauth_token", subscription_type="max")
+
+
 class _FakeDeviceLogin:
     def __init__(self) -> None:
         self.calls = 0
+        self.methods: list[str | None] = []
+        self.claude = _FakeClaudeSignIns(self)
 
-    async def sign_in(self, contract_id: str, *, runtime_kind: str) -> DeviceLoginPrompt:
+    async def sign_in(
+        self, contract_id: str, *, runtime_kind: str, method: str | None = None
+    ) -> DeviceLoginPrompt:
         from datetime import UTC, datetime
 
         self.calls += 1
+        self.methods.append(method)
         return DeviceLoginPrompt(
             contract_id=contract_id,
             runtime_kind=runtime_kind,
@@ -391,6 +406,63 @@ async def test_the_persons_own_runner_still_signs_in(tmp_path: Path) -> None:
 
     assert result.user_code == "ABCD-1234"
     assert login.calls == 1
+
+
+@pytest.mark.parametrize("host_party", ["organisation", "account"])
+@pytest.mark.parametrize("method", [None, "oauth_token"])
+@pytest.mark.asyncio
+async def test_a_shared_runner_makes_a_claude_long_lived_token(
+    tmp_path: Path, host_party: str, method: str | None
+) -> None:
+    """Local-agents 21: a shared Runner may run a Claude subscription on the long-lived
+    token, so it starts that sign-in -- the default method -- and reads its status."""
+
+    activities, login = _device_login_activities(tmp_path, host_party)
+
+    await activities.sign_in_contract_device_login(
+        ContractDeviceLoginInput(
+            contract_id=str(CONTRACT), runtime_kind="claude_code", method=method
+        )
+    )
+    status = await activities.check_contract_device_login_status(
+        ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
+    )
+
+    assert login.methods == [method]
+    assert (status.token_present, status.auth_method, status.subscription_type) == (
+        True,
+        "oauth_token",
+        "max",
+    )
+
+
+@pytest.mark.parametrize("host_party", ["organisation", "account", None])
+@pytest.mark.asyncio
+async def test_a_shared_runner_refuses_the_short_lived_claude_sign_in(
+    tmp_path: Path, host_party: str | None
+) -> None:
+    activities, login = _device_login_activities(tmp_path, host_party)
+
+    with pytest.raises(ApplicationError) as refused:
+        await activities.sign_in_contract_device_login(
+            ContractDeviceLoginInput(
+                contract_id=str(CONTRACT), runtime_kind="claude_code", method="claude_ai"
+            )
+        )
+
+    assert refused.value.type == SHARED_RUNNER_SIGN_IN_RULE
+    assert login.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_runner_refuses_even_the_long_lived_token(tmp_path: Path) -> None:
+    activities, login = _device_login_activities(tmp_path, None)
+
+    with pytest.raises(ApplicationError):
+        await activities.sign_in_contract_device_login(
+            ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
+        )
+    assert login.calls == 0
 
 
 def _sealed(store: RecipientKeyStore, value: str, *, slot: str = "llm_key") -> SealedCredential:

@@ -13,8 +13,10 @@ a root container and the skip becomes a failure there.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -24,9 +26,11 @@ from agentic_runner.integrations.git.workspace import (
     require_runner_owned_git_dir,
 )
 from agentic_runner.workers._runtime_support import run_subprocess_exec
+from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN_FILE, ClaudeSignIns, launcher_argv
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner.workers.skills import SkillDeliveryError, remove_skills, write_skills
 from agentic_runner_contracts.runtime_context import SkillVersionSpec
+from agentic_runner_contracts.sealed_credential import SignInCodeOutcome
 
 CONTRACT_A = "11111111-2222-4333-8444-555555555555"
 CONTRACT_B = "66666666-7777-4888-8999-aaaaaaaaaaaa"
@@ -327,3 +331,70 @@ async def test_skills_are_written_as_the_contracts_uid_and_never_through_its_sym
     with pytest.raises(SkillDeliveryError):
         await write_skills(sandbox.harness_config_dir, [skill], uid=sandbox.uid)
     assert list(runner_only.iterdir()) == []
+
+
+_CLAUDE_TOKEN = "sk-ant-oat01-UidTokenUidTokenUidTokenUidToken"
+# A shell script, not Python: the Contract's uid runs it and cannot reach the venv.
+_FAKE_CLAUDE_SETUP_TOKEN = f"""#!/bin/sh
+id -u >"$CLAUDE_CONFIG_DIR/ran-as"
+url='https://claude.com/cai/oauth/authorize?code=true&code_challenge=c&code_challenge_method=S256'
+printf '\\033]8;id=1;%s\\007open\\033]8;;\\007\\r\\nPaste code here if prompted > ' "$url"
+read -r code
+printf '\\r\\n%s\\r\\n' '{_CLAUDE_TOKEN}'
+"""
+
+
+@pytest.mark.asyncio
+async def test_a_claude_token_is_its_contracts_own_and_no_other_contract_reads_it(
+    tmp_path: Path,
+) -> None:
+    """Local-agents 05: `setup-token` runs as the Contract's uid, the token lands owned by
+    it, its own launcher hands it to its harness, and Contract B's uid reads none of it."""
+
+    require_uid_separation()
+    isolation = ContractIsolation(
+        workspace_root=tmp_path / "workspaces",
+        state_dir=tmp_path / "state",
+        uid_min=60_040,
+        uid_max=60_049,
+        max_processes=512,
+        memory_limit_bytes=4 * 1024**3,
+    )
+    _make_traversable(tmp_path)
+    fake = tmp_path / "claude"
+    fake.write_text(_FAKE_CLAUDE_SETUP_TOKEN)
+    fake.chmod(0o755)
+    sign_ins = ClaudeSignIns(
+        isolation, argv_by_method={"oauth_token": (str(fake), "setup-token")}, platform="linux"
+    )
+
+    prompt = await sign_ins.start(CONTRACT_A, method=None)
+    outcome = await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, "browser-code-0123456789")
+    async with asyncio.timeout(10):
+        while sign_ins.waiting:
+            await asyncio.sleep(0.05)
+
+    sandbox_a = isolation.sandbox(CONTRACT_A, runtime_kind="claude_code")
+    sandbox_b = isolation.sandbox(CONTRACT_B, runtime_kind="claude_code")
+    root_a = sandbox_a.harness_config_dir
+    token = root_a / OAUTH_TOKEN_FILE
+    assert outcome is SignInCodeOutcome.WRITTEN
+    assert (root_a / "ran-as").read_text().strip() == str(sandbox_a.uid)
+    assert token.stat().st_uid == sandbox_a.uid
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+
+    exit_code, stdout, _ = await _spawn(
+        launcher_argv(
+            root_a,
+            ["sh", "-c", f'test "$CLAUDE_CODE_OAUTH_TOKEN" = "{_CLAUDE_TOKEN}" && echo seen'],
+        ),
+        cwd=sandbox_a.home_dir,
+        sandbox=sandbox_a,
+    )
+    assert (exit_code, stdout) == (0, "seen")
+
+    for argv in (["cat", str(token)], ["ls", str(root_a)]):
+        exit_code, stdout, stderr = await _spawn(argv, cwd=sandbox_b.home_dir, sandbox=sandbox_b)
+        assert exit_code != 0
+        assert _CLAUDE_TOKEN not in stdout
+        assert "Permission denied" in stderr
