@@ -1,8 +1,9 @@
-"""A sandboxed spawn starts on the host it runs on, macOS included (QTS-1319).
+"""A sandboxed spawn starts and forks on the host it runs on, macOS included.
 
 ``test_contract_uid_isolation.py`` proves the floor binds, but only as root on Linux. This
 one needs no privilege, so the macOS Workstation job runs it too: before QTS-1319 every
-sandboxed spawn there failed in ``preexec_fn``, because XNU refuses ``RLIMIT_DATA``.
+sandboxed spawn there failed in ``preexec_fn``, because XNU refuses ``RLIMIT_DATA``, and
+before QTS-1321 its first fork failed, because ``RLIMIT_NPROC`` counted the whole user.
 """
 
 from __future__ import annotations
@@ -20,10 +21,14 @@ from agentic_runner.workers.contract_isolation import ContractIsolation
 CONTRACT = "11111111-2222-4333-8444-555555555555"
 MEMORY_LIMIT_BYTES = 2 * 1024**3
 
-_READ_LIMITS = (
-    "import resource; "
+# The limits are read by a grandchild, so the spawn has to fork as a harness CLI does on
+# its first tool call.
+_FORK_AND_READ_LIMITS = (
+    "import subprocess, sys; "
+    "sys.exit(subprocess.run([sys.executable, '-c', "
+    "'import resource; "
     "print(resource.getrlimit(resource.RLIMIT_NPROC)[1], "
-    "resource.getrlimit(resource.RLIMIT_DATA)[1])"
+    "resource.getrlimit(resource.RLIMIT_DATA)[1])']).returncode)"
 )
 
 
@@ -41,14 +46,14 @@ def _isolation(tmp_path: Path, *, can_limit_memory: bool | None = None) -> Contr
 
 
 @pytest.mark.asyncio
-async def test_a_sandboxed_spawn_runs_under_the_floor_this_host_can_hold(
+async def test_a_sandboxed_spawn_forks_under_the_floor_this_host_can_hold(
     tmp_path: Path,
 ) -> None:
     isolation = _isolation(tmp_path)
     workspace = isolation.prepare_workspace(CONTRACT, "123e4567-e89b-12d3-a456-426614174000")
 
     result = await run_subprocess_exec(
-        argv=[sys.executable, "-c", _READ_LIMITS],
+        argv=[sys.executable, "-c", _FORK_AND_READ_LIMITS],
         cwd=workspace,
         env={},
         stdin=None,
@@ -59,7 +64,7 @@ async def test_a_sandboxed_spawn_runs_under_the_floor_this_host_can_hold(
 
     assert result.exit_code == 0, result.stderr
     max_processes, max_data = (int(value) for value in result.stdout.split())
-    assert max_processes == 256
+    assert max_processes == resource.getrlimit(resource.RLIMIT_NPROC)[1]
     if sys.platform == "darwin":
         assert not isolation.can_limit_memory
         assert max_data == resource.RLIM_INFINITY
@@ -80,3 +85,16 @@ def test_a_host_without_a_memory_ceiling_says_so_and_spawns_without_one(
 
     assert sandbox.max_memory_bytes is None
     assert f"without the {MEMORY_LIMIT_BYTES}-byte memory ceiling" in caplog.text
+
+
+def test_a_host_without_uid_separation_says_so_and_spawns_without_a_process_ceiling(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        isolation = _isolation(tmp_path)
+
+    sandbox = isolation.sandbox(CONTRACT, runtime_kind="claude_cli")
+
+    assert sandbox.uid is None
+    assert sandbox.max_processes is None
+    assert "without the 256-process RLIMIT_NPROC ceiling" in caplog.text
