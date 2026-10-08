@@ -117,6 +117,33 @@ def collect_git_evidence(
     )
 
 
+def read_head_commit(
+    *,
+    workspace_path: Path,
+    workspace_root: Path,
+    command_timeout_seconds: int = 10,
+) -> str | None:
+    """The Workspace's HEAD commit, or None when it has none (no clone, an unborn branch).
+
+    Reads the tree directly rather than through the workspace adapter: an in-place
+    Directive retried on a restarted Runner finds its clone on disk but not in the
+    adapter's registry.
+    """
+
+    resolved_workspace = resolve_workspace_path(workspace_root, workspace_path)
+    if not os.path.lexists(resolved_workspace / ".git"):
+        return None
+    require_runner_owned_git_dir(resolved_workspace)
+    head = _run_git_evidence_command(
+        ["rev-parse", "--verify", "--quiet", "HEAD"],
+        cwd=resolved_workspace,
+        output_limit_bytes=256,
+        command_timeout_seconds=command_timeout_seconds,
+    )
+    commit = head.stdout.strip()
+    return commit if head.returncode == 0 and commit else None
+
+
 def build_git_evidence(
     *,
     workspace_path: Path,

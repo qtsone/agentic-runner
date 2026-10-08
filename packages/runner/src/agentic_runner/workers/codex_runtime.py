@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from collections.abc import Awaitable, Callable
@@ -14,18 +15,20 @@ from agentic_runner.workers._runtime_support import (
     bound_text,
     command_policy_refusal,
     hash_command,
+    is_canonical_uuid,
     is_relative_to,
     redact_match,
     run_subprocess_exec,
     workspace_id,
 )
 from agentic_runner.workers.agent_runtime import (
-    AgentRuntime,
     AuthModel,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
+    ResumableAgentRuntime,
 )
+from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import codex_mcp_argv
 from agentic_runner.workers.settings import WorkerSettings
 
@@ -80,7 +83,7 @@ _SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
-class CodexRuntime(AgentRuntime):
+class CodexRuntime(ResumableAgentRuntime):
     """Worker-local Codex CLI runtime.
 
     The runtime does not accept caller-supplied secrets. It constructs the Codex environment from
@@ -121,6 +124,12 @@ class CodexRuntime(AgentRuntime):
         # Locked with no server bound too: otherwise a `[mcp_servers.*]` table in the
         # Workspace or harness-root config.toml starts a process before any model turn (LA-19b).
         argv[-1:-1] = codex_mcp_argv(request.mcp_servers or (), workspace_path)
+        # Hashed without the session arguments, as the Claude runtime does.
+        command_hash = hash_command(argv)
+        if request.resume_session_id is not None:
+            # `resume` is a subcommand of `exec`, so it follows every `exec` option and
+            # precedes the `-` that reads the prompt from stdin.
+            argv[-1:-1] = ["resume", request.resume_session_id]
         floor_refusal = command_policy_refusal(
             argv=argv,
             program="codex",
@@ -137,7 +146,6 @@ class CodexRuntime(AgentRuntime):
                 evidence_limit_bytes=self._settings.CODEX_CLI_OUTPUT_LIMIT_BYTES,
                 guard_mode=f"refused: command policy ({floor_refusal})",
             )
-        command_hash = hash_command(argv)
         # The Contract's own harness config root, never the fleet-wide one (ADR-0015 §4):
         # a device login materialised into it is readable only by that Contract's uid.
         # The shared CODEX_HOME survives only as the no-isolation fallback.
@@ -150,6 +158,13 @@ class CodexRuntime(AgentRuntime):
             env["TMPDIR"] = str(sandbox.tmp_dir)
         apply_extra_env(env, request.extra_env)
         notes: list[str] = []
+        # Codex names a new thread only in its opening `thread.started` event; the hook
+        # is passed only when wanted, so a runner without it keeps working.
+        report_session = (
+            {}
+            if request.resume_session_id is not None or request.on_session_started is None
+            else {"on_first_stdout_line": _thread_started_reporter(request.on_session_started)}
+        )
 
         try:
             raw_result = await self._runner(
@@ -160,6 +175,7 @@ class CodexRuntime(AgentRuntime):
                 timeout_seconds=self._settings.CODEX_CLI_TIMEOUT_SECONDS,
                 output_limit_bytes=self._settings.CODEX_CLI_OUTPUT_LIMIT_BYTES,
                 sandbox=sandbox,
+                **report_session,
             )
             error = ""
         except asyncio.CancelledError:
@@ -216,6 +232,27 @@ class CodexRuntime(AgentRuntime):
             command_hash=command_hash,
             evidence=evidence,
         )
+
+    def has_session(self, session_id: str, sandbox: DirectiveSandbox | None) -> bool:
+        if not is_canonical_uuid(session_id):
+            return False
+        codex_home = self._settings.CODEX_HOME if sandbox is None else sandbox.harness_config_dir
+        # Codex files a thread as sessions/YYYY/MM/DD/rollout-<timestamp>-<thread id>.jsonl.
+        return any((codex_home / "sessions").rglob(f"rollout-*-{session_id}.jsonl"))
+
+
+def _thread_started_reporter(report: Callable[[str], None]) -> Callable[[bytes], None]:
+    def on_first_line(line: bytes) -> None:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return
+        if isinstance(event, dict) and event.get("type") == "thread.started":
+            thread_id = event.get("thread_id")
+            if isinstance(thread_id, str) and is_canonical_uuid(thread_id):
+                report(thread_id)
+
+    return on_first_line
 
 
 def _guard_mode(settings: WorkerSettings, *, allowlisted: bool = False) -> str | None:
