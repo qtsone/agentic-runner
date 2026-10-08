@@ -23,11 +23,13 @@ from agentic_runner.workers._runtime_support import (
     workspace_id,
 )
 from agentic_runner.workers.agent_runtime import (
+    REFUSED_PERMISSION_MODE,
     AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
     ResumableAgentRuntime,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.command_policy import CODEX_EPHEMERAL_CREDENTIALS_OVERRIDE
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
@@ -108,6 +110,20 @@ class CodexRuntime(ResumableAgentRuntime):
     ) -> None:
         self._settings = settings
         self._runner = runner or run_subprocess_exec
+
+    def capabilities(self) -> RuntimeCapabilities:
+        # Only the guarded configurations are named: anything else refuses every Directive,
+        # and a free-form setting would not fit the heartbeat's pattern.
+        guarded = _guard_mode(self._settings) is not None
+        return RuntimeCapabilities(
+            auth_modes=self.auth_modes,
+            permission_mode=(
+                f"sandbox={self._settings.CODEX_SANDBOX_MODE};"
+                f"approval={self._settings.CODEX_ASK_FOR_APPROVAL}"
+                if guarded
+                else REFUSED_PERMISSION_MODE
+            ),
+        )
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         workspace_path = request.workspace_path.resolve(strict=False)

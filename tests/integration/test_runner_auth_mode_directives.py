@@ -38,6 +38,7 @@ from agentic_runner.workers.agent_runtime import (
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts import __version__ as contracts_version
@@ -111,6 +112,9 @@ class _Codex:
     auth_modes: frozenset[AuthMode] = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     host_api_key: bool = False
     requests: list[DirectiveRequest] = field(default_factory=list)
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(auth_modes=self.auth_modes, permission_mode="fake")
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         self.requests.append(request)
