@@ -218,6 +218,36 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     assert commands.ran[-1] == ["launchctl", "bootout", f"gui/{os.getuid()}/agentic-runner.acme"]
 
 
+@pytest.mark.asyncio
+async def test_reinstalling_over_a_registered_state_dir_says_the_token_was_not_used(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    plane = FakeControlPlane(host_party="organisation")
+
+    async def install(token: str) -> list[str]:
+        async with httpx.AsyncClient(transport=plane.transport()) as http:
+            return await workstation.install(
+                paths,
+                _settings(paths, str(bin_dir)),
+                agent_token=token,
+                platform="darwin",
+                home=tmp_path / "home",
+                run=Commands(),
+                http_client=http,
+            )
+
+    first = await install("organisation-hosted-token-1")
+    assert not any(line.startswith("token") for line in first)
+
+    second = await install("user-hosted-token-of-sixteen")
+
+    assert len(plane.bootstraps) == 1, "the pasted token never reaches the control plane"
+    assert second[0].startswith("already registered")
+    assert second[1].startswith("token          not used")
+    assert str(paths.state_dir) in second[1] and "Switch to a new token" in second[1]
+
+
 def test_the_next_step_follows_who_hosts_the_runner() -> None:
     [user] = workstation.next_step_lines("user")
     assert "/me/work/new" in user and "a Runner you host" in user

@@ -632,6 +632,7 @@ async def install(
     require_any_cli(settings.path)
     paths.create()
     settings.save(paths)
+    already_registered = load_state(paths.state_dir) is not None
     state, outcome = await service.register(
         state_dir=paths.state_dir,
         can_separate_uids=False,
@@ -644,7 +645,16 @@ async def install(
     definition = service_definition(paths, settings, platform=platform, home=home)
     definition.path.parent.mkdir(parents=True, exist_ok=True)
     definition.path.write_bytes(definition.content)
-    lines = [outcome, f"login agent    {definition.path}"]
+    lines = [outcome]
+    if already_registered:
+        # QTS-1314: the dogfood reinstall kept an Organisation-hosted identity while the
+        # person believed the user-hosted token they had just pasted had taken effect.
+        lines.append(
+            f"token          not used: {paths.state_dir} already holds Runner "
+            f"{state.runner_id}; to register a new one, stop it and move that directory "
+            "aside (docs/workstation.md, Switch to a new token)"
+        )
+    lines.append(f"login agent    {definition.path}")
     if start_service:
         drive(definition.install + definition.start, run=run)
         lines.append(f"started        {state.runner_id}")

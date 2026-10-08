@@ -124,6 +124,22 @@ agentic-runner stop acme && agentic-runner start acme
 There is no self-update. The control plane warns when a Runner falls one contracts minor
 behind and stops sending it new work at two.
 
+### Switch to a new token
+
+Running `install` again over the same Organisation's directory keeps the identity it
+already holds: it prints `already registered …` and `token not used`, and the token you
+pasted never reaches the control plane. There is no `uninstall`. To swap an Organisation
+Runner for one hosted by you (or any Runner for a new token):
+
+1. `agentic-runner stop acme`.
+2. Move the Organisation's directory aside rather than deleting it, so the old identity,
+   Recipient Key and credentials stay recoverable:
+   `mv "<state root>/acme" "<state root>/acme.organisation"`.
+3. `agentic-runner install acme …` again with the new token.
+4. Check `agentic-runner status acme` shows the new identity and a `next` line, and that
+   the Runner shows on **/me/runners**. Then ask your Admin to revoke the old Runner on the
+   Runners page.
+
 To remove a Runner: `agentic-runner stop acme`, delete the plist or the unit file, delete
 the Organisation's directory under the state root, then ask your Admin to revoke the
 Runner on the Runners page.
