@@ -82,6 +82,9 @@ ExceptionType = Annotated[str, StringConstraints(pattern=_EXCEPTION_TYPE.pattern
 RedactedFrame = Annotated[str, StringConstraints(pattern=_REDACTED_FRAME.pattern)]
 TagKey = Annotated[str, StringConstraints(pattern=_TAG_KEY.pattern)]
 Version = Annotated[str, StringConstraints(pattern=r"^\d+\.\d+\.\d+$")]
+# A build is 64 hex since runner-repo 06; 12 is still accepted because a Runner released
+# before it reports the first 16.
+BuildId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{12,64}$")]
 
 
 class IsolationMode(StrEnum):
@@ -157,6 +160,10 @@ class BootstrapRequest(BaseModel):
     ``tags`` is the one and only place Runner Tags cross the wire: free-form
     ``key=value`` the operator declared in config, used for routing (issue 42) and never
     in a queue name, a Search Attribute or a heartbeat body.
+
+    ``build_id`` is the same digest the heartbeat's attestation carries, here so a
+    platform that admits only published builds can refuse before it issues an identity
+    (runner-repo 06). Optional because a Runner older than this field sends none.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -170,6 +177,7 @@ class BootstrapRequest(BaseModel):
     runner_version: Version
     recipient_key: RecipientKey
     max_concurrent_directives: int = Field(default=1, ge=1, le=64)
+    build_id: BuildId | None = None
 
 
 class RunnerIdentityMaterial(BaseModel):
@@ -389,7 +397,7 @@ class HostAttestation(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    build_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{12,64}$")]
+    build_id: BuildId
     install_channel: InstallChannel
     os: Annotated[
         str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,15}( [0-9A-Za-z._+-]{1,48})?$")
