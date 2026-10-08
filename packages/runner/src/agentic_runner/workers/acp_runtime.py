@@ -26,10 +26,13 @@ Facts this module stands on (the LA-02 spike, re-read against the pinned bridge 
   of its own, written here and removed after the turn. Codex needs nothing else from the
   real root in that mode: no login, and the Skills directory is linked in.
 - codex-acp trusts the Workspace unconditionally, so its ``.codex/config.toml`` loads, and
-  config-file MCP servers start beside the ones sent over ACP; worse, by default the bridge
-  *drops* a sent server whose name a config file already uses. So filtering is switched
-  off and a Directive whose Workspace or harness root declares ``mcp_servers`` is refused
-  (LA-19): nothing may start that the Grant did not let through.
+  it outranks the harness root: a ``model_provider``, ``notify``, ``sandbox_mode`` or
+  ``mcp_servers`` there would take effect outside the permission seam, and by default the
+  bridge even *drops* a sent server whose name a config file already uses. The per-CLI
+  runtime's ``--config`` overrides outrank every file; here the provider is a file too. So
+  filtering is switched off, a Directive whose Workspace has a ``.codex/config.toml`` at all
+  is refused, and a harness-root ``config.toml`` may hold only ``_CODEX_HARNESS_ROOT_KEYS``
+  (LA-19): nothing may load that the Runner did not choose.
 - claude-agent-acp loads the Workspace's settings, hooks, ``.mcp.json`` and ``CLAUDE.md``
   unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``.
 """
@@ -127,6 +130,12 @@ _ACP_PROTOCOL_VERSION: Final[int] = 1
 _LINE_LIMIT_BYTES: Final[int] = 16 * 1024 * 1024
 _CLOSE_GRACE_SECONDS: Final[float] = 5.0
 _CODEX_PROVIDER_ID: Final[str] = "agentic_runner"
+# What a `subscription` harness root may set: the model choice and the notices Codex
+# records itself. Anything else -- a provider, `notify`, a sandbox or approval policy, a
+# shell environment, MCP servers -- would be the Contract's own files steering the turn.
+_CODEX_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {"model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity", "notice"}
+)
 
 _CLAUDE_SESSION_OPTIONS: Final[Mapping[str, object]] = {
     # The harness root's own settings only: no Workspace settings, hooks or CLAUDE.md.
@@ -271,19 +280,14 @@ class AcpRuntime:
             )
 
         sandbox = request.sandbox
-        harness_root = self._settings.CODEX_HOME if sandbox is None else sandbox.harness_config_dir
+        harness_root = self._harness_root(sandbox)
         if self._is_codex:
-            # Named, not pathed: the refusal text leaves for the control plane.
-            config_files = {"the Workspace's .codex/config.toml": workspace_path / ".codex"}
-            if request.auth_mode == AuthMode.SUBSCRIPTION:
-                config_files["the harness root's config.toml"] = harness_root
-            declared = _codex_config_mcp_servers(config_files)
-            if declared:
-                return refuse(
-                    "refused: config-file MCP servers",
-                    f"{declared} declares MCP servers Codex would start beside the granted "
-                    "ones; remove them to run this Directive",
-                )
+            config_refusal = _codex_config_refusal(
+                workspace_path,
+                harness_root if request.auth_mode == AuthMode.SUBSCRIPTION else None,
+            )
+            if config_refusal:
+                return refuse("refused: Codex config file", config_refusal)
 
         argv = self._argv(request.auth_mode)
         command_hash = hash_command(argv)
@@ -308,6 +312,7 @@ class AcpRuntime:
         async with contextlib.AsyncExitStack() as stack:
             env = self._env(request, harness_root)
             if self._is_codex and request.auth_mode == AuthMode.API_KEY:
+                assert harness_root is not None  # Codex always has one: see _harness_root
                 env[self._bridge.config_root_env] = str(
                     stack.enter_context(_attempt_codex_home(proxy_url, harness_root, sandbox))
                 )
@@ -362,9 +367,18 @@ class AcpRuntime:
             argv.append("--hide-claude-auth")
         return argv
 
-    def _env(self, request: DirectiveRequest, harness_root: Path) -> dict[str, str]:
+    def _harness_root(self, sandbox: DirectiveSandbox | None) -> Path | None:
+        if sandbox is not None:
+            return sandbox.harness_config_dir
+        # As the per-CLI runtimes without a sandbox: Codex on the Runner's CODEX_HOME, Claude
+        # on its own default -- never pointed at the Codex home.
+        return self._settings.CODEX_HOME if self._is_codex else None
+
+    def _env(self, request: DirectiveRequest, harness_root: Path | None) -> dict[str, str]:
         path = os.environ.get("PATH") or os.defpath
-        env = {"PATH": path, self._bridge.config_root_env: str(harness_root)}
+        env = {"PATH": path}
+        if harness_root is not None:
+            env[self._bridge.config_root_env] = str(harness_root)
         if request.sandbox is not None:
             env["HOME"] = str(request.sandbox.home_dir)
             env["TMPDIR"] = str(request.sandbox.tmp_dir)
@@ -500,7 +514,9 @@ class AcpRuntime:
             else "an action"
         )
         described = _redact(described)
-        verdict, reason = _verdict(argv, cwd, request, self._settings.WORKSPACE_ROOT)
+        # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid nothing
+        # else keeps an allowlisted command out of another Work Record's Workspace.
+        verdict, reason = _verdict(argv, cwd, request, workspace_path)
         options = params.get("options") or []
         if verdict == _Verdict.ALLOW:
             turn.notes.append(f"permission allowed: {described}")
@@ -711,24 +727,33 @@ def acp_mcp_servers(
     return servers
 
 
-def _codex_config_mcp_servers(config_dirs: Mapping[str, Path]) -> str | None:
-    """The name of the first ``config.toml`` that declares MCP servers or does not parse."""
+def _codex_config_refusal(workspace_path: Path, harness_root: Path | None) -> str | None:
+    """Why a config file Codex would load refuses the Directive, or None.
 
-    for name, config_dir in config_dirs.items():
-        path = config_dir / "config.toml"
-        try:
-            text = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            continue
-        except OSError:
-            return name
-        try:
-            config = tomllib.loads(text)
-        except tomllib.TOMLDecodeError:
-            # Unreadable to us is not unreadable to Codex: refuse rather than guess.
-            return name
-        if config.get("mcp_servers"):
-            return name
+    Both files outrank nothing the Runner sets on argv here -- the proxy provider is itself a
+    file layer -- so any key in them reaches Codex. The Workspace's may not exist at all; the
+    harness root's may hold only ``_CODEX_HARNESS_ROOT_KEYS``. The names, not the paths:
+    the refusal text leaves for the control plane.
+    """
+
+    if (workspace_path / ".codex" / "config.toml").exists():
+        return "the Workspace's .codex/config.toml is not loaded by the Runner; remove it"
+    if harness_root is None:
+        return None
+    try:
+        text = (harness_root / "config.toml").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "the harness root's config.toml cannot be read"
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        # Unreadable to us is not unreadable to Codex: refuse rather than guess.
+        return "the harness root's config.toml does not parse"
+    unexpected = sorted(set(config) - _CODEX_HARNESS_ROOT_KEYS)
+    if unexpected:
+        return f"the harness root's config.toml sets {', '.join(unexpected)}; remove them"
     return None
 
 
@@ -805,14 +830,14 @@ def _split(command: str) -> list[str] | None:
 
 
 def _verdict(
-    argv: list[str] | None, cwd: Path, request: DirectiveRequest, workspace_root: Path
+    argv: list[str] | None, cwd: Path, request: DirectiveRequest, workspace_path: Path
 ) -> tuple[_Verdict, str]:
     if argv is None:
         return _Verdict.SILENT, "not a command the policy can read"
     decision = evaluate_command_policy(
         argv=argv,
         cwd=cwd,
-        workspace_root=workspace_root,
+        workspace_root=workspace_path,
         base_branch=request.base_branch,
         work_branch=request.work_branch,
         policy=CommandPolicy(),
