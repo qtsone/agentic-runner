@@ -23,6 +23,7 @@ import json
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -35,7 +36,9 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import agentic_runner
 from agentic_runner import cli, service, workstation
+from agentic_runner.build import build_id
 from agentic_runner.host_store import (
     FileCredentialStore,
     KeychainStore,
@@ -489,7 +492,7 @@ def test_the_heartbeat_attestation_carries_the_facts_and_nothing_content_shaped(
         "store_kind",
         "clis",
     }
-    assert re.fullmatch(r"[0-9a-f]{16}", attestation.build_id)
+    assert attestation.build_id == build_id()
     assert {cli.cli_kind for cli in attestation.clis} == {"codex_cli", "claude_code"}
     dumped = attestation.model_dump_json()
     assert str(bin_dir) not in dumped  # a path carries the user's home directory
@@ -513,6 +516,27 @@ def test_the_heartbeat_attestation_carries_the_facts_and_nothing_content_shaped(
     ):
         with pytest.raises(ValidationError):
             HostAttestation.model_validate({**base, **content_shaped})
+
+
+def test_the_build_id_is_a_full_digest_of_the_package_sources(tmp_path: Path) -> None:
+    package = tmp_path / "agentic_runner"
+    shutil.copytree(
+        Path(agentic_runner.__file__).parent,
+        package,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    original = build_id(package)
+
+    assert re.fullmatch(r"[0-9a-f]{64}", original)
+    assert original == build_id()  # the copy is this build
+
+    # Bytecode is not the build: a wheel, the image and a Homebrew install compile their own.
+    (package / "stray.pyc").write_bytes(b"compiled")
+    assert build_id(package) == original
+
+    service_module = package / "service.py"
+    service_module.write_text(service_module.read_text() + "\n# changed\n")
+    assert build_id(package) != original
 
 
 @pytest.mark.asyncio

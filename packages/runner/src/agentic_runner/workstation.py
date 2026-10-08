@@ -36,7 +36,6 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from hashlib import sha256
 from pathlib import Path
 from typing import Any, Final
 from xml.sax.saxutils import escape
@@ -44,8 +43,8 @@ from xml.sax.saxutils import escape
 import httpx
 from pydantic import BaseModel, ConfigDict
 
-import agentic_runner
 from agentic_runner import service
+from agentic_runner.build import build_id
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.registration import load_state
@@ -331,22 +330,6 @@ def cli_versions(found: Mapping[str, str], *, run: Run = subprocess.run) -> list
 
 
 # ------------------------------------------------------------------ attestation
-
-
-def build_id() -> str:
-    """A digest of this build's own source: self-reported build identity (12 B7).
-
-    Not a signature and not claimed to be one -- the consoles say "self-reported" beside
-    it. What it buys is that two Runners reporting the same version but running
-    different code show different ids.
-    """
-
-    package = Path(agentic_runner.__file__).parent
-    digest = sha256()
-    for source in sorted(package.rglob("*.py")):
-        digest.update(source.relative_to(package).as_posix().encode())
-        digest.update(source.read_bytes())
-    return digest.hexdigest()[:16]
 
 
 def os_release() -> str:
