@@ -75,6 +75,7 @@ from agentic_runner.credentials import (
     UnresolvableCredentialReferenceError,
 )
 from agentic_runner.egress import EGRESS_REFUSED_SOURCE, EgressProxy, Resolver, host_of
+from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.heartbeat_link import HeartbeatLink, SeamUnavailableError
 from agentic_runner.hooks import (
     HOOK_EVIDENCE_SOURCE,
@@ -1555,8 +1556,11 @@ class RunnerRalphActivities:
         egress_resolver: Resolver | None = None,
         tool_server_health: ToolServerHealthLog | None = None,
         attempt_records: AttemptRecords | None = None,
+        directives_in_flight: DirectivesInFlight | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
+        # Read by the harness self-test, which never runs beside a Contract's Directive.
+        self._directives_in_flight = directives_in_flight or DirectivesInFlight()
         # Wall-clock source for per-Directive runtime, accrued against the Budget's
         # wall-clock dimension (ADR-0007). Activities run outside the Temporal sandbox,
         # so a real monotonic clock is allowed here (it must never be used in the
@@ -2475,6 +2479,7 @@ class RunnerRalphActivities:
         scratch_root = sandbox.tmp_dir if sandbox is not None else Path(tempfile.gettempdir())
         attempt_dir = prepare_attempt_dir(scratch_root / f"attempt-{key}", uid)
         async with contextlib.AsyncExitStack() as stack:
+            stack.enter_context(self._directives_in_flight.running(facts.contract_id))
             stack.callback(shutil.rmtree, attempt_dir, ignore_errors=True)
             callback_env: dict[str, str] = {}
             if self._socket_dir is not None:

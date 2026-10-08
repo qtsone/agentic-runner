@@ -431,6 +431,21 @@ class ContractIsolation:
                     held.append((contract_dir.name, entry.name))
         return held
 
+    def harness_roots(self) -> list[tuple[str, str]]:
+        """Every ``(contract_id, runtime_kind)`` harness root already on this Runner."""
+
+        if not self._workspace_root.is_dir():
+            return []
+        roots: list[tuple[str, str]] = []
+        for contract_dir in sorted(self._workspace_root.iterdir()):
+            harness_dir = contract_dir / _HARNESS_DIR
+            if not _is_uuid(contract_dir.name) or not harness_dir.is_dir():
+                continue
+            for entry in sorted(harness_dir.iterdir()):
+                if entry.is_dir() and _RUNTIME_KIND_RE.fullmatch(entry.name):
+                    roots.append((contract_dir.name, entry.name))
+        return roots
+
     def remove_workspace(self, contract_id: str | None, work_record_id: str) -> bool:
         """Delete one Work Record's Workspace, leaving the Contract's tree standing."""
 
