@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      # The deploy key, not GITHUB_TOKEN, pushes the release commit and the tag: it bypasses the
+      # `main` ruleset, and a tag pushed by GITHUB_TOKEN would not start publish-pypi.yml.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Semantic Release
+        uses: qtsone/actions/release@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          skip-checkout: "true"
+          extra-plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+            @semantic-release/exec

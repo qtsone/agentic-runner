@@ -1,0 +1,21 @@
+[project]
+name = "agentic-runner-contracts"
+description = "Activity I/O contracts and Public Metadata name builders shared by the Agentic OS platform and the installable Runner"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dynamic = ["version"]
+dependencies = [
+  "pydantic>=2.0,<3.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/agentic_runner_contracts/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentic_runner_contracts"]

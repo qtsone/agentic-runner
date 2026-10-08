@@ -1,0 +1,16 @@
+# Headless, for the StatefulSet's stable pod names only: nothing dials a Runner (the
+# stream is outbound-only, ADR-0013 §8), and the readiness port is the kubelet's.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentic-runner.fullname" . }}
+  labels:
+    {{- include "agentic-runner.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "agentic-runner.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: readiness
+      port: {{ .Values.readinessPort }}
+      targetPort: readiness

@@ -1,0 +1,15 @@
+{{- if .Values.hooks }}
+# Runner Hooks (PRD issue 45): catalogue-named files, mounted with defaultMode 0755 --
+# a hook without the executable bit records exit 126 rather than running.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentic-runner.fullname" . }}-hooks
+  labels:
+    {{- include "agentic-runner.labels" . | nindent 4 }}
+data:
+  {{- range $name, $body := .Values.hooks }}
+  {{ $name }}: |
+    {{- $body | nindent 4 }}
+  {{- end }}
+{{- end }}
