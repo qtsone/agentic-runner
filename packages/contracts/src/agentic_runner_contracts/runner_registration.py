@@ -43,7 +43,12 @@ from pydantic import (
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
 from agentic_runner_contracts.llm_usage import UsageRecord
-from agentic_runner_contracts.sealed_credential import OpenedCredential, SealedCredential
+from agentic_runner_contracts.sealed_credential import (
+    OpenedCredential,
+    SealedCredential,
+    SealedSignInCode,
+    SignInCodeRelay,
+)
 from agentic_runner_contracts.user_sources import SourceStatus, UserSourceAssignment
 
 # 23 item 4 (Buildkite's own numbers): heartbeat every 30 s, stale at 3 min. Stale is a
@@ -544,15 +549,19 @@ class HeartbeatEnvelope(BaseModel):
     # Console-v2 issue 29: each Runner-hosted Tool Server's latest start, per slug. A
     # server not started since the process began is absent.
     tool_servers: list[ToolServerHealth] = Field(default_factory=list, max_length=64)
+    # Local-agents 05: what became of each sign-in code the last ack relayed.
+    sign_in_codes: list[SignInCodeRelay] = Field(default_factory=list, max_length=16)
 
     @model_serializer(mode="wrap")
-    def _omit_empty_tool_servers(self, handler: SerializerFunctionWrapHandler) -> Any:
-        # A control plane on contracts 2.5 forbids extra keys, so a Runner that started no
-        # Tool Server sends the body that control plane already parses. One that did needs
-        # the control plane on 2.6 first.
+    def _omit_empty_optional_lists(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # An older control plane forbids extra keys, so a Runner with nothing to say in
+        # these sends the body that control plane already parses. One that has something
+        # needs the control plane on the contracts minor that added the field first.
         body = handler(self)
-        if isinstance(body, dict) and not body.get("tool_servers"):
-            body.pop("tool_servers", None)
+        if isinstance(body, dict):
+            for name in ("tool_servers", "sign_in_codes"):
+                if not body.get(name):
+                    body.pop(name, None)
         return body
 
 
@@ -600,6 +609,10 @@ class HeartbeatAck(BaseModel):
     # the control plane hands a request over on exactly one beat -- and answered on the
     # signed stream (`TRANSCRIPT_DELIVERIES_PATH`), never on the ack itself.
     transcript_requests: list[TranscriptRequest] = Field(default_factory=list, max_length=16)
+    # Local-agents 05: one-time browser sign-in codes, sealed to this installation's
+    # Recipient Key. Relayed once each, like `transcript_requests`; the outcome comes back
+    # on the next envelope's `sign_in_codes`.
+    sign_in_codes: list[SealedSignInCode] = Field(default_factory=list, max_length=16)
 
 
 class DirectiveTokenRequest(BaseModel):

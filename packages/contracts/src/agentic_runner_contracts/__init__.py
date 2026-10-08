@@ -32,6 +32,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Additive; an older payload parses with no Skills. But the context forbids extra keys,
 # so a Runner one minor behind refuses a context that carries `skills` -- the platform
 # must not send the field until its Runners are on 2.7.
+# 3.5.0 (local-agents 05): `ContractDeviceLoginInput.method`,
+# `ContractDeviceLoginResult.sign_in_id`, `ContractDeviceLoginStatusResult.auth_method` /
+# `subscription_type`, `SealedSignInCode` on `HeartbeatAck.sign_in_codes` and
+# `SignInCodeRelay` on `HeartbeatEnvelope.sign_in_codes`. Additive; the envelope omits the
+# key while it is empty. But the ack forbids extra keys, so the platform must not relay a
+# code to a Runner below 3.5.
 __version__ = "3.4.1"
 
 __all__ = ["__version__"]
