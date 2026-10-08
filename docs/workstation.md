@@ -11,10 +11,15 @@ macOS (`tests/install/workstation.sh`).
 1. **Codex or Claude Code.** Install `codex`, `claude`, or both, the usual way. The Runner
    finds them on your `PATH`; it does not bundle them. It serves every CLI it finds, and
    refuses to install if it finds neither.
-2. **An Agent Token.** Your Organisation's Admin mints it on the Organisation Console's
-   **Runners** page, labelled after you (`alice-laptop`), and sends it to you over a
-   channel you both trust, such as a password manager share. It is shown once.
-3. **The install command.** The same page shows it for your Organisation, with the
+2. **An Agent Token hosted by you.** Your Organisation's Admin mints it on the
+   Organisation Console's **Runners** page, labelled after you (`alice-laptop`), with
+   **Hosted by** set to you, and sends it to you over a channel you both trust, such as a
+   password manager share. It is shown once. The Runner takes its host from the token: a
+   token hosted by the Organisation makes an Organisation Runner, which never takes your
+   Contracts' work.
+3. **A Contract whose Runner is hosted by you.** Only your Contracts with `runner_host:
+   user` route to your Runner. If yours says the Organisation, ask the Admin to change it.
+4. **The install command.** The same page shows it for your Organisation, with the
    control plane URL and the Temporal address filled in. Copy both values from there: they
    are set independently and need not share a domain, so neither can be guessed from the
    other.
