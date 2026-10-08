@@ -28,7 +28,7 @@ export UV_TOOL_DIR="${work}/tools" UV_TOOL_BIN_DIR="${work}/tools/bin"
 cleanup() {
   if [ "${mode}" = launchd ]; then agentic-runner stop "${org}" --root "${root}" || true; fi
   for pid in ${pids[@]+"${pids[@]}"}; do kill "${pid}" 2>/dev/null || true; done
-  [ -f "${root}/${org}/runner.log" ] && { echo "-- runner.log"; cat "${root}/${org}/runner.log"; }
+  if [ -f "${root}/${org}/runner.log" ]; then echo "-- runner.log"; cat "${root}/${org}/runner.log"; fi
 }
 trap cleanup EXIT
 
