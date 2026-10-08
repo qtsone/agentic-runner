@@ -238,6 +238,12 @@ jobs:
         if: runner.os == 'macOS'
         run: uv run --locked pytest -q tests/unit/test_runner_attempt_fence.py
 
+      # XNU refuses RLIMIT_DATA, so a sandboxed spawn on macOS runs without the memory
+      # ceiling rather than failing in preexec_fn (QTS-1319).
+      - name: Sandboxed spawn on macOS
+        if: runner.os == 'macOS'
+        run: uv run --locked pytest -q tests/unit/test_directive_sandbox_spawn.py
+
   summary:
     name: Summary
     runs-on: ubuntu-latest

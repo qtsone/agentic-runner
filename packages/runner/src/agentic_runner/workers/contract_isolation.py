@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import re
 import resource
 import shutil
 import stat
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -52,6 +54,8 @@ __all__ = [
 # platform that is deploying the Contract layer (the same posture grant enforcement takes
 # for an Agent-less Work Record).
 NO_CONTRACT: Final[str] = "no-contract"
+
+_logger = logging.getLogger(__name__)
 
 _HARNESS_DIR: Final[str] = "harness"
 _TMP_DIR: Final[str] = "tmp"
@@ -126,12 +130,15 @@ class DirectiveSandbox:
     without ``CAP_SETUID``): the directories are still 0700 and per Contract, but the
     process runs as the Runner's own user. ADR-0015 §5 turns that into a declared,
     routing-visible single-Contract mode in M3; M1 only has to not pretend otherwise.
+
+    ``max_memory_bytes`` is None where the kernel cannot hold a memory ceiling (macOS, see
+    ``ContractIsolation``): the spawn runs without one rather than not at all.
     """
 
     home_dir: Path
     harness_config_dir: Path
     max_processes: int
-    max_memory_bytes: int
+    max_memory_bytes: int | None
     uid: int | None = None
     gid: int | None = None
 
@@ -185,7 +192,8 @@ class DirectiveSandbox:
 
         def apply_floor() -> None:
             resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
-            resource.setrlimit(resource.RLIMIT_DATA, (max_memory_bytes, max_memory_bytes))
+            if max_memory_bytes is not None:
+                resource.setrlimit(resource.RLIMIT_DATA, (max_memory_bytes, max_memory_bytes))
 
         return apply_floor
 
@@ -218,6 +226,7 @@ class ContractIsolation:
         max_processes: int,
         memory_limit_bytes: int,
         can_separate_uids: bool | None = None,
+        can_limit_memory: bool | None = None,
     ) -> None:
         if uid_min <= 0 or uid_max < uid_min:
             raise ValueError("contract uid range must be a positive, non-empty range")
@@ -233,6 +242,24 @@ class ContractIsolation:
         self._can_separate_uids = (
             os.geteuid() == 0 if can_separate_uids is None else can_separate_uids
         )
+        # XNU refuses an RLIMIT_DATA below the address space a process already maps, and
+        # every arm64 macOS process maps hundreds of GiB of shared cache and reservations
+        # before it runs a line — so any ceiling worth setting fails `preexec_fn` and the
+        # spawn with it (QTS-1319). macOS enforces neither RLIMIT_AS nor RLIMIT_RSS, so
+        # there is no rlimit to fall back to: the floor there is RLIMIT_NPROC alone.
+        self._can_limit_memory = (
+            sys.platform != "darwin" if can_limit_memory is None else can_limit_memory
+        )
+        if not self._can_limit_memory:
+            _logger.warning(
+                "this host refuses RLIMIT_DATA: Directive spawns run without the %d-byte "
+                "memory ceiling",
+                memory_limit_bytes,
+            )
+
+    @property
+    def can_limit_memory(self) -> bool:
+        return self._can_limit_memory
 
     @property
     def can_separate_uids(self) -> bool:
@@ -306,7 +333,9 @@ class ContractIsolation:
             home_dir=home,
             harness_config_dir=harness,
             max_processes=self._max_processes,
-            max_memory_bytes=memory_limit_bytes or self._memory_limit_bytes,
+            max_memory_bytes=(
+                (memory_limit_bytes or self._memory_limit_bytes) if self._can_limit_memory else None
+            ),
             uid=uid,
             gid=uid,
         )
