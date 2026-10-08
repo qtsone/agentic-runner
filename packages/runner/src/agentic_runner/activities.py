@@ -38,6 +38,7 @@ from uuid import UUID
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from agentic_runner.attempts import AttemptRecords, PriorAttemptAliveError, fence_work_record
 from agentic_runner.callback import (
     CALLBACK_TOKEN_ENV,
     AnnotateRequest,
@@ -1321,6 +1322,7 @@ def wipe_contract_residue(
 
 # Where a Runner-side routing refusal lands in the trail (PRD issue 42, 17 A11).
 _ROUTING_EVIDENCE_SOURCE = "runner.routing"
+PRIOR_ATTEMPT_ALIVE_EVIDENCE_SOURCE = "runner.prior_attempt_alive"
 DIRECTIVE_TOKEN_EVIDENCE_SOURCE = "runner.directive_token"
 AGENT_RUNTIME_EVIDENCE_SOURCE = "runner.agent_runtime"
 
@@ -1435,6 +1437,7 @@ class RunnerRalphActivities:
         mcp_spawner: Spawner | None = None,
         egress_resolver: Resolver | None = None,
         tool_server_health: ToolServerHealthLog | None = None,
+        attempt_records: AttemptRecords | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
         # Wall-clock source for per-Directive runtime, accrued against the Budget's
@@ -1494,6 +1497,9 @@ class RunnerRalphActivities:
         self._mcp_spawner = mcp_spawner
         self._egress_resolver = egress_resolver
         self._tool_server_health = tool_server_health
+        # The retry fence (runner-repo 05). None fences nothing: a process that never
+        # registered has no state directory to keep the records in.
+        self._attempt_records = attempt_records
 
     def activity_callables(self) -> list[Callable[..., Any]]:
         """Return decorated activity callables for Temporal worker registration."""
@@ -1561,6 +1567,37 @@ class RunnerRalphActivities:
             else "runner"
         )
 
+    @contextlib.asynccontextmanager
+    async def _fenced(self, work_record_id: str) -> AsyncIterator[None]:
+        """Refuse this attempt's spawns while an earlier attempt's group lives (RR-05).
+
+        The refusal is retryable on purpose: the earlier attempt either finishes or is
+        killed, and the next retry then finds the Workspace free.
+        """
+
+        if self._attempt_records is None:
+            yield
+            return
+        attempt = activity.info().attempt if activity.in_activity() else 1
+        try:
+            with fence_work_record(self._attempt_records, work_record_id, attempt=attempt):
+                yield
+        except PriorAttemptAliveError as refusal:
+            await _raise_recorded(
+                refusal,
+                self._fastapi_client,
+                work_record_id,
+                source=PRIOR_ATTEMPT_ALIVE_EVIDENCE_SOURCE,
+                actor=self._actor(),
+                payload={
+                    "event": "directive.prior_attempt_alive",
+                    "work_record_id": work_record_id,
+                    "attempt": attempt,
+                    "prior_attempt": refusal.prior.attempt,
+                    "prior_pgid": refusal.prior.pgid,
+                },
+            )
+
     @activity.defn(name="create_or_update_branch_pr")
     async def create_or_update_branch_pr(
         self,
@@ -1570,7 +1607,9 @@ class RunnerRalphActivities:
         await self._assert_routed(request)
         asked: list[QuestionAsked] = []
         try:
-            return _with_question(await self._run_branch_pr_directive(request, asked), asked)
+            async with self._fenced(request.work_record_id):
+                ran = await self._run_branch_pr_directive(request, asked)
+            return _with_question(ran, asked)
         except HookRefusedError:
             # A Runner Hook at or before `pre_runtime` exited non-zero, `pre_directive`
             # being the reject gate (PRD issue 45). Refusing the Directive is the point,
@@ -3811,7 +3850,7 @@ class RunnerRalphActivities:
     async def run_verifier(self, request: VerifierRunInput) -> VerifierRunOutput:
         """Run product-owned verifier config and record bounded redacted evidence."""
         await self._assert_routed(request)
-        async with _liveness_heartbeats():
+        async with _liveness_heartbeats(), self._fenced(request.work_record_id):
             if self._runtime_dependencies_ready():
                 state = await self._runtime_state(
                     request.work_record_id, workspace_path=request.workspace_path
@@ -3909,7 +3948,7 @@ class RunnerRalphActivities:
                     sandbox=verifier_sandbox,
                 )
                 try:
-                    # Run in a thread: subprocess.run inline would block the worker
+                    # Run in a thread: waiting on the verifier inline would block the worker
                     # event loop for up to the verifier timeout, starving the liveness
                     # heartbeats above (and every other activity on this pod).
                     result = await asyncio.to_thread(
@@ -3981,7 +4020,8 @@ class RunnerRalphActivities:
         repair a verifier failure, then re-push. Exactly one runtime turn (ADR-0007)."""
         await self._assert_routed(request)
         try:
-            return await self._run_fix_directive(request)
+            async with self._fenced(request.work_record_id):
+                return await self._run_fix_directive(request)
         except HookRefusedError as refusal:
             # Same posture as the first Directive: a hook refusal ends the loop
             # attributably instead of raising into an endless retry (PRD issue 45).
@@ -4071,25 +4111,26 @@ class RunnerRalphActivities:
             )
 
         try:
-            ran = await self._run_in_place_directive(
-                request,
-                _InPlaceDirective(
-                    lifecycle_source="ralph.execute_member_directive",
-                    run_source="ralph.member_directive.codex_run",
-                    push_source="ralph.member_directive.git_commit_push",
-                    commit_message=(
-                        f"feat(task): directive {request.directive_number} by Agent "
-                        f"{request.agent_id} for work record {request.work_record_id}"
+            async with self._fenced(request.work_record_id):
+                ran = await self._run_in_place_directive(
+                    request,
+                    _InPlaceDirective(
+                        lifecycle_source="ralph.execute_member_directive",
+                        run_source="ralph.member_directive.codex_run",
+                        push_source="ralph.member_directive.git_commit_push",
+                        commit_message=(
+                            f"feat(task): directive {request.directive_number} by Agent "
+                            f"{request.agent_id} for work record {request.work_record_id}"
+                        ),
+                        push_summary=(
+                            f"Push Directive {request.directive_number} ({request.role or 'member'}"
+                            f", woken by {request.wake_reason or 'pending messages'}) to "
+                            f"{request.repository}."
+                        ),
+                        prompt=prompt,
+                        push_when_clean=False,
                     ),
-                    push_summary=(
-                        f"Push Directive {request.directive_number} ({request.role or 'member'}"
-                        f", woken by {request.wake_reason or 'pending messages'}) to "
-                        f"{request.repository}."
-                    ),
-                    prompt=prompt,
-                    push_when_clean=False,
-                ),
-            )
+                )
         except HookRefusedError as refusal:
             return MemberDirectiveOutput(
                 work_record_id=request.work_record_id,
@@ -4163,7 +4204,8 @@ class RunnerRalphActivities:
                 summary="directive unavailable: runtime dependencies missing",
             )
         try:
-            return await self._run_learning_directive(request)
+            async with self._fenced(request.work_record_id):
+                return await self._run_learning_directive(request)
         except HookRefusedError as refusal:
             return self._learning_output(
                 request,
