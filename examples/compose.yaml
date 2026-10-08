@@ -1,0 +1,31 @@
+# One Runner on any Docker host (docs/docker.md). Fill in runner.env from
+# runner.env.example, then `docker compose up -d`.
+name: agentic-runner
+
+services:
+  runner:
+    image: ghcr.io/qtsone/agentic-runner:${AGENTIC_RUNNER_VERSION:-latest}
+    restart: unless-stopped
+    env_file: runner.env
+    environment:
+      AGENTIC_RUNNER_ISOLATION: contract_uid
+    # contract_uid runs every Contract as its own uid: root in the container, with exactly
+    # these five capabilities and nothing else. Without them the Runner refuses to start;
+    # compose.isolation-none.yaml is the alternative (docs/docker.md, "Isolation").
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, FOWNER, DAC_OVERRIDE]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/agentic-runner
+    # The Runner's identity, its Recipient Key, the Workspaces and the per-Contract harness
+    # roots (with the vendor sign-ins made from the console) all live here. Losing the
+    # volume means registering a new Runner.
+    volumes:
+      - state:/var/lib/agentic-os
+    # SIGTERM drains: the Runner stops polling and lets the in-flight Directive finish,
+    # which can take the CLI timeout (900 s) plus the Verifier's 20 minutes.
+    stop_grace_period: 35m
+
+volumes:
+  state:
