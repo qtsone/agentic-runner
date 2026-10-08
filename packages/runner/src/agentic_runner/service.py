@@ -56,6 +56,7 @@ from agentic_runner.credentials import (
     HostCredentialStore,
 )
 from agentic_runner.device_login_activities import ContractDeviceLoginActivities
+from agentic_runner.harness_self_test import DirectivesInFlight, HarnessSelfTests
 from agentic_runner.heartbeat_link import WAKE_DIVERGENCE, HeartbeatLink
 from agentic_runner.hooks import AttemptFacts, HookName, HookRunner
 from agentic_runner.integrations.git.workspace import LocalGitWorkspace
@@ -169,6 +170,8 @@ TEMPORAL_TLS_ENV = "AGENTIC_TEMPORAL_TLS"
 # glances at their inbox; anything tighter spends IMAP logins, not attention.
 SOURCE_POLL_SECONDS_ENV = "AGENTIC_RUNNER_SOURCE_POLL_SECONDS"
 DEFAULT_SOURCE_POLL_SECONDS = 60.0
+# How often due harness self-tests are looked for; each is due every 15 minutes at most.
+SELF_TEST_SWEEP_SECONDS = 60.0
 # The Recipient Key is normally *generated here*, once per installation, and kept in the
 # state directory (PRD issue 48, 22 A4). These two exist for an installer that mints it
 # outside this process and are read only when both are set; the Helm chart takes the
@@ -567,6 +570,11 @@ class ControlPlaneStream:
     messages: MessageStore | None = None
     # Console-v2 issue 29: the latest start of each Runner-hosted Tool Server.
     tool_servers: ToolServerHealthLog | None = None
+    # Local-agents 17: each runtime's descriptor, the harness roots on disk and the last
+    # self-test under each.
+    runtimes: Mapping[str, AgentRuntime] = field(default_factory=dict)
+    contracts: ContractIsolation | None = None
+    self_tests: HarnessSelfTests | None = None
     # Local-agents 04b: which delivered references fill the LLM proxy's slot, and where.
     llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
     _delivered: set[tuple[str, str]] = field(default_factory=set)
@@ -598,20 +606,43 @@ class ControlPlaneStream:
     def _harnesses(self) -> list[HarnessVersion]:
         """Per Contract: the CLI's version and whether it runs on a delivered key (22 A8)
         or on the login its funder created in the harness root -- read off the slot, never
-        off the root, which the Runner does not open."""
+        off the root, which the Runner does not open. A Contract with a harness root and no
+        slot is listed too, so a login-only Contract gets its descriptor (local-agents 17).
+        """
 
         if self.attestation is None:
             return []
         versions = {cli.cli_kind: cli.version for cli in self.attestation.clis}
-        return [
-            HarnessVersion(
-                contract_id=slot.contract_id,
-                cli_kind=slot.runtime_kind,
-                version=versions.get(slot.runtime_kind, "unknown"),
-                auth_mode="api_key" if slot.present else "login",
-            )
+        slots = {
+            (str(slot.contract_id), slot.runtime_kind): slot.present
             for slot in self.proxy.slots.statuses()
+        }
+        roots = self.contracts.harness_roots() if self.contracts is not None else []
+        return [
+            self._harness(
+                contract_id, cli_kind, versions, delivered=slots.get((contract_id, cli_kind), False)
+            )
+            for contract_id, cli_kind in sorted(set(slots) | set(roots))
         ]
+
+    def _harness(
+        self, contract_id: str, cli_kind: str, versions: Mapping[str, str], *, delivered: bool
+    ) -> HarnessVersion:
+        runtime = self.runtimes.get(cli_kind)
+        capabilities = runtime.capabilities() if runtime is not None else None
+        return HarnessVersion(
+            contract_id=UUID(contract_id),
+            cli_kind=cli_kind,
+            version=versions.get(cli_kind, "unknown"),
+            auth_mode="api_key" if delivered else "login",
+            auth_modes=(sorted(capabilities.auth_modes) if capabilities is not None else None),
+            permission_mode=capabilities.permission_mode if capabilities is not None else None,
+            self_test=(
+                self.self_tests.result(contract_id, cli_kind)
+                if self.self_tests is not None
+                else None
+            ),
+        )
 
     async def directive_token(self, directive_id: str) -> str:
         """One activity execution's control-plane token, by Directive id (PRD issue 63)."""
@@ -938,6 +969,17 @@ async def _serve_registered(
     load = _LoadInterceptor()
     proxy = LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox())
     credentials = build_credential_resolver(config, host_store=host_store)
+    isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
+    runtimes = build_agent_runtimes(settings, attestation.clis if attestation is not None else [])
+    in_flight = DirectivesInFlight()
+    self_tests = HarnessSelfTests(
+        sandbox_for=lambda contract_id, cli_kind: isolation.existing_sandbox(
+            contract_id, runtime_kind=cli_kind
+        ),
+        in_flight=in_flight,
+        served=runtimes,
+        monotonic=time.monotonic,
+    )
     stream = ControlPlaneStream(
         client=RunnerRegistrationClient(base_url=control_plane, client=http_client),
         state=state,
@@ -962,6 +1004,9 @@ async def _serve_registered(
         attestation=attestation,
         lifecycle=lifecycle,
         heartbeat_stamp=state_dir / HEARTBEAT_STAMP_NAME,
+        runtimes=runtimes,
+        contracts=isolation,
+        self_tests=self_tests,
     )
     stream.sources = UserSourcePoller(
         stream=SignedIntakeStream(stream.client, state),
@@ -1010,12 +1055,13 @@ async def _serve_registered(
                 settings=settings,
                 config=config,
                 state=state,
-                can_change_uid=can_change_uid,
+                isolation=isolation,
+                agent_runtimes=runtimes,
+                directives_in_flight=in_flight,
                 hooks=hooks,
                 proxy=proxy,
                 credentials=credentials,
                 link=link,
-                attestation=attestation,
                 token_source=stream,
                 messages=messages,
                 tool_servers=tool_servers,
@@ -1033,13 +1079,16 @@ async def _serve_registered(
             _heartbeat_forever(link, stream, client, interval, stop=stop, revoked=revoked)
         )
         poll = asyncio.create_task(_poll_sources_forever(stream.sources, _source_poll_seconds()))
+        self_test = asyncio.create_task(
+            _self_test_forever(self_tests, isolation, SELF_TEST_SWEEP_SECONDS)
+        )
         readiness.ready = True
         await run_runner_lifecycle_hook(hooks, HookName.RUNNER_STARTUP)
         try:
             await run_worker_until_terminated(worker, stop=stop)
         finally:
             readiness.ready = False
-            for task in (beat, poll):
+            for task in (beat, poll, self_test):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
@@ -1121,18 +1170,36 @@ async def _poll_sources_forever(poller: UserSourcePoller, interval: float) -> No
         await poller.poll()
 
 
+async def _self_test_forever(
+    self_tests: HarnessSelfTests, isolation: ContractIsolation, interval: float
+) -> None:
+    """Each harness root's self-test at start, then whenever it falls due (local-agents 17).
+
+    Only roots already on disk: a Contract's uid is allocated by its first Directive,
+    which records the allocation, and a self-test must not be the call that does it.
+    """
+
+    while True:
+        try:
+            await self_tests.run_due(isolation.harness_roots())
+        except Exception as error:  # noqa: BLE001 - a lost sweep is retried on the next one
+            _logger.warning("harness self-test sweep failed: %s", error)
+        await asyncio.sleep(interval)
+
+
 def _activities(
     fastapi: RunnerFastApiClient,
     *,
     settings: WorkerSettings,
     config: RunnerConfig,
     state: RunnerState,
-    can_change_uid: bool,
+    isolation: ContractIsolation,
+    agent_runtimes: Mapping[str, AgentRuntime],
+    directives_in_flight: DirectivesInFlight,
     hooks: HookRunner,
     proxy: LlmProxy,
     credentials: CredentialResolver,
     link: HeartbeatLink,
-    attestation: HostAttestation | None,
     token_source: DirectiveTokenSource | None = None,
     messages: MessageStore | None = None,
     signaller: TemporalWorkflowSignaller | None = None,
@@ -1145,7 +1212,6 @@ def _activities(
         api_base_url=os.getenv("GITHUB_API_BASE_URL", "https://api.github.com"),
     )
     static_git_token = os.getenv("AGENTIC_OS_GIT_TOKEN") or None
-    isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
     attempt_records = AttemptRecords(config.state_dir, workspace_root=settings.WORKSPACE_ROOT)
     # Only the dead go: a live record is a harness this process lost on restart, still
     # writing its Workspace, and the next attempt must keep being refused (RR-05).
@@ -1153,9 +1219,7 @@ def _activities(
     ralph = RunnerRalphActivities(
         fastapi,
         runtime_context_resolver=WorkerRuntimeContextResolver(fastapi),
-        agent_runtimes=build_agent_runtimes(
-            settings, attestation.clis if attestation is not None else []
-        ),
+        agent_runtimes=agent_runtimes,
         git_workspace=LocalGitWorkspace(
             git_token=static_git_token,
             git_token_provider=(
@@ -1186,6 +1250,7 @@ def _activities(
         workflow_signaller=signaller,
         tool_server_health=tool_servers,
         attempt_records=attempt_records,
+        directives_in_flight=directives_in_flight,
     )
     return [
         *ralph.activity_callables(),

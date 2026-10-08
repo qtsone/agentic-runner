@@ -175,6 +175,29 @@ class QuestionAsked:
     owner_confirmation: OwnerConfirmationPending | None = None
 
 
+class HarnessHoldKind(StrEnum):
+    """Why a subscription-mode harness stopped on its person's account (local-agents 08)."""
+
+    # The plan's usage window is spent; the harness may say when it resets.
+    USAGE_LIMIT = "usage_limit"
+    # The sign-in expired, was revoked, or is absent: only the person can sign in again.
+    SIGN_IN_REQUIRED = "sign_in_required"
+
+
+@dataclass(frozen=True)
+class HarnessHold:
+    """A subscription Directive stopped for a reason a retry cannot fix (local-agents 08).
+
+    Returned instead of raised, with nothing pushed, so the loop can hold rather than
+    spend a fix Directive and Budget on it (issue 09). ``retry_not_before`` is ISO 8601
+    UTC text -- the same reason ``ContractDeviceLoginResult.expires_at`` is -- and None
+    when the harness named no reset time.
+    """
+
+    kind: HarnessHoldKind
+    retry_not_before: str | None = None
+
+
 @dataclass(frozen=True)
 class QuestionOpenInput:
     """Route an allowed Question and start its 24 h window (PRD issue 60)."""
@@ -328,6 +351,8 @@ class BranchPullRequestOutput:
     plan: EpicPlan | None = None
     # PRD issue 60: the Question this Directive's Agent asked over its callback socket.
     question: QuestionAsked | None = None
+    # Local-agents 08: the subscription harness hit its usage limit or lost its sign-in.
+    harness_hold: HarnessHold | None = None
 
 
 @dataclass(frozen=True)
@@ -649,6 +674,8 @@ class FixDirectiveOutput:
     plan: EpicPlan | None = None
     # PRD issue 60: the Question this Directive's Agent asked over its callback socket.
     question: QuestionAsked | None = None
+    # Local-agents 08: the subscription harness hit its usage limit or lost its sign-in.
+    harness_hold: HarnessHold | None = None
 
 
 @dataclass(frozen=True)
@@ -1032,6 +1059,7 @@ class LearningDirectiveOutput:
     usage: DirectiveUsage = field(default_factory=DirectiveUsage)
     outcome: str = LEARNING_PROPOSED
     summary: str = ""
+    harness_hold: HarnessHold | None = None
 
 
 @dataclass(frozen=True)

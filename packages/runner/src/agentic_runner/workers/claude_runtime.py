@@ -19,11 +19,13 @@ from agentic_runner.workers._runtime_support import (
     workspace_id,
 )
 from agentic_runner.workers.agent_runtime import (
+    REFUSED_PERMISSION_MODE,
     AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
     ResumableAgentRuntime,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import claude_mcp_config
@@ -74,6 +76,16 @@ class ClaudeRuntime(ResumableAgentRuntime):
         self._settings = settings
         self._runner = runner or run_subprocess_exec
         self.host_api_key = bool(settings.ANTHROPIC_API_KEY)
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(
+            auth_modes=self.auth_modes,
+            permission_mode=(
+                "permission=skip;output=json"
+                if _guard_mode(self._settings) is not None
+                else REFUSED_PERMISSION_MODE
+            ),
+        )
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         workspace_path = request.workspace_path.resolve(strict=False)

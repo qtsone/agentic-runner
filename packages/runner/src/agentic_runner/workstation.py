@@ -45,6 +45,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agentic_runner import service
 from agentic_runner.build import build_id
+from agentic_runner.cli_floor import CLI_FLOORS, CLI_NAMES, meets_floor, parse_cli_version
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.registration import load_state
@@ -86,15 +87,7 @@ __all__ = [
 
 ROOT_ENV: Final = "AGENTIC_RUNNER_WORKSTATION_ROOT"
 
-# What the Profile's `cli_kind` runs, by executable name on PATH.
-CLI_NAMES: Final[Mapping[str, str]] = {"codex_cli": "codex", "claude_code": "claude"}
-# The versions the Runner image is built and tested against (Dockerfile.runner's
-# CODEX_CLI_VERSION / CLAUDE_CODE_VERSION; a test holds the two together). Below the
-# floor is *reported*, not refused: the user's own CLI is the user's to upgrade.
-CLI_FLOORS: Final[Mapping[str, str]] = {"codex": "0.141.0", "claude": "2.1.280"}
-
 _ORG = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-_VERSION = re.compile(r"(\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,40})")
 _LABEL_PREFIX: Final = "agentic-runner"
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -293,10 +286,6 @@ def require_any_cli(path: str) -> dict[str, str]:
     return found
 
 
-def _version_tuple(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
-
-
 def cli_versions(found: Mapping[str, str], *, run: Run = subprocess.run) -> list[CliVersion]:
     """Each CLI's ``--version``, the only thing the Runner asks a CLI about itself.
 
@@ -315,16 +304,11 @@ def cli_versions(found: Mapping[str, str], *, run: Run = subprocess.run) -> list
             )
         except (OSError, subprocess.TimeoutExpired):
             continue
-        match = _VERSION.search(answer.stdout or answer.stderr)
-        if match is None:
+        version = parse_cli_version(answer.stdout or answer.stderr)
+        if version is None:
             continue
-        version = match.group(1)
         versions.append(
-            CliVersion(
-                cli_kind=cli_kind,
-                version=version,
-                meets_floor=_version_tuple(version) >= _version_tuple(CLI_FLOORS[name]),
-            )
+            CliVersion(cli_kind=cli_kind, version=version, meets_floor=meets_floor(name, version))
         )
     return versions
 

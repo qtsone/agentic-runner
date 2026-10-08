@@ -33,6 +33,7 @@ from agentic_runner.workers.agent_runtime import (
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
+    RuntimeCapabilities,
 )
 from agentic_runner_contracts.activity_io import BranchPullRequestInput, VerifierRunInput
 from agentic_runner_contracts.runtime_context import work_branch_name
@@ -122,6 +123,9 @@ class _FakeClient:
 class _FakeRuntime:
     auth_modes: frozenset[AuthMode] = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     requests: list[DirectiveRequest] = field(default_factory=list)
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(auth_modes=self.auth_modes, permission_mode="fake")
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         self.requests.append(request)

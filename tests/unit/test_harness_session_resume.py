@@ -31,6 +31,7 @@ from agentic_runner.workers.agent_runtime import (
     AuthMode,
     DirectiveRequest,
     DirectiveResult,
+    RuntimeCapabilities,
 )
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
@@ -61,6 +62,9 @@ class _Runtime:
     def __init__(self, *, holds: set[str]) -> None:
         self.holds = holds
 
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(auth_modes=self.auth_modes, permission_mode="fake")
+
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         raise AssertionError("not run here")
 
@@ -71,6 +75,9 @@ class _Runtime:
 class _NonResumableRuntime:
     auth_modes = frozenset({AuthMode.API_KEY})
     host_api_key = False
+
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(auth_modes=self.auth_modes, permission_mode="fake")
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         raise AssertionError("not run here")

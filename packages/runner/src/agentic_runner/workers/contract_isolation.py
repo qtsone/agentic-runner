@@ -311,6 +311,23 @@ class ContractIsolation:
             gid=uid,
         )
 
+    def existing_sandbox(
+        self, contract_id: str | None, *, runtime_kind: str
+    ) -> DirectiveSandbox | None:
+        """``sandbox`` only for a harness root already on disk, else ``None``.
+
+        For a caller that must never be the one to create a Contract's tree or allocate
+        its uid -- a terminated Contract's wipe may have just retired both. Synchronous
+        on purpose: no await may fall between the check and ``sandbox``, or a wipe on the
+        same event loop could land in between.
+        """
+
+        if not self.harness_config_dir(contract_id, runtime_kind).is_dir():
+            return None
+        if self._can_separate_uids and not self.has_uid(contract_id):
+            return None
+        return self.sandbox(contract_id, runtime_kind=runtime_kind)
+
     def prepare_workspace(self, contract_id: str | None, work_record_id: str) -> Path:
         """Create ``{contract_id}/{work_record_id}`` 0700, owned by the Contract's uid."""
 
@@ -430,6 +447,21 @@ class ContractIsolation:
                 if entry.is_dir() and entry.name not in _RESERVED_DIRS and _is_uuid(entry.name):
                     held.append((contract_dir.name, entry.name))
         return held
+
+    def harness_roots(self) -> list[tuple[str, str]]:
+        """Every ``(contract_id, runtime_kind)`` harness root already on this Runner."""
+
+        if not self._workspace_root.is_dir():
+            return []
+        roots: list[tuple[str, str]] = []
+        for contract_dir in sorted(self._workspace_root.iterdir()):
+            harness_dir = contract_dir / _HARNESS_DIR
+            if not _is_uuid(contract_dir.name) or not harness_dir.is_dir():
+                continue
+            for entry in sorted(harness_dir.iterdir()):
+                if entry.is_dir() and _RUNTIME_KIND_RE.fullmatch(entry.name):
+                    roots.append((contract_dir.name, entry.name))
+        return roots
 
     def remove_workspace(self, contract_id: str | None, work_record_id: str) -> bool:
         """Delete one Work Record's Workspace, leaving the Contract's tree standing."""

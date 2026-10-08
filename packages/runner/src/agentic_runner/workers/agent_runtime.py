@@ -133,6 +133,24 @@ class DirectiveResult:
     model_usage: tuple[ModelUsage, ...] = ()
 
 
+# The permission mode of a runtime whose guard configuration is incomplete: it refuses
+# every Directive, so there is no mode it passes.
+REFUSED_PERMISSION_MODE = "refused"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCapabilities:
+    """What a runtime declares about itself on the heartbeat (local-agents 17).
+
+    ``permission_mode`` is the fixed permission and approval mode the runtime passes its
+    harness, as a short patterned string. It is reported, never the gate: the Runner's
+    own floor is (ADR-0011 §12).
+    """
+
+    auth_modes: frozenset[AuthMode]
+    permission_mode: str
+
+
 @runtime_checkable
 class AgentRuntime(Protocol):
     """The pluggable engine an Agent uses to execute one Directive per step."""
@@ -142,6 +160,8 @@ class AgentRuntime(Protocol):
     # Whether the host operator configured a provider key for this runtime itself, which
     # counts as "an API key is present" when the Runner chooses the mode.
     host_api_key: bool
+
+    def capabilities(self) -> RuntimeCapabilities: ...
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult: ...
 

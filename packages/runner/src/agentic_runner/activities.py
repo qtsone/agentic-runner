@@ -31,6 +31,7 @@ import tempfile
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn, Protocol
 from uuid import UUID
@@ -75,6 +76,7 @@ from agentic_runner.credentials import (
     UnresolvableCredentialReferenceError,
 )
 from agentic_runner.egress import EGRESS_REFUSED_SOURCE, EgressProxy, Resolver, host_of
+from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.heartbeat_link import HeartbeatLink, SeamUnavailableError
 from agentic_runner.hooks import (
     HOOK_EVIDENCE_SOURCE,
@@ -142,6 +144,7 @@ from agentic_runner.workers.fastapi_client import (
     WorkerFastApiClientError,
     directive_token,
 )
+from agentic_runner.workers.harness_outcome import classify_harness_outcome
 from agentic_runner.workers.harness_usage import extract_claude_result, extract_codex_turn_usage
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.skills import (
@@ -170,6 +173,7 @@ from agentic_runner_contracts.activity_io import (
     FixDirectiveOutput,
     GitHubCallError,
     GitHubCallFailure,
+    HarnessHold,
     LearningDirectiveInput,
     LearningDirectiveOutput,
     MemberDirectiveInput,
@@ -1497,6 +1501,7 @@ DIRECTIVE_TOKEN_EVIDENCE_SOURCE = "runner.directive_token"
 AGENT_RUNTIME_EVIDENCE_SOURCE = "runner.agent_runtime"
 SKILLS_EVIDENCE_SOURCE = "runner.skills"
 HARNESS_LOGIN_RESIDUE_SOURCE = "runner.harness_login_residue"
+HARNESS_HOLD_SOURCE = "runner.harness_hold"
 
 
 class _EvidenceWriter(Protocol):
@@ -1610,8 +1615,11 @@ class RunnerRalphActivities:
         egress_resolver: Resolver | None = None,
         tool_server_health: ToolServerHealthLog | None = None,
         attempt_records: AttemptRecords | None = None,
+        directives_in_flight: DirectivesInFlight | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
+        # Read by the harness self-test, which never runs beside a Contract's Directive.
+        self._directives_in_flight = directives_in_flight or DirectivesInFlight()
         # Wall-clock source for per-Directive runtime, accrued against the Budget's
         # wall-clock dimension (ADR-0007). Activities run outside the Temporal sandbox,
         # so a real monotonic clock is allowed here (it must never be used in the
@@ -2074,6 +2082,31 @@ class RunnerRalphActivities:
                 auth_mode=attempt.auth_mode,
             )
             plan = _take_plan(checkout_workspace)
+            harness_hold = await self._harness_hold(
+                runtime_state=runtime_state,
+                work_record_id=request.work_record_id,
+                directive_number=request.directive_number,
+                result=codex_result,
+                auth_mode=attempt.auth_mode,
+            )
+            if harness_hold is not None:
+                return BranchPullRequestOutput(
+                    repository=request.repository,
+                    branch_name=request.branch_name,
+                    base_ref=request.base_ref,
+                    pr_number=0,
+                    pr_url="",
+                    branch_created=branch.created,
+                    pr_created=False,
+                    duration_seconds=self._monotonic() - directive_started,
+                    usage=await self._directive_usage(
+                        work_record_id=request.work_record_id,
+                        directive_number=request.directive_number,
+                    ),
+                    workspace_path=str(workspace_path),
+                    grant_snapshot=dict(request.grant_snapshot),
+                    harness_hold=harness_hold,
+                )
             if codex_result.exit_code != 0:
                 if _is_guard_mode_refusal(codex_result):
                     # The runtime refused this Directive (guard-mode). Return a flagged
@@ -2531,6 +2564,7 @@ class RunnerRalphActivities:
         scratch_root = sandbox.tmp_dir if sandbox is not None else Path(tempfile.gettempdir())
         attempt_dir = prepare_attempt_dir(scratch_root / f"attempt-{key}", uid)
         async with contextlib.AsyncExitStack() as stack:
+            stack.enter_context(self._directives_in_flight.running(facts.contract_id))
             stack.callback(shutil.rmtree, attempt_dir, ignore_errors=True)
             callback_env: dict[str, str] = {}
             if self._socket_dir is not None:
@@ -4541,7 +4575,13 @@ class RunnerRalphActivities:
                 guard_mode_refused=True,
                 workspace_path=request.workspace_path,
             )
-        if consumed and self._message_store is not None and not ran.guard_mode_refused:
+        if (
+            consumed
+            and self._message_store is not None
+            and not ran.guard_mode_refused
+            # A held turn never read its Messages; the wake after the hold must see them.
+            and ran.harness_hold is None
+        ):
             self._message_store.mark_consumed(
                 contract_id=contract[0],
                 work_record_id=request.work_record_id,
@@ -4674,6 +4714,13 @@ class RunnerRalphActivities:
                 result=result,
                 auth_mode=attempt.auth_mode,
             )
+            harness_hold = await self._harness_hold(
+                runtime_state=state,
+                work_record_id=request.work_record_id,
+                directive_number=request.directive_number,
+                result=result,
+                auth_mode=attempt.auth_mode,
+            )
             usage = await self._directive_usage(
                 work_record_id=request.work_record_id,
                 directive_number=request.directive_number,
@@ -4710,6 +4757,7 @@ class RunnerRalphActivities:
                 usage=usage,
                 outcome=LEARNING_FAILED,
                 summary=f"the Learner's runtime exited {result.exit_code}",
+                harness_hold=harness_hold,
             )
         return self._learning_output(
             request,
@@ -4726,6 +4774,7 @@ class RunnerRalphActivities:
         usage: DirectiveUsage | None = None,
         outcome: str = LEARNING_PROPOSED,
         summary: str = "",
+        harness_hold: HarnessHold | None = None,
     ) -> LearningDirectiveOutput:
         return LearningDirectiveOutput(
             work_record_id=request.work_record_id,
@@ -4734,6 +4783,7 @@ class RunnerRalphActivities:
             usage=usage or DirectiveUsage(),
             outcome=outcome,
             summary=summary,
+            harness_hold=harness_hold,
         )
 
     def _learner_transcript(self, state: _RuntimeContextState, work_record_id: str) -> str:
@@ -4934,6 +4984,30 @@ class RunnerRalphActivities:
             )
             # Taken before the commit below so it never lands on the branch (PRD 59).
             plan = _take_plan(state.workspace_path)
+            harness_hold = await self._harness_hold(
+                runtime_state=state,
+                work_record_id=request.work_record_id,
+                directive_number=request.directive_number,
+                result=codex_result,
+                auth_mode=attempt.auth_mode,
+            )
+            if harness_hold is not None:
+                return FixDirectiveOutput(
+                    work_record_id=request.work_record_id,
+                    repository=request.repository,
+                    pr_number=request.pr_number,
+                    directive_number=request.directive_number,
+                    branch_head_sha="",
+                    summary=f"held: the harness reported {harness_hold.kind.value}",
+                    duration_seconds=self._monotonic() - directive_started,
+                    usage=await self._directive_usage(
+                        work_record_id=request.work_record_id,
+                        directive_number=request.directive_number,
+                    ),
+                    workspace_path=str(state.workspace_path),
+                    grant_snapshot=state.grant_snapshot_payload,
+                    harness_hold=harness_hold,
+                )
             if codex_result.exit_code != 0:
                 if _is_guard_mode_refusal(codex_result):
                     return FixDirectiveOutput(
@@ -5175,6 +5249,46 @@ class RunnerRalphActivities:
                         "usage_event": usage_event,
                     }
                 )
+
+    async def _harness_hold(
+        self,
+        *,
+        runtime_state: _RuntimeContextState,
+        work_record_id: str,
+        directive_number: int,
+        result: DirectiveResult,
+        auth_mode: AuthMode,
+    ) -> HarnessHold | None:
+        """A subscription harness that stopped on its usage limit or sign-in, recorded
+        once (local-agents 08). An ``api_key`` Directive's limits are the proxy's, so it is
+        never classified. The Evidence names the kind and the reset, never the output."""
+
+        if auth_mode != AuthMode.SUBSCRIPTION:
+            return None
+        hold = classify_harness_outcome(
+            runtime_state.cli_kind,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            error=result.error,
+            now=datetime.now(UTC),
+        )
+        if hold is None:
+            return None
+        await self._fastapi_client.append_evidence(
+            work_record_id,
+            source=HARNESS_HOLD_SOURCE,
+            payload={
+                "event": "directive.harness_hold",
+                "kind": hold.kind.value,
+                "cli_kind": runtime_state.cli_kind,
+                "retry_not_before": hold.retry_not_before,
+                "directive_number": directive_number,
+                "agent_id": runtime_state.agent_id,
+                "contract_id": runtime_state.contract_id,
+            },
+        )
+        return hold
 
     @activity.defn(name="wipe_contract_residue")
     async def wipe_contract_residue(self, request: ContractResidueInput) -> ContractResidueOutput:
