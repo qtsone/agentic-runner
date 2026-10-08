@@ -38,6 +38,7 @@ from agentic_runner.private_state import ensure_private_dir, private_read, priva
 
 __all__ = [
     "NO_CONTRACT",
+    "UID_MAP_FILENAME",
     "ContractIsolation",
     "ContractIsolationError",
     "ContractResidue",
@@ -63,7 +64,7 @@ _GIT_DIR: Final[str] = ".git"
 # `.agentic-os-git-home`), so it only ever relaxes a check for the Contract's own uid.
 _CONTRACT_GITCONFIG: Final[str] = ".gitconfig"
 _CONTRACT_GITCONFIG_BODY: Final[str] = "[safe]\n\tdirectory = *\n"
-_UID_MAP_FILE: Final[str] = "contract-uids.json"
+UID_MAP_FILENAME: Final[str] = "contract-uids.json"
 _UID_LOCK_FILE: Final[str] = "contract-uids.lock"
 # Path segments are platform ids (map ticket 07), i.e. UUIDs — plus the sentinel above.
 _PATH_SEGMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -482,7 +483,7 @@ class ContractIsolation:
             yield
 
     def _uid_map_path(self) -> Path:
-        return self._state_dir / _UID_MAP_FILE
+        return self._state_dir / UID_MAP_FILENAME
 
     def _read_uid_map(self) -> dict[str, int]:
         path = self._uid_map_path()

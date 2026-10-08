@@ -16,7 +16,7 @@ import errno
 import os
 import secrets
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "ensure_private_dir",
     "private_read",
     "private_write",
+    "require_private_files",
 ]
 
 _DIR_MODE = 0o700
@@ -48,6 +49,18 @@ def ensure_private_dir(path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         os.mkdir(path, _DIR_MODE)
     _require_private(path, os.lstat(path), stat.S_ISDIR, "directory", "chmod 700")
+
+
+def require_private_files(directory: Path, names: Iterable[str]) -> None:
+    """Refuse any of ``directory``'s ``names`` that exists and is not private; skip the rest."""
+
+    for name in names:
+        path = directory / name
+        try:
+            status = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        _require_private(path, status, stat.S_ISREG, "file", "chmod 600")
 
 
 def private_write(path: Path, data: bytes) -> None:

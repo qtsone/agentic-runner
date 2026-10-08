@@ -196,3 +196,26 @@ async def test_the_runner_refuses_to_start_on_a_state_file_open_to_others(
     assert exit_code == 1
     assert "refusing to start (unsafe_state_dir)" in capsys.readouterr().out
     assert not (state / LIFECYCLE_FILENAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_lifecycle_outbox_open_to_others_refuses_before_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The upgrade case: an earlier release left the outbox 0644, and it is first read only
+    # after `register()` -- so the start check, not the read, has to catch it.
+    state = _private_dir(tmp_path)
+    save_state(state, _identity())
+    (state / LIFECYCLE_FILENAME).write_text("[]")
+    (state / LIFECYCLE_FILENAME).chmod(0o644)
+    _environment(monkeypatch, state)
+
+    async def _must_not_register(**kwargs: object) -> object:
+        raise AssertionError("a refused Runner must not register")
+
+    monkeypatch.setattr(service, "register", _must_not_register)
+
+    exit_code = await service.run(can_change_uid=False, connect=_refused_connect)
+
+    assert exit_code == 1
+    assert "refusing to start (unsafe_state_dir)" in capsys.readouterr().out
