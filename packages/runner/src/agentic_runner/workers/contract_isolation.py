@@ -133,11 +133,15 @@ class DirectiveSandbox:
 
     ``max_memory_bytes`` is None where the kernel cannot hold a memory ceiling (macOS, see
     ``ContractIsolation``): the spawn runs without one rather than not at all.
+
+    ``max_processes`` is None whenever ``uid`` is: ``RLIMIT_NPROC`` counts every process
+    the real uid owns, not the spawn's descendants, so on the Runner's own user it is a
+    ceiling on the whole login session and the CLI's first fork fails (QTS-1321).
     """
 
     home_dir: Path
     harness_config_dir: Path
-    max_processes: int
+    max_processes: int | None
     max_memory_bytes: int | None
     uid: int | None = None
     gid: int | None = None
@@ -191,7 +195,8 @@ class DirectiveSandbox:
         max_memory_bytes = self.max_memory_bytes
 
         def apply_floor() -> None:
-            resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
+            if max_processes is not None:
+                resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
             if max_memory_bytes is not None:
                 resource.setrlimit(resource.RLIMIT_DATA, (max_memory_bytes, max_memory_bytes))
 
@@ -250,6 +255,13 @@ class ContractIsolation:
         self._can_limit_memory = (
             sys.platform != "darwin" if can_limit_memory is None else can_limit_memory
         )
+        if not self._can_separate_uids:
+            _logger.warning(
+                "this host cannot separate Contract uids: Directive spawns run without the "
+                "%d-process RLIMIT_NPROC ceiling, which would count every process this "
+                "Runner's user owns",
+                max_processes,
+            )
         if not self._can_limit_memory:
             _logger.warning(
                 "this host refuses RLIMIT_DATA: Directive spawns run without the %d-byte "
@@ -332,7 +344,7 @@ class ContractIsolation:
         return DirectiveSandbox(
             home_dir=home,
             harness_config_dir=harness,
-            max_processes=self._max_processes,
+            max_processes=self._max_processes if uid is not None else None,
             max_memory_bytes=(
                 (memory_limit_bytes or self._memory_limit_bytes) if self._can_limit_memory else None
             ),
