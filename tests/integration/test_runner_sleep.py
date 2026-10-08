@@ -58,8 +58,8 @@ RUNNER = textwrap.dedent(
     @activity.defn(name="sleepy_directive")
     async def sleepy_directive() -> dict:
         info = activity.info()
-        async with runner_activities._liveness_heartbeats() as earlier_attempts_seconds:
-            directive_started = time.monotonic() - earlier_attempts_seconds
+        async with runner_activities._liveness_heartbeats() as liveness:
+            directive_started = time.monotonic() - liveness.earlier_attempts_seconds
             await run_subprocess_exec(
                 argv=[sys.executable, "-c", CLI, str(work / f"cli-{info.attempt}.pid"),
                       str(info.attempt)],

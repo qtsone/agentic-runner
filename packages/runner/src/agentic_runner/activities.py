@@ -38,7 +38,12 @@ from uuid import UUID
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from agentic_runner.attempts import AttemptRecords, PriorAttemptAliveError, fence_work_record
+from agentic_runner.attempts import (
+    AttemptRecords,
+    PriorAttemptAliveError,
+    fence_work_record,
+    refuse_if_prior_attempt_alive,
+)
 from agentic_runner.callback import (
     CALLBACK_TOKEN_ENV,
     AnnotateRequest,
@@ -86,6 +91,7 @@ from agentic_runner.integrations.git.contracts import (
     PrepareVerifierWorkspaceRequest,
     PushBranchRequest,
 )
+from agentic_runner.integrations.git.evidence import read_head_commit
 from agentic_runner.integrations.git.workspace import (
     GitWorkspacePolicyError,
     contract_workspace_path,
@@ -115,6 +121,7 @@ from agentic_runner.workers.agent_runtime import (
     AuthModel,
     DirectiveRequest,
     DirectiveResult,
+    ResumableAgentRuntime,
 )
 from agentic_runner.workers.contract_isolation import (
     NO_CONTRACT,
@@ -323,8 +330,87 @@ _APPROVAL_POLLS_PER_ACTIVITY = 10
 _APPROVAL_ACTIVITY_TIME_BUDGET_SECONDS = 360.0
 
 
+@dataclass(frozen=True, slots=True)
+class HarnessSession:
+    """The harness session a Directive attempt started, and where it ran (local-agents 16).
+
+    A retry may resume it only when the Contract, the Workspace path and the head all
+    match exactly (ADR-0007, amendment 2026-10-03).
+    """
+
+    session_id: str
+    contract_id: str | None
+    workspace_path: str
+    head: str | None
+
+    @classmethod
+    def from_heartbeat(cls, details: object) -> "HarnessSession | None":
+        if not isinstance(details, Mapping):
+            return None
+        session_id = details.get("session_id")
+        contract_id = details.get("contract_id")
+        workspace_path = details.get("workspace_path")
+        head = details.get("head")
+        if (
+            not isinstance(session_id, str)
+            or not isinstance(workspace_path, str)
+            or not isinstance(contract_id, str | None)
+            or not isinstance(head, str | None)
+        ):
+            return None
+        return cls(session_id, contract_id, workspace_path, head)
+
+
+def _why_not_resume(
+    prior: HarnessSession | None,
+    here: HarnessSession,
+    agent_runtime: AgentRuntime,
+    sandbox: DirectiveSandbox | None,
+) -> str | None:
+    if prior is None:
+        return "no_prior_session"
+    if prior.contract_id != here.contract_id:
+        return "contract_changed"
+    if prior.workspace_path != here.workspace_path:
+        return "workspace_changed"
+    if here.head is None or prior.head != here.head:
+        return "head_changed"
+    if not isinstance(agent_runtime, ResumableAgentRuntime):
+        return "runtime_cannot_resume"
+    if not agent_runtime.has_session(prior.session_id, sandbox):
+        return "session_not_found"
+    return None
+
+
+class _Liveness:
+    """What one attempt's heartbeats carry: its first start, and its harness session.
+
+    Both ride in the Temporal heartbeat details rather than in the Runner's process
+    (ADR-0013 §3), so the retry that follows a lost pod still finds them.
+    """
+
+    def __init__(
+        self, *, first_started: float, now: float, prior_session: HarnessSession | None
+    ) -> None:
+        self.earlier_attempts_seconds = max(0.0, now - first_started)
+        self.prior_session = prior_session
+        self._first_started = first_started
+        self._session: HarnessSession | None = None
+
+    def details(self) -> tuple[object, ...]:
+        if self._session is None:
+            return (self._first_started,)
+        return (self._first_started, asdict(self._session))
+
+    def record_session(self, session: HarnessSession) -> None:
+        self._session = session
+        # At once, not at the next beat: the attempt may be lost before then.
+        if activity.in_activity():
+            activity.heartbeat(*self.details())
+
+
 @contextlib.asynccontextmanager
-async def _liveness_heartbeats() -> AsyncIterator[float]:
+async def _liveness_heartbeats() -> AsyncIterator[_Liveness]:
     """Emit periodic activity heartbeats from a background task while the body runs.
 
     Async-activity heartbeats are delivered on the worker event loop, so the wrapped
@@ -336,24 +422,29 @@ async def _liveness_heartbeats() -> AsyncIterator[float]:
     47, 23 item 4). Each beat carries the first attempt's wall-clock start as its
     heartbeat details, so the retry that follows a laptop's sleep -- the attempt Temporal
     failed on its heartbeat timeout -- charges the Work Record's wall-clock from there:
-    sleep is an outage, and the Budget keeps running through it.
+    sleep is an outage, and the Budget keeps running through it. Once the Agent Runtime
+    names its session, the beats carry that too (local-agents 16).
     """
+    now = time.time()
     if not activity.in_activity():
-        yield 0.0
+        yield _Liveness(first_started=now, now=now, prior_session=None)
         return
 
-    now = time.time()
     details = activity.info().heartbeat_details
-    first_started = float(details[0]) if details else now
+    liveness = _Liveness(
+        first_started=float(details[0]) if details else now,
+        now=now,
+        prior_session=HarnessSession.from_heartbeat(details[1]) if len(details) > 1 else None,
+    )
 
     async def beat() -> None:
         while True:
-            activity.heartbeat(first_started)
+            activity.heartbeat(*liveness.details())
             await asyncio.sleep(_HEARTBEAT_INTERVAL_SECONDS)
 
     heartbeater = asyncio.create_task(beat())
     try:
-        yield max(0.0, now - first_started)
+        yield liveness
     finally:
         heartbeater.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1323,6 +1414,7 @@ def wipe_contract_residue(
 # Where a Runner-side routing refusal lands in the trail (PRD issue 42, 17 A11).
 _ROUTING_EVIDENCE_SOURCE = "runner.routing"
 PRIOR_ATTEMPT_ALIVE_EVIDENCE_SOURCE = "runner.prior_attempt_alive"
+HARNESS_SESSION_EVIDENCE_SOURCE = "runner.harness_session"
 DIRECTIVE_TOKEN_EVIDENCE_SOURCE = "runner.directive_token"
 AGENT_RUNTIME_EVIDENCE_SOURCE = "runner.agent_runtime"
 
@@ -1598,6 +1690,63 @@ class RunnerRalphActivities:
                 },
             )
 
+    async def _harness_session(
+        self,
+        liveness: _Liveness,
+        *,
+        work_record_id: str,
+        directive_number: int,
+        agent_runtime: AgentRuntime,
+        contract_id: str | None,
+        workspace_path: Path,
+        sandbox: DirectiveSandbox | None,
+    ) -> tuple[str | None, Callable[[str], None]]:
+        """Resume the session an earlier attempt of this Directive started, or start fresh.
+
+        Returns the session to resume, if any, and the hook that files a fresh one in the
+        heartbeat details. Every retry writes one Evidence event saying which, and why --
+        never what the session holds (local-agents 16, ADR-0007 amendment 2026-10-03).
+        """
+
+        head = read_head_commit(
+            workspace_path=workspace_path, workspace_root=self._require_workspace_root()
+        )
+        here = HarnessSession(
+            session_id="",
+            contract_id=contract_id,
+            workspace_path=str(workspace_path),
+            head=head,
+        )
+
+        def start_fresh(session_id: str) -> None:
+            liveness.record_session(replace(here, session_id=session_id))
+
+        attempt = activity.info().attempt if activity.in_activity() else 1
+        if attempt == 1:
+            return None, start_fresh
+        # Made explicit rather than left to the spawn: the session to resume must not be
+        # one a still-running harness is writing (RR-05). A refusal raises into `_fenced`.
+        refuse_if_prior_attempt_alive()
+        prior = liveness.prior_session
+        reason = _why_not_resume(prior, here, agent_runtime, sandbox)
+        await self._fastapi_client.append_evidence(
+            work_record_id,
+            source=HARNESS_SESSION_EVIDENCE_SOURCE,
+            actor=self._actor(),
+            payload={
+                "event": "directive.harness_session",
+                "work_record_id": work_record_id,
+                "directive_number": directive_number,
+                "attempt": attempt,
+                "decision": "fresh" if reason else "resumed",
+                "reason": reason or "contract_workspace_and_head_match",
+            },
+        )
+        if reason is not None or prior is None:
+            return None, start_fresh
+        liveness.record_session(prior)
+        return prior.session_id, start_fresh
+
     @activity.defn(name="create_or_update_branch_pr")
     async def create_or_update_branch_pr(
         self,
@@ -1637,7 +1786,7 @@ class RunnerRalphActivities:
         asked: list[QuestionAsked],
     ) -> BranchPullRequestOutput:
         async with (
-            _liveness_heartbeats() as earlier_attempts_seconds,
+            _liveness_heartbeats() as liveness,
             contextlib.AsyncExitStack() as attempt_stack,
         ):
             if (
@@ -1655,7 +1804,7 @@ class RunnerRalphActivities:
                     pr_created=False,
                 )
 
-            directive_started = self._monotonic() - earlier_attempts_seconds
+            directive_started = self._monotonic() - liveness.earlier_attempts_seconds
             await self._advance_work_record_lifecycle(
                 request.work_record_id,
                 to_state="IN_PROGRESS",
@@ -1783,10 +1932,22 @@ class RunnerRalphActivities:
             )
             prompt_notes: list[str] = []
             await attempt.hooks.phase(HookName.PRE_RUNTIME)
+            sandbox = self._directive_sandbox(runtime_state, checkout_workspace)
+            resume_session_id, on_session_started = await self._harness_session(
+                liveness,
+                work_record_id=request.work_record_id,
+                directive_number=request.directive_number,
+                agent_runtime=agent_runtime,
+                contract_id=contract_id,
+                workspace_path=checkout_workspace,
+                sandbox=sandbox,
+            )
             codex_result = await agent_runtime.execute_directive(
                 DirectiveRequest(
-                    sandbox=self._directive_sandbox(runtime_state, checkout_workspace),
+                    sandbox=sandbox,
                     workspace_path=checkout_workspace,
+                    resume_session_id=resume_session_id,
+                    on_session_started=on_session_started,
                     # The attempt's callback socket and bearer, plus whatever the
                     # `environment` hook exported. The env allow-list gains these names
                     # and nothing else (PRD issue 09's invariant, issue 45's amendment).
@@ -4397,7 +4558,7 @@ class RunnerRalphActivities:
         """
 
         async with (
-            _liveness_heartbeats() as earlier_attempts_seconds,
+            _liveness_heartbeats() as liveness,
             contextlib.AsyncExitStack() as attempt_stack,
         ):
             if (
@@ -4413,7 +4574,7 @@ class RunnerRalphActivities:
                     branch_head_sha="",
                     summary="directive unavailable: runtime dependencies missing",
                 )
-            directive_started = self._monotonic() - earlier_attempts_seconds
+            directive_started = self._monotonic() - liveness.earlier_attempts_seconds
             # Loop back into the working state for another runtime turn.
             await self._advance_work_record_lifecycle(
                 request.work_record_id,
@@ -4481,10 +4642,22 @@ class RunnerRalphActivities:
             )
             prompt_notes: list[str] = []
             await attempt.hooks.phase(HookName.PRE_RUNTIME)
+            sandbox = self._directive_sandbox(state, state.workspace_path)
+            resume_session_id, on_session_started = await self._harness_session(
+                liveness,
+                work_record_id=request.work_record_id,
+                directive_number=request.directive_number,
+                agent_runtime=agent_runtime,
+                contract_id=state.contract_id,
+                workspace_path=state.workspace_path,
+                sandbox=sandbox,
+            )
             codex_result = await agent_runtime.execute_directive(
                 DirectiveRequest(
-                    sandbox=self._directive_sandbox(state, state.workspace_path),
+                    sandbox=sandbox,
                     workspace_path=state.workspace_path,
+                    resume_session_id=resume_session_id,
+                    on_session_started=on_session_started,
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,

@@ -14,6 +14,7 @@ import hashlib
 import os
 import re
 import signal
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +73,9 @@ _EXTRA_ENV_DENYLIST: Final[frozenset[str]] = RESERVED_DIRECTIVE_ENV - {
 # the attempt routes through the Runner's LLM proxy instead.
 _PROVIDER_KEY_ENV: Final[frozenset[str]] = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY"})
 
+# A harness's opening event is one short JSON line; past this it is not one.
+_FIRST_LINE_LIMIT_BYTES: Final[int] = 64 * 1024
+
 
 def apply_extra_env(env: dict[str, str], extra: Iterable[tuple[str, str]]) -> dict[str, str]:
     """Merge one attempt's extra environment into a Directive's, minus the reserved names.
@@ -114,6 +118,7 @@ async def run_subprocess_exec(
     timeout_seconds: int,
     output_limit_bytes: int,
     sandbox: DirectiveSandbox | None = None,
+    on_first_stdout_line: Callable[[bytes], None] | None = None,
 ) -> SubprocessResult:
     refuse_if_prior_attempt_alive()
     process = await asyncio.create_subprocess_exec(
@@ -136,7 +141,10 @@ async def run_subprocess_exec(
                     stderr_truncated,
                 ) = await asyncio.wait_for(
                     _collect_process_output(
-                        process, stdin=stdin, output_limit_bytes=output_limit_bytes
+                        process,
+                        stdin=stdin,
+                        output_limit_bytes=output_limit_bytes,
+                        on_first_stdout_line=on_first_stdout_line,
                     ),
                     timeout=timeout_seconds,
                 )
@@ -161,6 +169,7 @@ async def _collect_process_output(
     *,
     stdin: str | None,
     output_limit_bytes: int,
+    on_first_stdout_line: Callable[[bytes], None] | None = None,
 ) -> tuple[bytes, bytes, bool, bool]:
     if process.stdin is not None:
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
@@ -170,7 +179,9 @@ async def _collect_process_output(
             process.stdin.close()
             await process.stdin.wait_closed()
 
-    stdout_task = asyncio.create_task(_read_stream_limited(process.stdout, output_limit_bytes))
+    stdout_task = asyncio.create_task(
+        _read_stream_limited(process.stdout, output_limit_bytes, on_first_stdout_line)
+    )
     stderr_task = asyncio.create_task(_read_stream_limited(process.stderr, output_limit_bytes))
     try:
         await process.wait()
@@ -186,6 +197,7 @@ async def _collect_process_output(
 async def _read_stream_limited(
     stream: asyncio.StreamReader | None,
     limit_bytes: int,
+    on_first_line: Callable[[bytes], None] | None = None,
 ) -> tuple[bytes, bool]:
     """Read a child's stream, bounded to the *last* ``limit_bytes``.
 
@@ -203,10 +215,19 @@ async def _read_stream_limited(
 
     tail = bytearray()
     total_bytes = 0
+    first_line = bytearray()
     while True:
         chunk = await stream.read(4096)
         if not chunk:
             break
+        if on_first_line is not None:
+            first_line.extend(chunk)
+            line, newline, _ = first_line.partition(b"\n")
+            if newline:
+                on_first_line(bytes(line))
+                on_first_line = None
+            elif len(first_line) > _FIRST_LINE_LIMIT_BYTES:
+                on_first_line = None
         total_bytes += len(chunk)
         tail.extend(chunk)
         if len(tail) > limit_bytes:
@@ -232,6 +253,14 @@ def is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def is_canonical_uuid(value: str) -> bool:
+    # Canonical form only: a harness session id becomes part of a glob pattern.
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
 
 
 def workspace_id(workspace_path: Path, workspace_root: Path) -> str:

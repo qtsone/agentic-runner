@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Final
 
@@ -11,18 +12,20 @@ from agentic_runner.workers._runtime_support import (
     bound_text,
     command_policy_refusal,
     hash_command,
+    is_canonical_uuid,
     is_relative_to,
     redact_match,
     run_subprocess_exec,
     workspace_id,
 )
 from agentic_runner.workers.agent_runtime import (
-    AgentRuntime,
     AuthModel,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
+    ResumableAgentRuntime,
 )
+from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import claude_mcp_config
 from agentic_runner.workers.settings import WorkerSettings
 
@@ -48,7 +51,7 @@ _SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 )
 
 
-class ClaudeRuntime(AgentRuntime):
+class ClaudeRuntime(ResumableAgentRuntime):
     """Worker-local Claude Code CLI runtime.
 
     Authenticates with an API key (``ANTHROPIC_API_KEY``) rather than a device-login session,
@@ -92,6 +95,17 @@ class ClaudeRuntime(AgentRuntime):
             if request.mcp_servers:
                 argv += ["--mcp-config", claude_mcp_config(request.mcp_servers)]
             argv.append("--strict-mcp-config")
+        # Hashed without the session arguments: a fresh session id is new on every run,
+        # and the hash names the command, not the run.
+        command_hash = hash_command(argv)
+        started_session: str | None = None
+        if request.resume_session_id is not None:
+            argv += ["--resume", request.resume_session_id]
+        elif request.on_session_started is not None:
+            # Chosen here rather than read back from the output, which only names the
+            # session once the turn is over -- too late for an attempt lost mid-turn.
+            started_session = str(uuid.uuid4())
+            argv += ["--session-id", started_session]
         floor_refusal = command_policy_refusal(
             argv=argv,
             program="claude",
@@ -108,7 +122,6 @@ class ClaudeRuntime(AgentRuntime):
                 evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
                 guard_mode=f"refused: command policy ({floor_refusal})",
             )
-        command_hash = hash_command(argv)
         # Per-Contract CLAUDE_CONFIG_DIR, never a fleet-wide one (ADR-0015 §4).
         sandbox = request.sandbox
         env = {"ANTHROPIC_API_KEY": self._settings.ANTHROPIC_API_KEY}
@@ -118,6 +131,8 @@ class ClaudeRuntime(AgentRuntime):
             env["TMPDIR"] = str(sandbox.tmp_dir)
         apply_extra_env(env, request.extra_env)
         notes: list[str] = []
+        if started_session is not None and request.on_session_started is not None:
+            request.on_session_started(started_session)
 
         try:
             raw_result = await self._runner(
@@ -164,6 +179,14 @@ class ClaudeRuntime(AgentRuntime):
             command_hash=command_hash,
             evidence=evidence,
         )
+
+    def has_session(self, session_id: str, sandbox: DirectiveSandbox | None) -> bool:
+        # Without a Contract sandbox the child gets no CLAUDE_CONFIG_DIR or HOME, so
+        # there is no known place its session was kept.
+        if sandbox is None or not is_canonical_uuid(session_id):
+            return False
+        projects = sandbox.harness_config_dir / "projects"
+        return any(projects.glob(f"*/{session_id}.jsonl"))
 
 
 def _guard_mode(settings: WorkerSettings) -> str | None:

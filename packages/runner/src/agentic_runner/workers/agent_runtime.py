@@ -12,6 +12,7 @@ determinism sandbox); the deterministic workflow only ever invokes them by activ
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -56,6 +57,15 @@ class DirectiveRequest:
     # added), enforced by the attempt's egress proxy. Empty: no Profile list, so the
     # runtime keeps its own network posture.
     egress_allow_list: tuple[str, ...] = ()
+    # A retried attempt continues the harness session an earlier attempt of the same
+    # Directive started (ADR-0007, amendment 2026-10-03). The caller has already matched
+    # the Contract, Workspace and head, and asked ``has_session``.
+    resume_session_id: str | None = None
+    # Called with the id of a session the runtime *starts*, as soon as it knows it --
+    # before the turn ends, so an attempt lost mid-turn still leaves it in the activity's
+    # heartbeat details. Not called on a resume (the caller already holds that id), nor by
+    # a runtime that cannot name its session.
+    on_session_started: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,3 +101,16 @@ class AgentRuntime(Protocol):
     auth_model: AuthModel
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult: ...
+
+
+@runtime_checkable
+class ResumableAgentRuntime(AgentRuntime, Protocol):
+    """A runtime whose harness can continue a session in a new process (local-agents 16)."""
+
+    def has_session(self, session_id: str, sandbox: DirectiveSandbox | None) -> bool:
+        """Whether the harness still holds ``session_id`` where this Directive would run.
+
+        A resume of a session the harness no longer has fails the whole turn, so the
+        caller starts fresh instead.
+        """
+        ...
