@@ -44,6 +44,11 @@ from agentic_runner.attempts import (
     fence_work_record,
     refuse_if_prior_attempt_alive,
 )
+from agentic_runner.auth_mode import (
+    AuthModeRefusedError,
+    choose_auth_mode,
+    is_shared_runner,
+)
 from agentic_runner.callback import (
     CALLBACK_TOKEN_ENV,
     AnnotateRequest,
@@ -118,11 +123,12 @@ from agentic_runner.workers._runtime_support import (
 )
 from agentic_runner.workers.agent_runtime import (
     AgentRuntime,
-    AuthModel,
+    AuthMode,
     DirectiveRequest,
     DirectiveResult,
     ResumableAgentRuntime,
 )
+from agentic_runner.workers.contract_device_login import login_file_counts
 from agentic_runner.workers.contract_isolation import (
     NO_CONTRACT,
     ContractIsolation,
@@ -638,6 +644,9 @@ class _DirectiveAttempt:
     # Console-v2 issue 28: the attached Skills, for a runtime with no skills directory to
     # write them into. Prefixed to the Directive prompt; empty when there is none.
     skills_preamble: str = ""
+    # Chosen before anything is spawned (local-agents 04); the runtime runs in it and
+    # the harness-usage report follows it.
+    auth_mode: AuthMode = AuthMode.API_KEY
 
     async def run_environment_hook(self) -> None:
         self.extra_env.update(await self.hooks.environment())
@@ -1432,6 +1441,7 @@ HARNESS_SESSION_EVIDENCE_SOURCE = "runner.harness_session"
 DIRECTIVE_TOKEN_EVIDENCE_SOURCE = "runner.directive_token"
 AGENT_RUNTIME_EVIDENCE_SOURCE = "runner.agent_runtime"
 SKILLS_EVIDENCE_SOURCE = "runner.skills"
+HARNESS_LOGIN_RESIDUE_SOURCE = "runner.harness_login_residue"
 
 
 class _EvidenceWriter(Protocol):
@@ -1578,6 +1588,10 @@ class RunnerRalphActivities:
         # no proxy here keeps calling the backend one, which is exactly the transition
         # the issue describes.
         self._llm_proxy = llm_proxy
+        # Contracts whose harness roots this process has already checked for a login
+        # left behind (local-agents 04). Only de-duplicates an Evidence line -- no later
+        # activity reads it -- so a restart reporting the residue again is the intent.
+        self._residue_checked: set[str | None] = set()
         # Credential References (PRD issue 48, 22 A1). None means this Runner resolves
         # none: a Contract that declares a manifest then fails its Directives closed,
         # which is the right answer -- a Runner with no host store cannot host that
@@ -1969,6 +1983,7 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
+                    auth_mode=attempt.auth_mode,
                     prompt=attempt.skills_preamble
                     + _directive_prompt(
                         completion_criteria=runtime_state.completion_criteria,
@@ -2000,6 +2015,7 @@ class RunnerRalphActivities:
                 work_record_id=request.work_record_id,
                 directive_number=request.directive_number,
                 result=codex_result,
+                auth_mode=attempt.auth_mode,
             )
             plan = _take_plan(checkout_workspace)
             if codex_result.exit_code != 0:
@@ -2419,6 +2435,8 @@ class RunnerRalphActivities:
         the bearer defensible under ADR-0011 §9.
         """
 
+        auth_mode = await self._directive_auth_mode(work_record_id, state)
+        await self._report_login_residue(work_record_id, state)
         facts = AttemptFacts(
             work_record_id=work_record_id,
             directive_id=directive_id(
@@ -2476,8 +2494,8 @@ class RunnerRalphActivities:
                     )
                 )
                 callback_env = server.env()
-            if self._llm_proxy is not None and self._meters_through_the_proxy(state):
-                # API-key mode only (issue 43): a device-login Contract never has a slot
+            if self._llm_proxy is not None and auth_mode == AuthMode.API_KEY:
+                # API-key mode only (issue 43): a subscription Directive never has a slot
                 # to resolve, and issue 31 meters it from the harness's own output. One
                 # bearer serves the callback socket and the proxy alike.
                 proxy_attempt = await stack.enter_async_context(
@@ -2528,6 +2546,7 @@ class RunnerRalphActivities:
                 mcp_servers=mcp_servers,
                 egress_allow_list=egress_allow_list,
                 skills_preamble=delivered_preamble,
+                auth_mode=auth_mode,
             )
 
     async def _refuse_skill_digest_mismatch(
@@ -2805,26 +2824,86 @@ class RunnerRalphActivities:
             )
             raise
 
-    def _meters_through_the_proxy(self, state: _RuntimeContextState) -> bool:
-        """Whether this Directive's runtime is metered at the proxy (issue 43).
+    async def _directive_auth_mode(
+        self, work_record_id: str, state: _RuntimeContextState
+    ) -> AuthMode:
+        """This Directive's auth mode, or a non-retryable refusal with Evidence naming the
+        rule (local-agents 04).
 
-        The mirror of :meth:`_report_harness_usage`'s test: an ``api_key`` Directive
-        routes through the proxy and is metered there; a device-login one bypasses it
-        entirely and is metered from the harness's own output by PRD issue 31. Read off
-        the runtime the Work Record's `cli_kind` names, never a process-wide one.
+        Decided from the host party this process was registered with and from whether a
+        key is present for the Contract -- never from the payload. A runtime that declares
+        no modes (a test double built before the port grew the field) reads as
+        ``api_key``-only, and a kind this Runner does not serve reads the same way; that
+        Directive fails closed in :meth:`_agent_runtime_for` regardless.
         """
 
-        return self._auth_model(state) == AuthModel.API_KEY
-
-    def _auth_model(self, state: _RuntimeContextState) -> AuthModel:
-        # `getattr` with a default, not `.auth_model` outright: a runtime that carries
-        # none (a test double built before this port grew the field) is the same case as
-        # `api_key` -- nothing to report from the harness -- never a crash on an
-        # unrelated Directive. A kind this Runner does not serve reads the same way; the
-        # Directive itself has already failed closed in :meth:`_agent_runtime_for`.
         runtime = self._agent_runtimes.get(state.cli_kind)
-        model = getattr(runtime, "auth_model", AuthModel.API_KEY)
-        return model if isinstance(model, AuthModel) else AuthModel.API_KEY
+        host_party = self._routing_identity.host_party if self._routing_identity else None
+        try:
+            return choose_auth_mode(
+                host_party=host_party,
+                key_present=self._api_key_present(state, runtime),
+                runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
+            )
+        except AuthModeRefusedError as refusal:
+            await _raise_recorded(
+                ApplicationError(str(refusal), type=refusal.rule, non_retryable=True),
+                self._fastapi_client,
+                work_record_id,
+                source=AGENT_RUNTIME_EVIDENCE_SOURCE,
+                actor=self._actor(),
+                payload={
+                    "event": "directive.auth_mode_refused",
+                    "rule": refusal.rule,
+                    "cli_kind": state.cli_kind,
+                    "host_party": host_party,
+                    "contract_id": state.contract_id,
+                },
+            )
+
+    def _api_key_present(self, state: _RuntimeContextState, runtime: AgentRuntime | None) -> bool:
+        """A delivered slot for the Contract (or its funder), or the host operator's key."""
+
+        if bool(getattr(runtime, "host_api_key", False)):
+            return True
+        contract_id = _optional_uuid(state.contract_id)
+        return (
+            self._llm_proxy is not None
+            and contract_id is not None
+            and self._llm_proxy.slots.holds(contract_id)
+        )
+
+    async def _report_login_residue(self, work_record_id: str, state: _RuntimeContextState) -> None:
+        """On a shared Runner, say once that a Contract's harness root holds a login.
+
+        A count per harness, never a path or a byte of the file: the Runner does not open
+        it, a shared Runner never runs on it, and ``wipe_contract_residue`` removes it with
+        the Contract. Saying so is what turns a sign-in made before local-agents 03 (or by
+        hand) into something the Organisation can see and act on.
+        """
+
+        host_party = self._routing_identity.host_party if self._routing_identity else None
+        if (
+            self._contract_isolation is None
+            or not is_shared_runner(host_party)
+            or state.contract_id in self._residue_checked
+        ):
+            return
+        self._residue_checked.add(state.contract_id)
+        counts = login_file_counts(self._contract_isolation, state.contract_id)
+        if not counts:
+            return
+        await self._fastapi_client.append_evidence(
+            work_record_id,
+            source=HARNESS_LOGIN_RESIDUE_SOURCE,
+            actor=self._actor(),
+            payload={
+                "event": "harness.login_residue",
+                "contract_id": state.contract_id,
+                "host_party": host_party,
+                "login_files": counts,
+            },
+        )
 
     async def _agent_runtime_for(
         self, work_record_id: str, state: _RuntimeContextState
@@ -4516,6 +4595,7 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
+                    auth_mode=attempt.auth_mode,
                     prompt=attempt.skills_preamble
                     + _learning_prompt(
                         request,
@@ -4534,6 +4614,7 @@ class RunnerRalphActivities:
                 work_record_id=request.work_record_id,
                 directive_number=request.directive_number,
                 result=result,
+                auth_mode=attempt.auth_mode,
             )
             usage = await self._directive_usage(
                 work_record_id=request.work_record_id,
@@ -4764,6 +4845,7 @@ class RunnerRalphActivities:
                     extra_env=attempt.env,
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
+                    auth_mode=attempt.auth_mode,
                     prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
                     base_branch=request.base_ref,
                     work_branch=state.work_branch,
@@ -4789,6 +4871,7 @@ class RunnerRalphActivities:
                 work_record_id=request.work_record_id,
                 directive_number=request.directive_number,
                 result=codex_result,
+                auth_mode=attempt.auth_mode,
             )
             # Taken before the commit below so it never lands on the branch (PRD 59).
             plan = _take_plan(state.workspace_path)
@@ -4987,14 +5070,15 @@ class RunnerRalphActivities:
         work_record_id: str,
         directive_number: int,
         result: DirectiveResult,
+        auth_mode: AuthMode,
     ) -> None:
-        """A device-login/setup-token Directive bypasses the LLM proxy, so this is the
-        only metering the Runner can produce for it (PRD issue 31, 17 A9). A no-op for an
-        ``api_key`` runtime -- the proxy already metered that call at request time -- and
-        never the reason a Directive fails (same posture as :meth:`_directive_usage`).
+        """A subscription Directive bypasses the LLM proxy, so this is the only metering
+        the Runner can produce for it (PRD issue 31, 17 A9). A no-op for an ``api_key``
+        Directive -- the proxy already metered that call at request time -- and never the
+        reason a Directive fails (same posture as :meth:`_directive_usage`).
         """
 
-        if self._auth_model(runtime_state) == AuthModel.API_KEY:
+        if auth_mode == AuthMode.API_KEY:
             return
         directive = directive_id(work_record_id=work_record_id, directive_number=directive_number)
         if runtime_state.cli_kind == "claude_code":

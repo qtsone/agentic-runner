@@ -27,7 +27,7 @@ from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV
 from agentic_runner.hooks import _read_env_file
 from agentic_runner.llm_proxy import attempt_env
 from agentic_runner.workers._runtime_support import SubprocessResult
-from agentic_runner.workers.agent_runtime import DirectiveRequest
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.settings import WorkerSettings
@@ -67,13 +67,20 @@ def _settings(tmp_path: Path) -> WorkerSettings:
     )
 
 
-def _request(workspace: Path) -> DirectiveRequest:
+def _request(workspace: Path, auth_mode: AuthMode = AuthMode.API_KEY) -> DirectiveRequest:
     return DirectiveRequest(
         workspace_path=workspace,
         prompt="do the work",
         base_branch="main",
         work_branch="agent/work",
+        auth_mode=auth_mode,
     )
+
+
+def _sign_in_mode(runtime_class: type[CodexRuntime] | type[ClaudeRuntime]) -> AuthMode:
+    # Codex on its harness-root sign-in: an api_key Codex Directive with no LLM proxy endpoint
+    # is refused before spawn (LA-04), so these tests would see no child env at all.
+    return AuthMode.SUBSCRIPTION if runtime_class is CodexRuntime else AuthMode.API_KEY
 
 
 class _EnvCapturingRunner:
@@ -101,7 +108,7 @@ async def test_the_directive_subprocess_carries_no_git_or_github_credential(
     runner = _EnvCapturingRunner()
 
     await runtime_class(settings=_settings(tmp_path), runner=runner).execute_directive(
-        _request(workspace)
+        _request(workspace, _sign_in_mode(runtime_class))
     )
 
     assert runner.env, "the runtime must build an explicit child environment, not inherit one"
@@ -127,12 +134,14 @@ async def test_the_attempt_env_gains_the_callback_pair_and_the_hooks_safe_export
     workspace.mkdir(parents=True)
     settings = _settings(tmp_path)
     baseline = _EnvCapturingRunner()
-    await runtime_class(settings=settings, runner=baseline).execute_directive(_request(workspace))
+    await runtime_class(settings=settings, runner=baseline).execute_directive(
+        _request(workspace, _sign_in_mode(runtime_class))
+    )
     amended = _EnvCapturingRunner()
 
     await runtime_class(settings=settings, runner=amended).execute_directive(
         replace(
-            _request(workspace),
+            _request(workspace, _sign_in_mode(runtime_class)),
             extra_env=(
                 (CALLBACK_SOCKET_ENV, "/run/agentic-runner/abc/s.sock"),
                 (CALLBACK_TOKEN_ENV, "attempt-bearer"),

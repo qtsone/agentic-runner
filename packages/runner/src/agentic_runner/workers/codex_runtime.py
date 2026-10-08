@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Final
 
+from agentic_runner.llm_proxy import PROXY_API_KEY_ENV, PROXY_BASE_URL_ENV
 from agentic_runner.workers._runtime_support import (
     AsyncSubprocessRunner,
     SubprocessResult,
@@ -22,12 +23,13 @@ from agentic_runner.workers._runtime_support import (
     workspace_id,
 )
 from agentic_runner.workers.agent_runtime import (
-    AuthModel,
+    AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
     ResumableAgentRuntime,
 )
+from agentic_runner.workers.command_policy import CODEX_EPHEMERAL_CREDENTIALS_OVERRIDE
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import codex_mcp_argv
 from agentic_runner.workers.settings import WorkerSettings
@@ -42,6 +44,8 @@ __all__ = [
 # The Dockerfile installs `codex` (and its `node` interpreter) here; used as a PATH fallback
 # so a bare `codex` still resolves even if the parent PATH is somehow unset.
 _CODEX_INSTALL_DIR: Final[str] = "/usr/local/bin"
+
+_CODEX_PROVIDER_ID: Final[str] = "agentic_runner"
 
 
 def build_codex_subprocess_env(codex_home: Path) -> dict[str, str]:
@@ -88,11 +92,13 @@ class CodexRuntime(ResumableAgentRuntime):
 
     The runtime does not accept caller-supplied secrets. It constructs the Codex environment from
     worker settings only, keeps execution inside the supplied workspace, and returns bounded
-    redacted evidence suitable for control-plane storage. Codex authenticates via a device-login
-    session on a worker-local PVC (CODEX_HOME).
+    redacted evidence suitable for control-plane storage. A ``subscription`` Directive runs on
+    the device login in the Contract's harness root (CODEX_HOME); an ``api_key`` one runs
+    against the attempt's LLM proxy endpoint and never touches that login.
     """
 
-    auth_model = AuthModel.DEVICE_LOGIN
+    auth_modes = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
+    host_api_key = False
 
     def __init__(
         self,
@@ -124,6 +130,20 @@ class CodexRuntime(ResumableAgentRuntime):
         # Locked with no server bound too: otherwise a `[mcp_servers.*]` table in the
         # Workspace or harness-root config.toml starts a process before any model turn (LA-19b).
         argv[-1:-1] = codex_mcp_argv(request.mcp_servers or (), workspace_path)
+        if request.auth_mode == AuthMode.API_KEY:
+            proxy_base_url = dict(request.extra_env).get(PROXY_BASE_URL_ENV)
+            if not proxy_base_url:
+                # Without the proxy pair the only credential left for Codex to find is a
+                # login in the harness root, which is exactly what this mode must not use.
+                return _refused_result(
+                    workspace_id=directive_workspace_id,
+                    base_branch=request.base_branch,
+                    work_branch=request.work_branch,
+                    evidence_limit_bytes=self._settings.CODEX_CLI_OUTPUT_LIMIT_BYTES,
+                    guard_mode="refused: api_key mode without an LLM proxy endpoint",
+                    error="an api_key Codex Directive needs the attempt's LLM proxy endpoint",
+                )
+            argv[-1:-1] = _codex_api_key_argv(proxy_base_url)
         # Hashed without the session arguments, as the Claude runtime does.
         command_hash = hash_command(argv)
         if request.resume_session_id is not None:
@@ -306,6 +326,43 @@ def _codex_argv(settings: WorkerSettings, *, allowlisted: bool = False) -> list[
         argv += ["--config", f"sandbox_workspace_write.network_access={network_access}"]
     argv.append("-")
     return argv
+
+
+def _codex_api_key_argv(proxy_base_url: str) -> list[str]:
+    """The overrides that put one Codex Directive on the attempt's LLM proxy (local-agents 04).
+
+    Verified against codex-cli 0.141.0 (the image pin) and 0.159.2, 2026-10-08:
+
+    * ``model_provider`` + ``model_providers.<id>`` with ``env_key`` -- Codex ignores
+      ``OPENAI_BASE_URL`` (local-agents 02), so the endpoint is a provider of our own whose
+      key Codex reads from the ``OPENAI_API_KEY`` the proxy pair already sets: the
+      attempt's bearer. ``wire_api = "responses"`` is what Codex speaks, as
+      ``POST {base_url}/responses``.
+    * ``cli_auth_credentials_store = "ephemeral"`` -- without it Codex still opens
+      ``auth.json`` in CODEX_HOME at start even under a custom provider (it blocked on a
+      FIFO there); with it the file is never opened.
+
+    On argv rather than in the harness root's ``config.toml``: the base URL is per attempt,
+    the root belongs to the Contract's uid, and a command-line override wins over anything
+    the Agent writes into that file.
+    """
+
+    provider = (
+        "{"
+        f"name={json.dumps(_CODEX_PROVIDER_ID)},"
+        f"base_url={json.dumps(proxy_base_url)},"
+        f"env_key={json.dumps(PROXY_API_KEY_ENV)},"
+        'wire_api="responses"'
+        "}"
+    )
+    return [
+        "--config",
+        f"model_provider={json.dumps(_CODEX_PROVIDER_ID)}",
+        "--config",
+        f"model_providers.{_CODEX_PROVIDER_ID}={provider}",
+        "--config",
+        CODEX_EPHEMERAL_CREDENTIALS_OVERRIDE,
+    ]
 
 
 def _refused_result(

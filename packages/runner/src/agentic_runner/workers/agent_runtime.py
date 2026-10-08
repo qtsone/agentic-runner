@@ -22,12 +22,18 @@ from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 
 
-class AuthModel(StrEnum):
-    """How a runtime authenticates. Declared per-runtime so an unattended Persona can be
-    placed on stable API-key auth instead of an expiring browser session (ADR-0006)."""
+class AuthMode(StrEnum):
+    """How one Directive authenticates, chosen by the Runner before spawn (local-agents 04).
 
-    DEVICE_LOGIN = "device_login"
+    ``api_key`` runs through the Runner's LLM proxy on the attempt's bearer and is metered
+    there; ``subscription`` runs on the login the Contract's person created in its harness
+    root, and is metered from the harness's own output (PRD issue 31). A runtime declares
+    which of these it *can* run in; which one a Directive *does* run in is never the
+    runtime's to decide (``agentic_runner.auth_mode``).
+    """
+
     API_KEY = "api_key"
+    SUBSCRIPTION = "subscription"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +72,7 @@ class DirectiveRequest:
     # heartbeat details. Not called on a resume (the caller already holds that id), nor by
     # a runtime that cannot name its session.
     on_session_started: Callable[[str], None] | None = None
+    auth_mode: AuthMode = AuthMode.API_KEY
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +105,11 @@ class DirectiveResult:
 class AgentRuntime(Protocol):
     """The pluggable engine an Agent uses to execute one Directive per step."""
 
-    auth_model: AuthModel
+    # The modes this runtime can run a Directive in -- a capability, not a choice.
+    auth_modes: frozenset[AuthMode]
+    # Whether the host operator configured a provider key for this runtime itself, which
+    # counts as "an API key is present" when the Runner chooses the mode.
+    host_api_key: bool
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult: ...
 

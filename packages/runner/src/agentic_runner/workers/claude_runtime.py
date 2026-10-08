@@ -19,7 +19,7 @@ from agentic_runner.workers._runtime_support import (
     workspace_id,
 )
 from agentic_runner.workers.agent_runtime import (
-    AuthModel,
+    AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
@@ -61,7 +61,9 @@ class ClaudeRuntime(ResumableAgentRuntime):
     control-plane storage — the API key never appears in returned text.
     """
 
-    auth_model = AuthModel.API_KEY
+    # Subscription mode for Claude Code is local-agents 07; until then a user-hosted Runner
+    # with no key runs it on the host operator's key, as before.
+    auth_modes = frozenset({AuthMode.API_KEY})
 
     def __init__(
         self,
@@ -71,6 +73,7 @@ class ClaudeRuntime(ResumableAgentRuntime):
     ) -> None:
         self._settings = settings
         self._runner = runner or run_subprocess_exec
+        self.host_api_key = bool(settings.ANTHROPIC_API_KEY)
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
         workspace_path = request.workspace_path.resolve(strict=False)

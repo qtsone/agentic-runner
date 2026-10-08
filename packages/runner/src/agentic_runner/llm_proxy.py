@@ -35,7 +35,7 @@ import contextlib
 import json
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any, Final, Self
@@ -67,25 +67,35 @@ __all__ = [
     "ATTEMPT_PREFIX",
     "COMPLETION_PATHS",
     "CALL_REFUSED_SOURCE",
+    "PROXY_API_KEY_ENV",
+    "PROXY_BASE_URL_ENV",
     "PROXY_ENV_NAMES",
     "AttemptHandle",
     "CeilingStore",
     "Ceilings",
     "CredentialSlot",
+    "LLM_SLOT_REFERENCES",
+    "LlmProvider",
     "LlmProxy",
     "SLOT_REFUSED_SOURCE",
     "SLOT_SWAPPED_SOURCE",
     "SlotStore",
     "UsageOutbox",
     "attempt_env",
+    "llm_slot_references",
 ]
 
 ATTEMPT_PREFIX: Final[str] = "/a/"
 
+# The OpenAI-compatible half of `attempt_env`. Codex does not read the base URL from the
+# environment, so its runtime lifts it from here into a provider of its own.
+PROXY_BASE_URL_ENV: Final[str] = "OPENAI_BASE_URL"
+PROXY_API_KEY_ENV: Final[str] = "OPENAI_API_KEY"
+
 # Every name `attempt_env` may set. Reserved on a Directive's environment so no hook
 # can redirect an Agent's traffic away from the metering point (`_runtime_support`).
 PROXY_ENV_NAMES: Final[frozenset[str]] = frozenset(
-    {"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENAI_BASE_URL", "OPENAI_API_KEY"}
+    {"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", PROXY_BASE_URL_ENV, PROXY_API_KEY_ENV}
 )
 
 # A Directive's context is the whole reason these bodies are large: Claude Code and Codex
@@ -105,10 +115,12 @@ _TOKEN_BYTES: Final[int] = 32
 _LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"127.0.0.1", "::1", "localhost"})
 
 # The completion routes, relayed to the same path at the slot's own base URL: the
-# OpenAI-compatible one the backend proxy served, and Anthropic's, because Claude Code
-# is one of the two harnesses the platform ships and it would otherwise still need a
-# provider key of its own (ADR-0011 §9).
-COMPLETION_PATHS: Final[frozenset[str]] = frozenset({"/chat/completions", "/messages"})
+# OpenAI-compatible one the backend proxy served, Anthropic's, because Claude Code is one
+# of the two harnesses the platform ships and it would otherwise still need a provider key
+# of its own (ADR-0011 §9), and the Responses API, which is the only wire Codex speaks.
+COMPLETION_PATHS: Final[frozenset[str]] = frozenset(
+    {"/chat/completions", "/messages", "/responses"}
+)
 _SSE_DONE: Final[bytes] = b"data: [DONE]"
 
 # Anthropic rejects a request without it, whichever credential shape the request carries.
@@ -181,6 +193,62 @@ class CredentialSlot:
 
     def url(self, path: str) -> str:
         return f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+@dataclass(frozen=True, slots=True)
+class LlmProvider:
+    """Where a delivered key is spent, and how it is presented there.
+
+    Endpoints are plain config, never a secret (ADR-0013 §11), so the sealed wire does not
+    carry one: the Credential Reference's name says which provider a value belongs to and
+    this says where that provider is.
+    """
+
+    name: str
+    runtime_kind: str
+    base_url: str
+    auth_style: str
+
+    def slot(self, *, reference: str, key_id: str, value: str) -> CredentialSlot:
+        return CredentialSlot(
+            reference=reference,
+            key_id=key_id,
+            provider_name=self.name,
+            base_url=self.base_url,
+            value=value,
+            runtime_kind=self.runtime_kind,
+            auth_style=self.auth_style,
+        )
+
+
+# The Credential References a delivered value fills the proxy's slot from (local-agents
+# 04b), named after the variable each harness reads its own key from, so a funder declares
+# the name the vendor's docs already taught them. Any other reference stays a verb-seam or
+# MCP credential and never reaches the proxy.
+LLM_SLOT_REFERENCES: Final[Mapping[str, LlmProvider]] = {
+    "OPENAI_API_KEY": LlmProvider(
+        name="openai",
+        runtime_kind="codex_cli",
+        base_url="https://api.openai.com/v1",
+        auth_style="bearer",
+    ),
+    "ANTHROPIC_API_KEY": LlmProvider(
+        name="anthropic",
+        runtime_kind="claude_code",
+        base_url="https://api.anthropic.com/v1",
+        auth_style="x-api-key",
+    ),
+}
+
+
+def llm_slot_references(base_urls: Mapping[str, str]) -> dict[str, LlmProvider]:
+    """:data:`LLM_SLOT_REFERENCES` with an operator's endpoint per provider name -- a
+    gateway in front of the vendor, or the chart test's fake provider."""
+
+    return {
+        reference: replace(provider, base_url=base_urls.get(provider.name, provider.base_url))
+        for reference, provider in LLM_SLOT_REFERENCES.items()
+    }
 
 
 SlotProber = Callable[[CredentialSlot], Awaitable[bool]]
@@ -267,6 +335,13 @@ class SlotStore:
             )
         return SlotProbe.VALID
 
+    def drop(self, contract_id: UUID) -> None:
+        """Forget a Contract's slot: wiped, not listed (22 A9). The next call is refused."""
+
+        self._slots.pop(contract_id, None)
+        self._probes.pop(contract_id, None)
+        self._last_used.pop(contract_id, None)
+
     def resolve(self, contract_id: UUID | None) -> CredentialSlot | None:
         """The slot this call spends, read at the call (22 A8)."""
 
@@ -280,6 +355,13 @@ class SlotStore:
         if slot is not None:
             self._last_used[contract_id] = datetime.now(UTC)
         return slot
+
+    def holds(self, contract_id: UUID) -> bool:
+        """Whether a call for this Contract would find a slot -- without the use stamp
+        :meth:`resolve` leaves, because choosing a Directive's mode spends nothing."""
+
+        funder = self._funded_by.get(contract_id)
+        return contract_id in self._slots or (funder is not None and funder in self._slots)
 
     def statuses(self) -> list[SlotStatus]:
         """The heartbeat's slot fields (22 A10, issue 31's ``valid|invalid|unprobed``)."""
@@ -441,7 +523,7 @@ def attempt_env(cli_kind: str, *, base_url: str, token: str) -> dict[str, str]:
         # CLIs are configured with the `/v1` already on. Same attempt, same bearer — only
         # the half of the URL each harness expects to supply differs.
         return {"ANTHROPIC_BASE_URL": base_url, "ANTHROPIC_AUTH_TOKEN": token}
-    return {"OPENAI_BASE_URL": f"{base_url}/v1", "OPENAI_API_KEY": token}
+    return {PROXY_BASE_URL_ENV: f"{base_url}/v1", PROXY_API_KEY_ENV: token}
 
 
 class LlmProxy:
@@ -863,13 +945,14 @@ def _usage_block(body: Mapping[str, object]) -> Mapping[str, object]:
     if isinstance(usage, Mapping):
         return usage
     # Anthropic's `message_start` frame nests the input counts one level down, under the
-    # message it is starting. `message` is followed only to reach that `usage` block --
-    # nothing else in the frame is read (ADR-0010 §4).
-    message = body.get("message")
-    if isinstance(message, Mapping):
-        nested = message.get("usage")
-        if isinstance(nested, Mapping):
-            return nested
+    # message it is starting, and the Responses API's `response.completed` under the
+    # response it completes. Each is followed only to reach that `usage` block -- nothing
+    # else in the frame is read (ADR-0010 §4).
+    for inner in (body.get("message"), body.get("response")):
+        if isinstance(inner, Mapping):
+            nested = inner.get("usage")
+            if isinstance(nested, Mapping):
+                return nested
     return {}
 
 
@@ -931,7 +1014,8 @@ def _cached_tokens(usage: Mapping[str, object]) -> int | None:
     direct = _first_int(usage, "cached_tokens", "cache_read_input_tokens")
     if direct is not None:
         return direct
-    details = usage.get("prompt_tokens_details")
-    if isinstance(details, Mapping):
-        return _usage_int(details, "cached_tokens")
+    for key in ("prompt_tokens_details", "input_tokens_details"):
+        details = usage.get(key)
+        if isinstance(details, Mapping):
+            return _usage_int(details, "cached_tokens")
     return None

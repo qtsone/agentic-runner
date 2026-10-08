@@ -8,6 +8,10 @@ from typing import Final
 _SECRET_ARGUMENT_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?i)^[A-Z0-9_-]*(api[_-]?key|token|secret|password|credential|auth)[A-Z0-9_-]*\s*="
 )
+# The one Runner-built argument the secret pattern reads wrongly: it names where Codex keeps
+# credentials ("nowhere", so a login file in the harness root is never opened) and carries
+# no value (local-agents 04). Exact match, so nothing shaped like it slips through.
+CODEX_EPHEMERAL_CREDENTIALS_OVERRIDE: Final[str] = 'cli_auth_credentials_store="ephemeral"'
 _SECRET_PATH_MARKERS: Final[tuple[str, ...]] = (
     "/.codex",
     "~/.codex",
@@ -134,7 +138,11 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _contains_secret_argument(argv: list[str]) -> bool:
-    return any(_SECRET_ARGUMENT_PATTERN.search(argument) is not None for argument in argv)
+    return any(
+        _SECRET_ARGUMENT_PATTERN.search(argument) is not None
+        for argument in argv
+        if argument != CODEX_EPHEMERAL_CREDENTIALS_OVERRIDE
+    )
 
 
 def _contains_secret_path(lowered_arguments: list[str]) -> bool:

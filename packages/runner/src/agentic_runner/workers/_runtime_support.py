@@ -39,7 +39,10 @@ from agentic_runner.workers.contract_isolation import DirectiveSandbox
 # `environment` hook that could rewrite them would move the Contract's config root
 # somewhere another Contract can read, hand the Agent a socket and bearer of its own
 # choosing, point the Agent's traffic at an endpoint that meters nothing and is charged to
-# the funder anyway, or route it round the Profile's egress allow-list.
+# the funder anyway, or route it round the Profile's egress allow-list. The two Claude Code
+# bearers are here for the last reason too: either would authenticate the harness on a
+# credential the Runner never chose, around the proxy and the mode it decided
+# (local-agents 04; research 01 §4 gap 6).
 RESERVED_DIRECTIVE_ENV: Final[frozenset[str]] = frozenset(
     {
         "HOME",
@@ -48,6 +51,8 @@ RESERVED_DIRECTIVE_ENV: Final[frozenset[str]] = frozenset(
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
         "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         CALLBACK_SOCKET_ENV,
         CALLBACK_TOKEN_ENV,
         *PROXY_ENV_NAMES,

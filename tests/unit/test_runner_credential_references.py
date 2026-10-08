@@ -28,7 +28,7 @@ from agentic_runner.credentials import (
 from agentic_runner.hooks import DIRECTIVE_HOOK_ORDER, AttemptFacts, build_hook_env
 from agentic_runner.service import build_credential_resolver
 from agentic_runner.workers._runtime_support import SubprocessResult
-from agentic_runner.workers.agent_runtime import DirectiveRequest
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.settings import WorkerSettings
@@ -218,6 +218,9 @@ async def test_a_resolved_value_is_absent_from_the_agent_subprocess_env(
     workspace = tmp_path / "workspaces" / "repo"
     workspace.mkdir(parents=True)
     runner = _EnvCapturingRunner()
+    # Codex on its harness-root sign-in: an api_key Codex Directive with no LLM proxy endpoint
+    # is refused before spawn (LA-04), which would hide what this test checks.
+    auth_mode = AuthMode.SUBSCRIPTION if runtime_class is CodexRuntime else AuthMode.API_KEY
 
     await runtime_class(settings=_settings(tmp_path), runner=runner).execute_directive(
         DirectiveRequest(
@@ -225,6 +228,7 @@ async def test_a_resolved_value_is_absent_from_the_agent_subprocess_env(
             prompt="do the work",
             base_branch="main",
             work_branch="agent/work",
+            auth_mode=auth_mode,
         )
     )
 

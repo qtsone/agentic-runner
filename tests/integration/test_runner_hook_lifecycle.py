@@ -29,7 +29,7 @@ from agentic_runner.hooks import HookRunner
 from agentic_runner.integrations.git.fake_workspace import FakeGitWorkspace
 from agentic_runner.integrations.github.fake_client import FakeGitHubClient
 from agentic_runner.workers.agent_runtime import (
-    AuthModel,
+    AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
@@ -120,7 +120,7 @@ class _FakeClient:
 
 @dataclass
 class _FakeRuntime:
-    auth_model: AuthModel = AuthModel.DEVICE_LOGIN
+    auth_modes: frozenset[AuthMode] = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     requests: list[DirectiveRequest] = field(default_factory=list)
 
     async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:

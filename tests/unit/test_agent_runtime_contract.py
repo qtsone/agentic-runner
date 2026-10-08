@@ -9,14 +9,14 @@ describing how to drive it. Codex is the first case here; issue 11 appends Claud
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
 from agentic_runner.workers.agent_runtime import (
     AgentRuntime,
-    AuthModel,
+    AuthMode,
     DirectiveEvidence,
     DirectiveRequest,
     DirectiveResult,
@@ -31,7 +31,7 @@ class RuntimeContractCase:
     """A runtime under test plus how to drive it through the port contract."""
 
     cli_kind: str
-    auth_model: AuthModel
+    auth_modes: frozenset[AuthMode]
     make_success: Callable[[Path], tuple[AgentRuntime, DirectiveRequest]]
     make_refusal: Callable[[Path], tuple[AgentRuntime, DirectiveRequest]]
     make_outside_root: Callable[[Path], tuple[AgentRuntime, DirectiveRequest]]
@@ -81,7 +81,8 @@ def _codex_success(tmp_path: Path) -> tuple[AgentRuntime, DirectiveRequest]:
         settings=settings,
         runner=_async_runner(SubprocessResult(exit_code=0, stdout="done", stderr="")),
     )
-    return runtime, _directive_request(workspace)
+    # Its device-login path: an `api_key` Directive with no proxy endpoint is refused.
+    return runtime, replace(_directive_request(workspace), auth_mode=AuthMode.SUBSCRIPTION)
 
 
 def _codex_refusal(tmp_path: Path) -> tuple[AgentRuntime, DirectiveRequest]:
@@ -160,14 +161,14 @@ def _claude_outside_root(tmp_path: Path) -> tuple[AgentRuntime, DirectiveRequest
 RUNTIME_CASES: list[RuntimeContractCase] = [
     RuntimeContractCase(
         cli_kind="codex_cli",
-        auth_model=AuthModel.DEVICE_LOGIN,
+        auth_modes=frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION}),
         make_success=_codex_success,
         make_refusal=_codex_refusal,
         make_outside_root=_codex_outside_root,
     ),
     RuntimeContractCase(
         cli_kind="claude_code",
-        auth_model=AuthModel.API_KEY,
+        auth_modes=frozenset({AuthMode.API_KEY}),
         make_success=_claude_success,
         make_refusal=_claude_refusal,
         make_outside_root=_claude_outside_root,
@@ -181,7 +182,7 @@ _case = pytest.mark.parametrize("case", RUNTIME_CASES, ids=lambda case: case.cli
 def test_runtime_satisfies_agent_runtime_port(case: RuntimeContractCase, tmp_path: Path) -> None:
     runtime, _ = case.make_success(tmp_path)
     assert isinstance(runtime, AgentRuntime)
-    assert runtime.auth_model == case.auth_model
+    assert runtime.auth_modes == case.auth_modes
 
 
 @_case

@@ -51,6 +51,11 @@ class RunnerConfig(BaseModel):
     # fails its Directives with Evidence naming the reference (22 A1), instead of running
     # without the credential it was told to use.
     credential_store: Path | None = None
+    # Where a delivered OpenAI / Anthropic key is spent (local-agents 04b), when not at
+    # the vendor itself: a gateway the host runs in front of it. The host already holds
+    # the opened value, so pointing it elsewhere grants the host nothing it lacked.
+    openai_base_url: str | None = None
+    anthropic_base_url: str | None = None
     log_level: str = "info"
 
 
