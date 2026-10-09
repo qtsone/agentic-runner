@@ -43,6 +43,13 @@ from pydantic import (
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
 from agentic_runner_contracts.llm_usage import UsageRecord
+from agentic_runner_contracts.oauth_connector import (
+    OAuthAuthorizeUrl,
+    OAuthDisconnect,
+    OAuthOutcome,
+    OAuthStart,
+    SealedOAuthCode,
+)
 from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
@@ -569,6 +576,13 @@ class HeartbeatEnvelope(BaseModel):
     tool_servers: list[ToolServerHealth] = Field(default_factory=list, max_length=64)
     # Local-agents 05: what became of each sign-in code the last ack relayed.
     sign_in_codes: list[SignInCodeRelay] = Field(default_factory=list, max_length=16)
+    # Console-v2 issue 30: the authorise URL for each start the last ack asked for, the
+    # token ciphertext a connect or a refresh sealed to this installation's Recipient Key
+    # -- stored in the Contract's slot like any sealed delivery -- and each step's outcome
+    # as ids, the Evidence. No verifier, code or token in the clear (`oauth_connector`).
+    oauth_authorizations: list[OAuthAuthorizeUrl] = Field(default_factory=list, max_length=16)
+    oauth_tokens: list[SealedCredential] = Field(default_factory=list, max_length=64)
+    oauth_outcomes: list[OAuthOutcome] = Field(default_factory=list, max_length=64)
 
     @model_serializer(mode="wrap")
     def _omit_empty_optional_lists(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -577,7 +591,13 @@ class HeartbeatEnvelope(BaseModel):
         # needs the control plane on the contracts minor that added the field first.
         body = handler(self)
         if isinstance(body, dict):
-            for name in ("tool_servers", "sign_in_codes"):
+            for name in (
+                "tool_servers",
+                "sign_in_codes",
+                "oauth_authorizations",
+                "oauth_tokens",
+                "oauth_outcomes",
+            ):
                 if not body.get(name):
                     body.pop(name, None)
         return body
@@ -631,6 +651,12 @@ class HeartbeatAck(BaseModel):
     # Recipient Key. Relayed once each, like `transcript_requests`; the outcome comes back
     # on the next envelope's `sign_in_codes`.
     sign_in_codes: list[SealedSignInCode] = Field(default_factory=list, max_length=16)
+    # Console-v2 issue 30: start an OAuth authorisation, the code the browser sealed for
+    # one, and Disconnect. Relayed once each, like `sign_in_codes`; what became of each
+    # comes back on the envelope's `oauth_*` fields.
+    oauth_starts: list[OAuthStart] = Field(default_factory=list, max_length=16)
+    oauth_codes: list[SealedOAuthCode] = Field(default_factory=list, max_length=16)
+    oauth_disconnects: list[OAuthDisconnect] = Field(default_factory=list, max_length=16)
 
 
 class DirectiveTokenRequest(BaseModel):
