@@ -50,6 +50,7 @@ from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.registration import load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES
 from agentic_runner_contracts.runner_registration import (
     CliVersion,
     EgressPosture,
@@ -75,6 +76,7 @@ __all__ = [
     "install",
     "install_channel",
     "locate_clis",
+    "parse_acp_cli_kinds",
     "require_any_cli",
     "run_environment",
     "run_process",
@@ -204,6 +206,9 @@ class WorkstationSettings(BaseModel):
     # would not find a Homebrew or `~/.local/bin` CLI without it.
     path: str
     install_channel: InstallChannel
+    # The Runner's `ACP_CLI_KINDS`, kept here rather than hand-added to the login agent,
+    # which every `install` rewrites (QTS-1355).
+    acp_cli_kinds: str = ""
 
     def save(self, paths: OrgPaths) -> None:
         paths.settings_file.write_text(self.model_dump_json(indent=2), encoding="utf-8")
@@ -216,6 +221,23 @@ class WorkstationSettings(BaseModel):
                 f"run `agentic-runner install {paths.org}` first"
             )
         return cls.model_validate_json(paths.settings_file.read_text(encoding="utf-8"))
+
+
+def parse_acp_cli_kinds(value: str) -> str:
+    """``--acp-cli-kinds``, refused if it names a kind with no pinned bridge.
+
+    The Runner itself drops such a kind without a word, so a typo here would turn ACP off
+    as quietly as the rewritten login agent did (QTS-1355).
+    """
+
+    kinds = [kind.strip() for kind in value.split(",") if kind.strip()]
+    unknown = sorted(set(kinds) - ACP_BRIDGES.keys())
+    if unknown:
+        raise ValueError(
+            f"--acp-cli-kinds names {', '.join(unknown)}; a pinned ACP bridge exists only for "
+            f"{', '.join(sorted(ACP_BRIDGES))}"
+        )
+    return ",".join(dict.fromkeys(kinds))
 
 
 def install_channel(
@@ -235,7 +257,7 @@ def run_environment(paths: OrgPaths, settings: WorkstationSettings) -> dict[str,
     a unit, a task -- stays a one-liner, and the three OSes cannot drift apart.
     """
 
-    return {
+    environment = {
         "PATH": settings.path,
         "AGENTIC_RUNNER_STATE_DIR": str(paths.state_dir),
         "AGENTIC_RUNNER_WORKSPACE_ROOT": str(paths.workspaces),
@@ -254,6 +276,11 @@ def run_environment(paths: OrgPaths, settings: WorkstationSettings) -> dict[str,
         # port inherited from a pod-style environment would collide on the second one.
         service.READINESS_PORT_ENV: "0",
     }
+    # Only when set: a login agent hand-edited with `ACP_CLI_KINDS` before QTS-1355 keeps
+    # ACP on across an upgrade until its next `install`.
+    if settings.acp_cli_kinds:
+        environment["ACP_CLI_KINDS"] = settings.acp_cli_kinds
+    return environment
 
 
 # ------------------------------------------------------------------ the CLIs

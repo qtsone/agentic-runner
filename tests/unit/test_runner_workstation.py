@@ -286,6 +286,56 @@ def test_the_token_prompt_names_both_places_a_token_comes_from(
     assert "/me/runners" in prompt and "Organisation Admin" in prompt
 
 
+def test_a_reinstall_keeps_the_acp_cli_kinds_the_last_install_was_given(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QTS-1355: `ACP_CLI_KINDS` hand-added to the plist was dropped by the next `install`."""
+
+    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    installed: list[workstation.WorkstationSettings] = []
+
+    async def install(
+        org_paths: workstation.OrgPaths, settings: workstation.WorkstationSettings, **_: Any
+    ) -> list[str]:
+        org_paths.create()
+        settings.save(org_paths)
+        installed.append(settings)
+        return []
+
+    monkeypatch.setenv(cli.AGENT_TOKEN_ENV, "agent-token-of-sixteen-plus")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(cli.workstation, "install", install)
+
+    def reinstall(*flags: str) -> int:
+        return cli.main(
+            [
+                "install",
+                "acme",
+                "--control-plane",
+                CONTROL_PLANE,
+                "--temporal-address",
+                "temporal.test:443",
+                "--root",
+                str(paths.root),
+                "--no-start",
+                *flags,
+            ]
+        )
+
+    assert reinstall("--acp-cli-kinds", " claude_code,codex_cli,claude_code ") == 0
+    assert reinstall() == 0
+    assert installed[-1].acp_cli_kinds == "claude_code,codex_cli"
+    environment = workstation.run_environment(paths, workstation.WorkstationSettings.load(paths))
+    assert environment["ACP_CLI_KINDS"] == "claude_code,codex_cli"
+
+    assert reinstall("--acp-cli-kinds", "") == 0
+    assert "ACP_CLI_KINDS" not in workstation.run_environment(paths, installed[-1])
+
+    # The Runner drops a kind with no pinned bridge silently; `install` must not.
+    assert reinstall("--acp-cli-kinds", "claude_cli") == 2
+    assert len(installed) == 3
+
+
 # ------------------------------------------------------------------ the CLIs
 
 

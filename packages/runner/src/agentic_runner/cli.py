@@ -158,6 +158,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="no TLS to Temporal -- a local development server only",
     )
+    install.add_argument(
+        "--acp-cli-kinds",
+        default=None,
+        help="comma-separated cli_kinds served through the pinned ACP bridge (codex_cli, "
+        "claude_code); omitted keeps the previous install's, '' turns ACP off",
+    )
     install.add_argument("--no-start", action="store_true", help="write the agent, do not start")
     install.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
     for service_verb in ("start", "stop"):
@@ -342,6 +348,11 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
     if not arguments.control_plane:
         print(f"--control-plane (or {CONTROL_PLANE_ENV}) is required", file=sys.stderr)
         return 2
+    try:
+        acp_cli_kinds = _acp_cli_kinds(arguments.acp_cli_kinds, paths)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     # Pasted, never a flag: a flag is in the process table for every uid on the box.
     token = os.environ.get(AGENT_TOKEN_ENV, "").strip() or getpass.getpass(
         "Agent Token (yours from /me/runners, or the Organisation Admin's for an "
@@ -354,6 +365,7 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
         temporal_tls=not arguments.temporal_plaintext,
         path=os.environ.get("PATH", ""),
         install_channel=workstation.install_channel(),
+        acp_cli_kinds=acp_cli_kinds,
     )
     try:
         lines = asyncio.run(
@@ -367,6 +379,15 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
     for line in lines:
         print(line)
     return 0
+
+
+def _acp_cli_kinds(flag: str | None, paths: workstation.OrgPaths) -> str:
+    # A reinstall to pick up a new PATH or retry a token must not turn ACP off (QTS-1355).
+    if flag is not None:
+        return workstation.parse_acp_cli_kinds(flag)
+    if not paths.settings_file.is_file():
+        return ""
+    return workstation.WorkstationSettings.load(paths).acp_cli_kinds
 
 
 def _callback(arguments: argparse.Namespace) -> int:
