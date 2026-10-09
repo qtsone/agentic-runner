@@ -64,6 +64,18 @@ AGENTIC_RUNNER_VERSION=<version> docker compose up -d
   Claude Code sign-ins made from the console are kept. One volume is enough. If you lose it,
   the Runner registers again as a new Runner, and every funder must deliver their sealed
   credentials again.
+- **Signing in** happens from the console, on the Contract's page. Claude Code offers a
+  long-lived token (the default, valid for a year) or a Claude.ai sign-in. Paste the code
+  the browser shows you into the console. It reaches this Runner sealed, and it expires
+  after 10 minutes. For support only, someone with a shell on the host can run the vendor
+  CLI as the Contract's own user with that Contract's harness root:
+
+  ```sh
+  root=/var/lib/agentic-os/workspaces/<contract-id>/harness/claude_code
+  docker exec -it -u "$(docker exec agentic-runner stat -c %u "$root")" \
+    -e HOME="${root%/harness/*}" -e CLAUDE_CONFIG_DIR="$root" \
+    agentic-runner claude auth login --claudeai
+  ```
 - **`restart: unless-stopped`** brings the Runner back after a crash or a host reboot. It
   re-reads its identity from the volume and does not register a second time.
 - **`stop_grace_period: 35m`** (`--stop-timeout 2100`). On `SIGTERM` the Runner stops

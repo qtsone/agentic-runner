@@ -174,6 +174,25 @@ def test_the_runner_creates_its_own_state_directory(isolation: str) -> None:
         assert spec["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
 
 
+def test_the_harness_roots_are_on_the_state_pvc() -> None:
+    """Local-agents 05: a Contract's console sign-in -- the token file, the CLI's own login
+    and its sessions -- lives in its harness root under WORKSPACE_ROOT, so it survives a pod
+    restart only because WORKSPACE_ROOT is on the replica's `state` claim."""
+
+    spec = _runner(_render())["spec"]["template"]["spec"]
+    [runner] = spec["containers"]
+    workspace_root = _env(runner)["WORKSPACE_ROOT"]
+    assert _env(runner)["AGENTIC_RUNNER_WORKSPACE_ROOT"] == workspace_root
+    covering = [
+        mount
+        for mount in runner["volumeMounts"]
+        if workspace_root == mount["mountPath"]
+        or workspace_root.startswith(mount["mountPath"].rstrip("/") + "/")
+    ]
+    assert covering
+    assert {mount["name"] for mount in covering} == {"state"}
+
+
 def test_an_unknown_isolation_mode_and_a_missing_token_are_refused() -> None:
     with pytest.raises(subprocess.CalledProcessError) as refused:
         _render("--set", "isolation=auto")

@@ -78,6 +78,22 @@ start the sign-in and finish it in your browser. The Runner keeps that sign-in i
 Contract's own directory under its state root. It does not read your own `~/.codex` or
 `~/.claude`, and there is no sign-in command in the terminal.
 
+Claude Code has two ways to sign in. Both use your Claude subscription:
+
+- **Long-lived token** (the default). Claude asks you to approve a token that lasts a
+  year. You sign in once a year.
+- **Claude.ai sign-in.** A login that renews itself until you sign out. On macOS the Runner
+  keeps it in a keychain of the Contract's own, not in your login keychain.
+
+If your browser opens on this computer, the sign-in may finish on its own. If the browser
+shows you a code instead, paste it into the console. The console sends it, sealed, to this
+Runner, and the code expires after 10 minutes.
+
+For support only: with a shell on this computer you can run the vendor CLI by hand for one
+Contract, with `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) set to that Contract's harness root,
+`workspaces/<contract-id>/harness/claude_code` (or `codex_cli`) under the state directory
+`agentic-runner status <org>` prints.
+
 ## Give it work
 
 `install` ends with a `next` line, and `agentic-runner status acme` repeats it while the

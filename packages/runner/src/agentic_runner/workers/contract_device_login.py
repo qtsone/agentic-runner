@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Final
 
 from agentic_runner.workers._runtime_support import run_subprocess_launch_and_detach
+from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN_FILE, ClaudeSignIns
 from agentic_runner.workers.contract_isolation import ContractIsolation
 
 __all__ = [
@@ -43,18 +44,18 @@ __all__ = [
     "login_file_counts",
 ]
 
-# The token file each harness's own device-login flow writes, relative to its config root
+# The login files each harness's own sign-in writes, relative to its config root
 # (research/29 §1.1, §2.1). Read only with `Path.stat`/`Path.is_file` below, never opened.
-_TOKEN_FILE_BY_RUNTIME: Final[dict[str, str]] = {
-    "codex_cli": "auth.json",
-    "claude_code": ".credentials.json",
+# Claude's `claude_ai` login on macOS is a Keychain item, not a file: its presence is
+# `ClaudeSignIns.status`, and this table serves only the residue count.
+_TOKEN_FILES_BY_RUNTIME: Final[dict[str, tuple[str, ...]]] = {
+    "codex_cli": ("auth.json",),
+    "claude_code": (".credentials.json", OAUTH_TOKEN_FILE),
 }
 
 # Codex's non-interactive device-code flow (research/29 §1.5, "Headless login is
-# first-class"). Claude Code's own login is an interactive `/login` paste-code flow with
-# no scriptable device-code equivalent (research/29 §2.1); its M1 path is the
-# `claude setup-token` bearer instead, which is a *value* and so goes through
-# ``services.llm_credential.replace_api_key`` like any other API key, never through here.
+# first-class"). Claude Code's is an interactive paste-code flow on a pseudo-terminal
+# instead: ``claude_sign_in.CLAUDE_SIGN_IN_ARGV`` (local-agents 05).
 DEVICE_LOGIN_ARGV: Final[dict[str, tuple[str, ...]]] = {
     "codex_cli": ("codex", "login", "--device-auth"),
 }
@@ -96,6 +97,8 @@ class DeviceLoginPrompt:
     verification_uri: str
     user_code: str
     expires_at: datetime
+    # Claude Code's: what a relayed code names (local-agents 05).
+    sign_in_id: str = ""
 
 
 class ContractDeviceLogin:
@@ -108,13 +111,17 @@ class ContractDeviceLogin:
         argv_by_runtime: dict[str, tuple[str, ...]] | None = None,
         prompt_timeout_seconds: float = _DEFAULT_PROMPT_TIMEOUT_SECONDS,
         output_limit_bytes: int = _DEFAULT_OUTPUT_LIMIT_BYTES,
+        claude: ClaudeSignIns | None = None,
     ) -> None:
         self._isolation = isolation
+        self.claude = claude or ClaudeSignIns(isolation)
         self._argv_by_runtime = argv_by_runtime or DEVICE_LOGIN_ARGV
         self._prompt_timeout_seconds = prompt_timeout_seconds
         self._output_limit_bytes = output_limit_bytes
 
-    async def sign_in(self, contract_id: str, *, runtime_kind: str) -> DeviceLoginPrompt:
+    async def sign_in(
+        self, contract_id: str, *, runtime_kind: str, method: str | None = None
+    ) -> DeviceLoginPrompt:
         """Spawn the harness CLI as this Contract's own uid; return once it has printed
         its verification prompt, and leave it running to finish the funder's approval.
 
@@ -123,6 +130,16 @@ class ContractDeviceLogin:
         harness config root no other Contract's uid can read.
         """
 
+        if runtime_kind == "claude_code":
+            claude = await self.claude.start(contract_id, method=method)
+            return DeviceLoginPrompt(
+                contract_id=contract_id,
+                runtime_kind=runtime_kind,
+                verification_uri=claude.verification_uri,
+                user_code="",
+                expires_at=claude.expires_at,
+                sign_in_id=claude.sign_in_id,
+            )
         argv = self._argv_by_runtime.get(runtime_kind)
         if argv is None:
             raise UnknownHarnessError(f"no device-login command for runtime {runtime_kind!r}")
@@ -170,10 +187,10 @@ class ContractDeviceLogin:
             return None
 
     def _token_path(self, contract_id: str, *, runtime_kind: str) -> Path | None:
-        filename = _TOKEN_FILE_BY_RUNTIME.get(runtime_kind)
-        if filename is None:
+        filenames = _TOKEN_FILES_BY_RUNTIME.get(runtime_kind)
+        if filenames is None:
             return None
-        return self._isolation.harness_config_dir(contract_id, runtime_kind) / filename
+        return self._isolation.harness_config_dir(contract_id, runtime_kind) / filenames[0]
 
 
 def login_file_counts(isolation: ContractIsolation, contract_id: str | None) -> dict[str, int]:
@@ -184,8 +201,9 @@ def login_file_counts(isolation: ContractIsolation, contract_id: str | None) -> 
     """
 
     counts: dict[str, int] = {}
-    for runtime_kind, filename in _TOKEN_FILE_BY_RUNTIME.items():
-        if (isolation.harness_config_dir(contract_id, runtime_kind) / filename).is_file():
+    for runtime_kind, filenames in _TOKEN_FILES_BY_RUNTIME.items():
+        root = isolation.harness_config_dir(contract_id, runtime_kind)
+        if any((root / filename).is_file() for filename in filenames):
             counts[runtime_kind] = 1
     return counts
 

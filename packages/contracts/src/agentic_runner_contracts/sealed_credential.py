@@ -33,6 +33,7 @@ import base64
 import binascii
 import hashlib
 from datetime import timedelta
+from enum import StrEnum
 from typing import Annotated, Final
 from uuid import UUID
 
@@ -43,17 +44,27 @@ __all__ = [
     "HONEST_STATEMENT",
     "RENEWAL_INTERVAL",
     "SEAL_DOMAIN",
+    "SIGN_IN_CODE_DOMAIN",
     "OpenedCredential",
     "SealedCredential",
+    "SealedSignInCode",
+    "SignInCodeOutcome",
+    "SignInCodeRelay",
     "SlotDelivery",
     "delivery_binding",
     "key_fingerprint",
+    "sign_in_code_binding",
 ]
 
 # Domain separation. Version it rather than the wire: a second construction would be a
 # second prefix here and a Runner that cannot open it says so, instead of opening
 # something it misread.
 SEAL_DOMAIN: Final[str] = "agentic-os/sealed-credential/v1"
+
+# A one-time sign-in code is sealed to the same Recipient Key but is not a credential slot
+# (local-agents 05): its own prefix means a code can never open as a slot value, nor a slot
+# value as a code.
+SIGN_IN_CODE_DOMAIN: Final[str] = "agentic-os/sign-in-code/v1"
 
 # 22 A7: the Runner regenerates its keypair on this cadence, re-seals every slot to the
 # new key and destroys the old private half only once every slot reports the new key id.
@@ -89,6 +100,21 @@ def delivery_binding(*, contract_id: UUID | str, slot: str, recipient_key_id: st
     """
 
     return "|".join((SEAL_DOMAIN, str(contract_id), slot, recipient_key_id)).encode("utf-8")
+
+
+def sign_in_code_binding(
+    *, contract_id: UUID | str, sign_in_id: str, recipient_key_id: str
+) -> bytes:
+    """The AEAD associated data one sealed sign-in code is bound to (local-agents 05).
+
+    Bound to the sign-in the Runner started, so a code lifted from one sign-in and
+    replayed against another -- or another Contract's -- does not open. The browser builds
+    the same bytes in TypeScript; see :func:`delivery_binding` for why this lives here.
+    """
+
+    return "|".join((SIGN_IN_CODE_DOMAIN, str(contract_id), sign_in_id, recipient_key_id)).encode(
+        "utf-8"
+    )
 
 
 def key_fingerprint(public_key: str) -> str:
@@ -169,3 +195,46 @@ class SlotDelivery(BaseModel):
     delivered: int = Field(ge=0)
     stale: bool = False
     host_party: str = ""
+
+
+SignInId = Annotated[str, StringConstraints(pattern=r"^si_[0-9a-f]{32}$")]
+
+
+class SealedSignInCode(BaseModel):
+    """A one-time browser sign-in code, sealed to the Runner that started the sign-in.
+
+    Carried on the heartbeat ack once and never in a Temporal payload (local-agents 05):
+    the platform relays ciphertext it cannot open and deletes it on delivery or expiry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract_id: UUID
+    sign_in_id: SignInId
+    recipient_key_id: KeyId
+    ciphertext: Annotated[str, StringConstraints(min_length=1, max_length=2048)]
+
+    def binding(self) -> bytes:
+        return sign_in_code_binding(
+            contract_id=self.contract_id,
+            sign_in_id=self.sign_in_id,
+            recipient_key_id=self.recipient_key_id,
+        )
+
+
+class SignInCodeOutcome(StrEnum):
+    """What the Runner did with one relayed code -- the reason the console shows."""
+
+    WRITTEN = "written"
+    UNKNOWN = "unknown"
+    EXPIRED = "expired"
+    UNOPENABLE = "unopenable"
+
+
+class SignInCodeRelay(BaseModel):
+    """One relayed code's outcome, reported on the next heartbeat. Never the code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sign_in_id: SignInId
+    outcome: SignInCodeOutcome
