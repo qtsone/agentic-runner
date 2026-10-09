@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.1](https://github.com/qtsone/agentic-runner/compare/v3.12.0...v3.12.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **runner:** close ACP gaps 1, 2 and 4 — granted MCP tools, harness-root settings.json, Codex usage (QTS-1323) ([#42](https://github.com/qtsone/agentic-runner/issues/42)) ([782ad45](https://github.com/qtsone/agentic-runner/commit/782ad453fccd6c241829cc1096a851ac84ee75c3))
+
 # [3.12.0](https://github.com/qtsone/agentic-runner/compare/v3.11.0...v3.12.0) (2026-10-09)
 
 

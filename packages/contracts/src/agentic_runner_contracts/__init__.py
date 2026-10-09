@@ -63,6 +63,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # omits the key while it is absent, so a control plane on 3.11 parses an attestation
 # unchanged until a Runner serves a kind through its pinned ACP bridge (`ACP_CLI_KINDS`) --
 # upgrade the control plane before the Runner.
-__version__ = "3.12.0"
+__version__ = "3.12.1"
 
 __all__ = ["__version__"]
