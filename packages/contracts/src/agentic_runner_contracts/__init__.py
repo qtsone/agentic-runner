@@ -52,6 +52,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `HeartbeatEnvelope.oauth_authorizations` / `oauth_tokens` / `oauth_outcomes`. Additive;
 # the envelope omits each key while it is empty. But the ack forbids extra keys, so the
 # platform must not send an OAuth item to a Runner below 3.8.
-__version__ = "3.8.0"
+__version__ = "3.9.0"
 
 __all__ = ["__version__"]

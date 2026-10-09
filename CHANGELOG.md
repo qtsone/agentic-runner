@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.9.0](https://github.com/qtsone/agentic-runner/compare/v3.8.0...v3.9.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** the ACP runtime runs a Profile-named command for an unpinned cli_kind (QTS-899) ([#39](https://github.com/qtsone/agentic-runner/issues/39)) ([5a64edc](https://github.com/qtsone/agentic-runner/commit/5a64edc74ac069f395a7a8895a451f5daefbe404))
+
 # [3.8.0](https://github.com/qtsone/agentic-runner/compare/v3.7.0...v3.8.0) (2026-10-09)
 
 
