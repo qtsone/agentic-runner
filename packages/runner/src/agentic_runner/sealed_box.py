@@ -55,6 +55,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from agentic_runner.auth_mode import SETUP_TOKEN_REFUSED_RULE, is_setup_token
 from agentic_runner.private_state import private_read, private_write
+from agentic_runner_contracts.oauth_connector import SealedOAuthCode
 from agentic_runner_contracts.runner_registration import RecipientKey
 from agentic_runner_contracts.sealed_credential import (
     RENEWAL_INTERVAL,
@@ -525,6 +526,40 @@ class SealedCredentialStream:
         """
 
         return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)
+
+    def open_oauth_code(self, sealed: SealedOAuthCode) -> str | None:
+        """A relayed OAuth code, or None when it does not open (console-v2 issue 30).
+
+        Never held, like a sign-in code: the caller spends it on the token endpoint and
+        drops it.
+        """
+
+        return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)
+
+    def seal_slot(
+        self, contract_id: str, slot: str, *, version: int, value: str
+    ) -> SealedCredential:
+        """Seal a value this Runner made to its own current key, as one slot's delivery.
+
+        How an OAuth token set leaves the Runner (console-v2 issue 30): bound to the same
+        ``(contract, slot, key)`` triple a funder's delivery is, so every Runner of the
+        installation opens it through :meth:`apply` and no other installation can.
+        """
+
+        key = self._keys.current()
+        return SealedCredential(
+            contract_id=UUID(contract_id),
+            slot=slot,
+            recipient_key_id=key.key_id,
+            version=version,
+            ciphertext=seal(
+                public_key=key.public_key,
+                binding=delivery_binding(
+                    contract_id=contract_id, slot=slot, recipient_key_id=key.key_id
+                ),
+                plaintext=value,
+            ),
+        )
 
     def _open(self, sealed: SealedCredential) -> str | None:
         return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)

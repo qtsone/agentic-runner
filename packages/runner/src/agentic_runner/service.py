@@ -61,6 +61,7 @@ from agentic_runner.heartbeat_link import WAKE_DIVERGENCE, HeartbeatLink
 from agentic_runner.hooks import AttemptFacts, HookName, HookRunner
 from agentic_runner.integrations.git.workspace import LocalGitWorkspace
 from agentic_runner.integrations.github.gh_client import GitHubAppClient
+from agentic_runner.integrations.oauth import HttpOAuthProvider
 from agentic_runner.lifecycle import LIFECYCLE_FILENAME, LifecycleOutbox
 from agentic_runner.llm_proxy import (
     LLM_SLOT_REFERENCES,
@@ -73,6 +74,7 @@ from agentic_runner.llm_proxy import (
 )
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
+from agentic_runner.oauth_connectors import OAuthConnectors
 from agentic_runner.private_state import (
     UnsafeStateError,
     ensure_private_dir,
@@ -593,6 +595,8 @@ class ControlPlaneStream:
     llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
     # Local-agents 05: the Claude Code sign-ins a relayed code is typed into.
     sign_ins: ClaudeSignIns | None = None
+    # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
+    oauth: OAuthConnectors | None = None
     # Reported once, on the beat after the relay: a lost beat loses the outcome, and the
     # console's own wait on the sign-in is what tells the person.
     _sign_in_outcomes: list[SignInCodeRelay] = field(default_factory=list)
@@ -678,6 +682,8 @@ class ControlPlaneStream:
         self._observe_sleep(now)
         lifecycle = self.lifecycle.pending() if self.lifecycle is not None else []
         renewed, resealed = self.sealed.renew(now)
+        if self.oauth is not None:
+            await self.oauth.before_beat()
         envelope = HeartbeatEnvelope(
             runner_version=runner_version,
             contracts_version=contracts_version,
@@ -704,6 +710,9 @@ class ControlPlaneStream:
             source_status=self.sources.statuses() if self.sources is not None else [],
             tool_servers=self.tool_servers.latest() if self.tool_servers is not None else [],
             sign_in_codes=self._sign_in_outcomes,
+            oauth_authorizations=self.oauth.take_authorizations() if self.oauth else [],
+            oauth_tokens=self.oauth.uploads() if self.oauth else [],
+            oauth_outcomes=self.oauth.take_outcomes() if self.oauth else [],
         )
         self._sign_in_outcomes = []
         ack = await self.client.heartbeat(self.state, envelope)
@@ -711,6 +720,12 @@ class ControlPlaneStream:
             self.sources.assign(ack.user_sources)
         await self._deliver_transcripts(ack)
         await self._relay_sign_in_codes(ack)
+        if self.oauth is not None:
+            # Before the sealed values are applied: a Disconnect revokes with the tokens
+            # this Runner holds, and the same ack may already have withdrawn their ciphertext.
+            await self.oauth.apply(
+                starts=ack.oauth_starts, codes=ack.oauth_codes, disconnects=ack.oauth_disconnects
+            )
         if self.lifecycle is not None:
             self.lifecycle.acknowledge(lifecycle)
         if self.heartbeat_stamp is not None:
@@ -782,7 +797,7 @@ class ControlPlaneStream:
     def _sync_delivered(self) -> None:
         """The resolver holds exactly what the last ack let this installation open."""
 
-        plaintext = self.sealed.plaintext
+        plaintext = self.oauth.resolved() if self.oauth is not None else self.sealed.plaintext
         for (contract_id, slot), value in plaintext.items():
             self.credentials.deliver(contract_id, slot, value)
         for contract_id, slot in self._delivered - set(plaintext):
@@ -1074,6 +1089,9 @@ async def _serve_registered(
     stream.messages = messages
     sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can_change_uid))
     stream.sign_ins = sign_ins
+    stream.oauth = OAuthConnectors(
+        sealed=stream.sealed, provider=HttpOAuthProvider(), credentials=credentials
+    )
     tool_servers = ToolServerHealthLog()
     stream.tool_servers = tool_servers
     link = HeartbeatLink(stream, ceilings=proxy.ceilings)
