@@ -18,12 +18,18 @@ from uuid import UUID, uuid4
 import pytest
 
 from agentic_runner import service
-from agentic_runner.credentials import CredentialResolver, EmptyCredentialStore
+from agentic_runner.credentials import (
+    CredentialResolver,
+    EmptyCredentialStore,
+    FakeCredentialStore,
+    HostCredentialStore,
+)
 from agentic_runner.integrations.oauth.fake_provider import FakeOAuthProvider
 from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOutbox
-from agentic_runner.oauth_connectors import OAuthConnectors
+from agentic_runner.oauth_connectors import TOKEN_SET_PREFIX, OAuthConnectors
 from agentic_runner.registration import RunnerState
 from agentic_runner.sealed_box import (
+    AUTHORED_PREFIX,
     RecipientKeyPair,
     RecipientKeyStore,
     SealedCredentialStream,
@@ -76,7 +82,7 @@ class _Platform:
 
     async def heartbeat(self, state: Any, envelope: HeartbeatEnvelope) -> HeartbeatAck:
         self.sent.append(envelope)
-        for upload in envelope.oauth_tokens:
+        for upload in [*envelope.oauth_tokens, *envelope.resealed]:
             held = self.slots.get(upload.key)
             # First upload of a version wins: a second Runner's refresh to the same
             # version is not stored, and that Runner adopts this one from the ack.
@@ -117,11 +123,12 @@ def _runner(
     *,
     key: RecipientKeyPair,
     clock: _Clock,
+    store: HostCredentialStore | None = None,
 ) -> service.ControlPlaneStream:
     keys = RecipientKeyStore(tmp_path / name)
     keys.install(key, managed_by="helm", now=T0)
     sealed = SealedCredentialStream(keys)
-    credentials = CredentialResolver(store=EmptyCredentialStore())
+    credentials = CredentialResolver(store=store or EmptyCredentialStore())
     runner_id = uuid4()
     return service.ControlPlaneStream(
         client=platform,  # type: ignore[arg-type]
@@ -160,6 +167,24 @@ def _sealed_code(
                 contract_id=CONTRACT, authorization_id=authorization_id, recipient_key_id=key.key_id
             ),
             plaintext=code,
+        ),
+    )
+
+
+def _funder_delivery(
+    key: RecipientKeyPair, value: str, *, slot: str = SLOT, version: int = 1
+) -> SealedCredential:
+    """What any funder can send: a value sealed to the installation's public key."""
+
+    return SealedCredential(
+        contract_id=CONTRACT,
+        slot=slot,
+        recipient_key_id=key.key_id,
+        version=version,
+        ciphertext=seal(
+            public_key=key.public_key,
+            binding=delivery_binding(contract_id=CONTRACT, slot=slot, recipient_key_id=key.key_id),
+            plaintext=value,
         ),
     )
 
@@ -590,3 +615,125 @@ async def test_a_beat_with_nothing_to_say_omits_every_oauth_key(
 
     body = json.loads(platform.sent[0].model_dump_json())
     assert not {"oauth_authorizations", "oauth_tokens", "oauth_outcomes"} & set(body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forgery", ["bare", "bad_tag"])
+async def test_a_funder_delivered_token_set_is_served_as_delivered_and_never_refreshed(
+    tmp_path: Path, provider: FakeOAuthProvider, key: RecipientKeyPair, forgery: str
+) -> None:
+    """Sealing is public-key: a funder can put a token-set-shaped value in the slot. It
+    must not steer the Runner into sending the host's client secret anywhere."""
+
+    clock = _Clock()
+    platform = _Platform()
+    host = FakeCredentialStore({SECRET_SLOT: "host-owned-secret"})
+    runner = _runner(tmp_path, "a", platform, provider, key=key, clock=clock, store=host)
+    body = json.dumps(
+        {
+            "access_token": "funder-access",
+            "refresh_token": "funder-refresh",
+            "expires_at": T0.isoformat(),
+            "token_endpoint": provider.token_endpoint,
+            "client_id": provider.client_id,
+            "client_secret_slot": SECRET_SLOT,
+        }
+    )
+    value = TOKEN_SET_PREFIX + body
+    if forgery == "bad_tag":
+        value = f"{AUTHORED_PREFIX}{'A' * 43}=:{value}"
+    platform.slots[(CONTRACT, SLOT)] = _funder_delivery(key, value)
+    assert runner.oauth is not None
+
+    await runner.exchange([])
+    clock.now += timedelta(hours=1)
+    await runner.exchange([])
+    refreshed = await runner.oauth.refresh(CONTRACT, SLOT)
+    await runner.exchange([])
+
+    assert refreshed is False
+    assert provider.requests == []
+    assert _served(runner) == value
+    assert _outcomes(platform) == []
+    assert all(envelope.oauth_tokens == [] for envelope in platform.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        "{",
+        "[]",
+        '{"access_token":"a"}',
+        json.dumps(
+            {
+                "access_token": "a",
+                "refresh_token": "r",
+                "expires_at": None,
+                "token_endpoint": "http://plain.example/token",
+                "client_id": "c",
+                "client_secret_slot": None,
+            }
+        ),
+        json.dumps(
+            {
+                "access_token": 1,
+                "refresh_token": "r",
+                "expires_at": None,
+                "token_endpoint": "https://idp.example/token",
+                "client_id": "c",
+                "client_secret_slot": None,
+            }
+        ),
+    ],
+    ids=["truncated", "not_an_object", "missing_keys", "http_endpoint", "wrong_type"],
+)
+async def test_an_unreadable_token_set_costs_its_slot_and_not_the_beat(
+    tmp_path: Path, provider: FakeOAuthProvider, key: RecipientKeyPair, body: str
+) -> None:
+    platform = _Platform()
+    runner = _runner(tmp_path, "a", platform, provider, key=key, clock=_Clock())
+    platform.slots[(CONTRACT, SLOT)] = runner.sealed.seal_authored(
+        str(CONTRACT), SLOT, version=1, value=TOKEN_SET_PREFIX + body
+    )
+    platform.slots[(CONTRACT, SECRET_SLOT)] = _funder_delivery(key, "other", slot=SECRET_SLOT)
+    assert runner.oauth is not None
+
+    await runner.exchange([])
+    await runner.exchange([])
+
+    assert await runner.oauth.refresh(CONTRACT, SLOT) is False
+    assert provider.requests == []
+    with pytest.raises(Exception, match="not_installed"):
+        _served(runner)
+    assert (
+        runner.credentials.resolve(
+            contract_id=str(CONTRACT), manifest=[SECRET_SLOT]
+        ).for_runner_hosted_server(SECRET_SLOT)
+        == "other"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_token_set_stays_a_token_set_across_a_recipient_key_renewal(
+    tmp_path: Path, provider: FakeOAuthProvider, key: RecipientKeyPair
+) -> None:
+    """The authored tag is keyed off the private half, so the renewal's re-seal re-tags
+    it: once the old key is retired, the slot still refreshes rather than serving raw."""
+
+    platform = _Platform()
+    runner = _runner(tmp_path, "a", platform, provider, key=key, clock=_Clock())
+    await _connect(runner, platform, provider, key)
+    keys = runner.sealed._keys  # the installer replaced the Secret (``install``'s helm path)
+    fresh = generate_recipient_key()
+    keys.install(fresh, managed_by="helm", now=T0)
+
+    await runner.exchange([])  # the ack shows the slot still under the old key
+    await runner.exchange([])  # so the renewal re-seals it, and the echo opens under the new
+
+    assert keys.previous() is None
+    stored = platform.slots[(CONTRACT, SLOT)]
+    assert stored.recipient_key_id == fresh.key_id
+    assert _served(runner) == provider.issued[0]
+    assert runner.oauth is not None
+    assert await runner.oauth.refresh(CONTRACT, SLOT) is True

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import json
 import logging
 import secrets
@@ -81,6 +82,12 @@ __all__ = [
 ]
 
 RECIPIENT_KEY_FILENAME: Final[str] = "recipient-key.json"
+
+# What marks a slot value as one this installation sealed for itself, rather than one a
+# funder delivered: the prefix, then an HMAC keyed off the Recipient private key
+# (:meth:`SealedCredentialStream.authored`). Versioned like a seal domain.
+AUTHORED_PREFIX: Final[str] = "agentic-os/runner-authored/v1:"
+AUTHORED_MAC_DOMAIN: Final[bytes] = b"agentic-os/runner-authored-mac/v1"
 
 _PUBLIC_KEY_BYTES: Final[int] = 32
 _KEY_BYTES: Final[int] = 32
@@ -329,6 +336,35 @@ def _derive(shared: bytes, ephemeral_public: bytes, recipient_public: bytes) -> 
     ).derive(shared)
 
 
+def _authored_mac(pair: RecipientKeyPair, contract_id: str, slot: str, body: str) -> bytes:
+    # Its own HKDF domain, so the MAC key shares nothing with any seal's AEAD key. A
+    # contract id is a UUID and a slot name has no NUL, so the joined message is unambiguous.
+    mac_key = HKDF(
+        algorithm=hashes.SHA256(), length=_KEY_BYTES, salt=b"", info=AUTHORED_MAC_DOMAIN
+    ).derive(_raw_key(pair.private_key, "private"))
+    message = "\x00".join((contract_id, slot, body)).encode("utf-8")
+    return hmac.digest(mac_key, message, "sha256")
+
+
+def _tag_authored(pair: RecipientKeyPair, contract_id: str, slot: str, body: str) -> str:
+    tag = base64.urlsafe_b64encode(_authored_mac(pair, contract_id, slot, body)).decode("ascii")
+    return f"{AUTHORED_PREFIX}{tag}:{body}"
+
+
+def _untag_authored(pair: RecipientKeyPair, contract_id: str, slot: str, value: str) -> str | None:
+    if not value.startswith(AUTHORED_PREFIX):
+        return None
+    tag, separator, body = value[len(AUTHORED_PREFIX) :].partition(":")
+    if not separator:
+        return None
+    try:
+        claimed = base64.urlsafe_b64decode(tag.encode("ascii"))
+    except (binascii.Error, ValueError):
+        return None
+    expected = _authored_mac(pair, contract_id, slot, body)
+    return body if hmac.compare_digest(claimed, expected) else None
+
+
 def _public_key(value: str) -> X25519PublicKey:
     return X25519PublicKey.from_public_bytes(_raw_key(value, "public"))
 
@@ -495,7 +531,7 @@ class SealedCredentialStream:
                     binding=delivery_binding(
                         contract_id=contract_id, slot=slot, recipient_key_id=fresh.key_id
                     ),
-                    plaintext=value,
+                    plaintext=self._retagged(contract_id, slot, value, fresh),
                 ),
             )
             for (contract_id, slot), value in sorted(self._plaintext.items())
@@ -536,14 +572,15 @@ class SealedCredentialStream:
 
         return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)
 
-    def seal_slot(
+    def seal_authored(
         self, contract_id: str, slot: str, *, version: int, value: str
     ) -> SealedCredential:
         """Seal a value this Runner made to its own current key, as one slot's delivery.
 
         How an OAuth token set leaves the Runner (console-v2 issue 30): bound to the same
         ``(contract, slot, key)`` triple a funder's delivery is, so every Runner of the
-        installation opens it through :meth:`apply` and no other installation can.
+        installation opens it through :meth:`apply` and no other installation can. Tagged
+        so :meth:`authored` can tell it from a funder's value in the same slot.
         """
 
         key = self._keys.current()
@@ -557,9 +594,31 @@ class SealedCredentialStream:
                 binding=delivery_binding(
                     contract_id=contract_id, slot=slot, recipient_key_id=key.key_id
                 ),
-                plaintext=value,
+                plaintext=_tag_authored(key, contract_id, slot, value),
             ),
         )
+
+    def authored(self, contract_id: str, slot: str, value: str) -> str | None:
+        """The value :meth:`seal_authored` tagged, or None for anything a funder delivered.
+
+        Sealing is public-key, so anyone holding the Recipient public key -- every funder --
+        can seal a value to this slot that opens exactly as the Runner's own upload does.
+        Only the tag, keyed off the private half, says this installation wrote it. Checked
+        against the previous key too, so a value tagged before a renewal still verifies
+        until its re-seal (re-tagged in :meth:`renew`) is the one held.
+        """
+
+        for pair in (self._keys.current(), self._keys.previous()):
+            if pair is None:
+                continue
+            body = _untag_authored(pair, contract_id, slot, value)
+            if body is not None:
+                return body
+        return None
+
+    def _retagged(self, contract_id: str, slot: str, value: str, fresh: RecipientKeyPair) -> str:
+        body = self.authored(contract_id, slot, value)
+        return value if body is None else _tag_authored(fresh, contract_id, slot, body)
 
     def _open(self, sealed: SealedCredential) -> str | None:
         return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)

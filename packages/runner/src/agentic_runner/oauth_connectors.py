@@ -19,6 +19,13 @@ ack hands it back after a restart and to every other Runner of the installation,
 it with the same key. The Runner writes no token to disk and does not write the host store:
 ``put`` there stays the host operator's act (``host_store``).
 
+**Only a token set this installation sealed is one.** A funder can seal any value to the
+same slot through Credential Delivery, and it opens exactly as the Runner's own upload does,
+so the Runner adopts a slot as a token set only when its tag, keyed off the Recipient
+private key, verifies (``SealedCredentialStream.authored``). Anything else is served as the
+funder delivered it and is never refreshed or revoked -- a forged token set would otherwise
+name the endpoint the Runner posts the host's client secret to.
+
 **What a Tool Server sees** is the access token, under the slot's name, through the same
 resolver as any delivered value. The token set's own shape -- refresh token, endpoint,
 client -- is Runner-private and is in no contracts model.
@@ -43,15 +50,18 @@ import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Annotated, Final
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, StringConstraints, ValidationError
 
 from agentic_runner.credentials import CredentialResolver, UnresolvableCredentialReferenceError
 from agentic_runner.integrations.oauth import OAuthProvider, OAuthProviderError, ProviderResponse
 from agentic_runner.sealed_box import SealedCredentialStream
 from agentic_runner_contracts.oauth_connector import (
     OAUTH_WINDOW,
+    HttpsUrl,
     OAuthAuthorizeUrl,
     OAuthClient,
     OAuthDisconnect,
@@ -60,14 +70,19 @@ from agentic_runner_contracts.oauth_connector import (
     OAuthStart,
     SealedOAuthCode,
 )
-from agentic_runner_contracts.sealed_credential import CIPHERTEXT_MAX_CHARS, SealedCredential
+from agentic_runner_contracts.sealed_credential import (
+    CIPHERTEXT_MAX_CHARS,
+    SealedCredential,
+    SlotName,
+)
 
 __all__ = ["REFRESH_MARGIN", "TOKEN_SET_PREFIX", "OAuthConnectors", "TokenSet"]
 
 _logger = logging.getLogger(__name__)
 
-# Marks a slot's plaintext as a token set this module sealed, rather than a key a funder
-# delivered. Versioned like a seal domain, so a later shape is a new prefix.
+# Marks an authored slot value (``SealedCredentialStream.authored``) as a token set.
+# Versioned like a seal domain, so a later shape is a new prefix. Not what tells a token
+# set from a funder's key -- anyone can write a prefix; only the authored tag says that.
 TOKEN_SET_PREFIX: Final[str] = "agentic-os/oauth-token/v1:"
 
 # Two beats and change: a token refreshed this early is never spent expired by a Tool
@@ -80,6 +95,17 @@ _PENDING_MAX: Final[int] = 64
 _PROVIDER_ERROR = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 SlotKey = tuple[str, str]
+
+
+class _TokenSetBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    access_token: Annotated[str, StringConstraints(min_length=1)]
+    refresh_token: Annotated[str, StringConstraints(min_length=1)] | None
+    expires_at: AwareDatetime | None
+    token_endpoint: HttpsUrl
+    client_id: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+    client_secret_slot: SlotName | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,20 +134,21 @@ class TokenSet:
 
     @classmethod
     def decode(cls, value: str) -> TokenSet | None:
-        """The token set a slot holds, or None for any other value -- a funder's key."""
+        """The token set an authored slot value holds, or None for anything malformed.
+
+        Validated although only an authored value reaches here: the endpoint is where a
+        refresh sends the refresh token and the client secret, so it meets the same https
+        rule an :class:`OAuthClient` does, and a body this Runner cannot read must cost one
+        slot, never the beat.
+        """
 
         if not value.startswith(TOKEN_SET_PREFIX):
             return None
-        raw = json.loads(value[len(TOKEN_SET_PREFIX) :])
-        expires_at = raw.get("expires_at")
-        return cls(
-            access_token=str(raw["access_token"]),
-            refresh_token=raw.get("refresh_token"),
-            expires_at=datetime.fromisoformat(expires_at) if expires_at else None,
-            token_endpoint=str(raw["token_endpoint"]),
-            client_id=str(raw["client_id"]),
-            client_secret_slot=raw.get("client_secret_slot"),
-        )
+        try:
+            body = _TokenSetBody.model_validate_json(value[len(TOKEN_SET_PREFIX) :])
+        except ValidationError:
+            return None
+        return cls(**body.model_dump())
 
 
 @dataclass(slots=True)
@@ -417,9 +444,16 @@ class OAuthConnectors:
         served: dict[SlotKey, str] = {}
         carried: set[SlotKey] = set()
         for key, value in self._sealed.plaintext.items():
-            tokens = TokenSet.decode(value)
-            if tokens is None:
+            # Only a value this installation authored is ever read as a token set: its
+            # endpoint and client secret slot steer where the Runner sends a secret, and a
+            # funder can seal anything to the slot. Any other value is served as delivered.
+            body = self._sealed.authored(*key, value)
+            if body is None:
                 served[key] = value
+                continue
+            tokens = TokenSet.decode(body)
+            if tokens is None:
+                _logger.warning("OAuth token set for %s/%s is unreadable; not served", *key)
                 continue
             version = self._sealed.version(*key) or 0
             if version <= self._dropped.get(key, 0):
@@ -446,7 +480,7 @@ class OAuthConnectors:
             self._sealed.version(*key) or 0,
             self._dropped.get(key, 0),
         )
-        upload = self._sealed.seal_slot(*key, version=version, value=tokens.encode())
+        upload = self._sealed.seal_authored(*key, version=version, value=tokens.encode())
         if len(upload.ciphertext) > CIPHERTEXT_MAX_CHARS:
             return OAuthOutcomeKind.TOKEN_TOO_LARGE
         self._held[key] = _Held(tokens=tokens, version=version, upload=upload)
