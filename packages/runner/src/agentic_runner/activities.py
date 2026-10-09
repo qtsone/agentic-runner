@@ -118,6 +118,7 @@ from agentic_runner.message_store import MessageStore, WorkflowSignaller
 from agentic_runner.registration import RunnerRegistrationError
 from agentic_runner.runtime import verifier_command
 from agentic_runner.runtime.verifier_command import CommandValidationError
+from agentic_runner.usage_windows import UsageWindows
 from agentic_runner.workers._runtime_support import (
     RESERVED_DIRECTIVE_ENV,
     bound_text,
@@ -174,6 +175,7 @@ from agentic_runner_contracts.activity_io import (
     GitHubCallError,
     GitHubCallFailure,
     HarnessHold,
+    HarnessHoldKind,
     LearningDirectiveInput,
     LearningDirectiveOutput,
     MemberDirectiveInput,
@@ -1616,10 +1618,13 @@ class RunnerRalphActivities:
         tool_server_health: ToolServerHealthLog | None = None,
         attempt_records: AttemptRecords | None = None,
         directives_in_flight: DirectivesInFlight | None = None,
+        usage_windows: UsageWindows | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
         # Read by the harness self-test, which never runs beside a Contract's Directive.
         self._directives_in_flight = directives_in_flight or DirectivesInFlight()
+        # Local-agents 10: None off a user-hosted Runner, which reports no usage windows.
+        self._usage_windows = usage_windows
         # Wall-clock source for per-Directive runtime, accrued against the Budget's
         # wall-clock dimension (ADR-0007). Activities run outside the Temporal sandbox,
         # so a real monotonic clock is allowed here (it must never be used in the
@@ -5273,6 +5278,13 @@ class RunnerRalphActivities:
             error=result.error,
             now=datetime.now(UTC),
         )
+        if self._usage_windows is not None and runtime_state.contract_id:
+            self._usage_windows.after_directive(
+                runtime_state.contract_id,
+                runtime_state.cli_kind,
+                result.usage_windows,
+                usage_limit=hold is not None and hold.kind == HarnessHoldKind.USAGE_LIMIT,
+            )
         if hold is None:
             return None
         await self._fastapi_client.append_evidence(

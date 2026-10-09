@@ -31,11 +31,13 @@ from agentic_runner.activities import (
 )
 from agentic_runner.auth_mode import SHARED_RUNNER_SUBSCRIPTION_RULE
 from agentic_runner.credentials import CredentialResolver, EmptyCredentialStore
+from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.integrations.git.fake_workspace import FakeGitWorkspace
 from agentic_runner.integrations.github.fake_client import FakeGitHubClient
 from agentic_runner.llm_proxy import CredentialSlot, LlmProxy, SlotStore
 from agentic_runner.registration import RunnerState
 from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialStream, seal
+from agentic_runner.usage_windows import UsageWindows
 from agentic_runner.workers.agent_runtime import (
     AuthMode,
     DirectiveEvidence,
@@ -43,7 +45,7 @@ from agentic_runner.workers.agent_runtime import (
     DirectiveResult,
     RuntimeCapabilities,
 )
-from agentic_runner.workers.contract_isolation import ContractIsolation
+from agentic_runner.workers.contract_isolation import ContractIsolation, DirectiveSandbox
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.activity_io import (
     BranchPullRequestInput,
@@ -181,6 +183,7 @@ def _activities(
     tags: dict[str, str] | None = None,
     proxy: _Proxy | None = None,
     isolation: ContractIsolation | None = None,
+    usage_windows: UsageWindows | None = None,
 ) -> RunnerRalphActivities:
     return RunnerRalphActivities(
         client,  # type: ignore[arg-type]
@@ -193,6 +196,7 @@ def _activities(
         ),
         llm_proxy=proxy,  # type: ignore[arg-type]
         contract_isolation=isolation,
+        usage_windows=usage_windows,
     )
 
 
@@ -475,6 +479,39 @@ async def test_a_subscription_usage_limit_returns_a_hold_and_pushes_nothing(
         "contract_id": CONTRACT_ID,
     }
     assert "usage limit" not in repr(event)
+
+
+@pytest.mark.asyncio
+async def test_a_subscription_usage_limit_makes_the_usage_window_probe_due(
+    tmp_path: Path,
+) -> None:
+    probes: list[DirectiveSandbox] = []
+
+    async def probe(sandbox: DirectiveSandbox) -> list[Any]:
+        probes.append(sandbox)
+        return []
+
+    usage = UsageWindows(
+        probes={"codex_cli": probe},
+        sandbox_for=lambda _contract, _kind: DirectiveSandbox(
+            home_dir=tmp_path,
+            harness_config_dir=tmp_path,
+            max_processes=None,
+            max_memory_bytes=None,
+        ),
+        in_flight=DirectivesInFlight(),
+        # Time stands still: only the usage limit can make the next probe due.
+        monotonic=lambda: 0.0,
+    )
+    targets = [(CONTRACT_ID, "codex_cli")]
+    await usage.run_due(targets)
+
+    await _activities(
+        _Client(), _LimitedCodex(), tmp_path=tmp_path, host_party="user", usage_windows=usage
+    ).create_or_update_branch_pr(_branch_pr_input("user"))
+    await usage.run_due(targets)
+
+    assert len(probes) == 2
 
 
 @pytest.mark.asyncio

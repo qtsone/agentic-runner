@@ -61,6 +61,7 @@ from agentic_runner.attempts import (
 )
 from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV, call
 from agentic_runner.llm_proxy import PROXY_API_KEY_ENV, PROXY_BASE_URL_ENV
+from agentic_runner.usage_windows import claude_rate_limit_windows
 from agentic_runner.workers._runtime_support import (
     apply_extra_env,
     bound_text,
@@ -85,6 +86,7 @@ from agentic_runner.workers.command_policy import CommandPolicy, evaluate_comman
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
+from agentic_runner_contracts.runner_registration import UsageWindow
 
 __all__ = ["ACP_BRIDGES", "AcpBridge", "AcpRuntime"]
 
@@ -218,6 +220,7 @@ class _Turn:
     output: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     held: bool = False
+    usage_windows: tuple[UsageWindow, ...] = ()
 
 
 class AcpRuntime:
@@ -594,6 +597,7 @@ class AcpRuntime:
                 request, directive_workspace_id, command_hash, guard_mode, notes
             ),
             model_usage=model_usage,
+            usage_windows=turn.usage_windows,
         )
 
     def _evidence(
@@ -883,7 +887,17 @@ def _offers_mode(session: Mapping[str, Any], mode_id: str) -> bool:
 
 def _collect_update(params: Mapping[str, Any], turn: _Turn) -> None:
     update = params.get("update")
-    if not isinstance(update, Mapping) or update.get("sessionUpdate") != "agent_message_chunk":
+    if not isinstance(update, Mapping):
+        return
+    if update.get("sessionUpdate") == "usage_update":
+        # claude-agent-acp's relay of the CLI's rate-limit event; the latest one wins.
+        meta = update.get("_meta")
+        if isinstance(meta, Mapping) and (
+            windows := claude_rate_limit_windows(meta.get("_claude/rateLimit"))
+        ):
+            turn.usage_windows = tuple(windows)
+        return
+    if update.get("sessionUpdate") != "agent_message_chunk":
         return
     content = update.get("content")
     if isinstance(content, Mapping) and content.get("type") == "text":

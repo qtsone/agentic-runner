@@ -12,6 +12,7 @@ import re
 import sys
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,7 @@ from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
-from agentic_runner_contracts.runner_registration import CliVersion
+from agentic_runner_contracts.runner_registration import CliVersion, UsageWindow
 
 FAKE_AGENT = Path(__file__).parents[1] / "fixtures" / "fake_acp_agent.py"
 PROXY = "http://127.0.0.1:4000/attempt/a1"
@@ -579,6 +580,52 @@ async def test_usage_comes_from_the_prompt_responses_model_usage(tmp_path: Path)
             reasoning_output_tokens=3,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_the_bridges_rate_limit_events_become_the_directives_usage_windows(
+    tmp_path: Path,
+) -> None:
+    def usage_update(five_hour: float) -> dict[str, Any]:
+        # claude-agent-acp 0.88.0's relay of a `rate_limit_event` (acp-agent.js).
+        return {
+            "sessionUpdate": "usage_update",
+            "used": 18_000,
+            "size": 200_000,
+            "_meta": {
+                "_claude/rateLimit": {
+                    "status": "allowed",
+                    "rateLimitType": "five_hour",
+                    "utilization": five_hour,
+                    "unifiedWindows": {
+                        "five_hour": {"utilization": five_hour, "resetsAt": 1_791_559_200},
+                        "seven_day": {"utilization": 0.25, "resetsAt": 1_791_976_800},
+                    },
+                }
+            },
+        }
+
+    fake = Fake(
+        tmp_path,
+        updates=[
+            usage_update(0.4),
+            {"sessionUpdate": "usage_update", "used": 1},
+            usage_update(0.5),
+        ],
+    )
+    request = _request(tmp_path, fake, cli_kind="claude_code", auth_mode=AuthMode.SUBSCRIPTION)
+
+    result = await _runtime(tmp_path, "claude_code").execute_directive(request)
+
+    assert result.usage_windows == (
+        UsageWindow(
+            name="five_hour", used_percent=50, resets_at=datetime(2026, 10, 9, 15, 20, tzinfo=UTC)
+        ),
+        UsageWindow(
+            name="seven_day", used_percent=25, resets_at=datetime(2026, 10, 14, 11, 20, tzinfo=UTC)
+        ),
+    )
+    assert result.stdout == "done"
 
 
 def test_model_usage_reports_in_the_shapes_the_usage_route_prices() -> None:

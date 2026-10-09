@@ -20,6 +20,7 @@ from typing import Protocol, runtime_checkable
 
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
+from agentic_runner_contracts.runner_registration import UsageWindow
 
 
 class AuthMode(StrEnum):
@@ -131,6 +132,9 @@ class DirectiveResult:
     # The harness's own per-model usage, where its protocol carries one (ACP). Empty means
     # the caller reads usage off ``stdout`` as before.
     model_usage: tuple[ModelUsage, ...] = ()
+    # The subscription usage windows the harness's own stream last reported, where it
+    # carries them (claude-agent-acp's rate-limit events, local-agents 10).
+    usage_windows: tuple[UsageWindow, ...] = ()
 
 
 # The permission mode of a runtime whose guard configuration is incomplete: it refuses
