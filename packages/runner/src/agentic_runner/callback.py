@@ -4,7 +4,7 @@ Buildkite's Job API, narrowed to what ADR-0011 §9 can defend. For each Directiv
 the Runner mints 32 random bytes as a bearer and opens a Unix socket **owned by the
 Contract's uid** (map ticket 17 A11); the Agent Runtime subprocess receives the socket
 path and the bearer in its environment and nothing else. ``agentic-runner annotate |
-artifact upload | verb`` speak to it.
+artifact upload | verb | repo`` speak to it.
 
 What makes that not a credential: the token's only audience is this Runner's own socket,
 it is useless off the box, it dies with the attempt, and it is a *correlator* rather than
@@ -65,6 +65,8 @@ __all__ = [
     "MessageListResponse",
     "MessageSendRequest",
     "MessageSendResponse",
+    "RepoRequest",
+    "RepoResponse",
     "Route",
     "VerbRequest",
     "VerbResponse",
@@ -125,6 +127,28 @@ class VerbResponse(BaseModel):
     decision: str
     allowed: bool
     reason: str
+
+
+class RepoRequest(BaseModel):
+    """``agentic-runner repo read | branch`` (ADR-0018 §5, §7): one repository, by name.
+
+    ``base_ref`` is for `branch` only; empty cuts the work branch from the repository's
+    default branch.
+    """
+
+    repository: str = Field(max_length=200, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    base_ref: str = Field(default="", max_length=255)
+
+
+class RepoResponse(BaseModel):
+    """The seam's verdict and, when allowed, where the checkout is in the Workspace."""
+
+    repository: str
+    allowed: bool
+    decision: str
+    reason: str
+    path: str = ""
+    product_id: str = ""
 
 
 class MessageSendRequest(BaseModel):
@@ -200,6 +224,8 @@ ROUTES: Final[dict[tuple[str, str], Route]] = {
     ("POST", "/v0/message/send"): Route(MessageSendRequest, MessageSendResponse, "message_send"),
     ("POST", "/v0/message/list"): Route(MessageListRequest, MessageListResponse, "message_list"),
     ("POST", "/v0/ask"): Route(AskRequest, AskResponse, "ask"),
+    ("POST", "/v0/repo/read"): Route(RepoRequest, RepoResponse, "repo_read"),
+    ("POST", "/v0/repo/branch"): Route(RepoRequest, RepoResponse, "repo_branch"),
 }
 
 
@@ -213,6 +239,8 @@ class CallbackHandlers:
     message_send: Callable[[MessageSendRequest], Awaitable[MessageSendResponse]]
     message_list: Callable[[MessageListRequest], Awaitable[MessageListResponse]]
     ask: Callable[[AskRequest], Awaitable[AskResponse]]
+    repo_read: Callable[[RepoRequest], Awaitable[RepoResponse]]
+    repo_branch: Callable[[RepoRequest], Awaitable[RepoResponse]]
 
 
 class CallbackError(RuntimeError):

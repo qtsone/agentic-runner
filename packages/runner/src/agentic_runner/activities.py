@@ -64,6 +64,8 @@ from agentic_runner.callback import (
     MessageListResponse,
     MessageSendRequest,
     MessageSendResponse,
+    RepoRequest,
+    RepoResponse,
     VerbRequest,
     VerbResponse,
 )
@@ -90,6 +92,7 @@ from agentic_runner.hooks import (
 )
 from agentic_runner.integrations.git.contracts import (
     AdoptWorkspaceRequest,
+    CheckoutDefaultBranchRequest,
     CheckoutWorkBranchRequest,
     CloneWorkspaceRequest,
     CommitAllRequest,
@@ -182,6 +185,7 @@ from agentic_runner_contracts.activity_io import (
     MemberDirectiveInput,
     MemberDirectiveOutput,
     OwnerConfirmationPending,
+    ProductBinding,
     ProposedLesson,
     PullRequestCloseInput,
     PullRequestCloseOutput,
@@ -244,6 +248,7 @@ from agentic_runner_contracts.github_port import (
     ReviewRequest,
 )
 from agentic_runner_contracts.grants import (
+    BRANCH_VERB,
     CHANNEL_READ_VERB,
     CHANNEL_RESOURCE_TYPE,
     CHANNEL_WRITE_VERB,
@@ -252,6 +257,7 @@ from agentic_runner_contracts.grants import (
     PR_OPEN_VERB,
     PR_REVIEW_VERB,
     PUSH_VERB,
+    READ_VERB,
     REPO_RESOURCE_TYPE,
     UNENFORCED_SNAPSHOT,
     Decision,
@@ -264,6 +270,7 @@ from agentic_runner_contracts.routing import (
     RoutingRefusedError,
     RunnerRoutingIdentity,
     assert_routed,
+    selector_satisfied,
 )
 from agentic_runner_contracts.runtime_context import (
     EGRESS_ALLOW_LIST_KEY,
@@ -286,6 +293,12 @@ _PERSONA_INSTRUCTIONS_LIMIT_BYTES = 8_192
 _MERGE_ERROR_SUMMARY_LIMIT = 512
 
 _GRANT_EVALUATION_SOURCE = "ralph.grant_evaluation"
+
+# ADR-0018 §5: the verbs that write to a repository, and so may touch only the Product a
+# Work Record is bound to. A read ranges over every repository in reach.
+_REPOSITORY_WRITE_VERBS = frozenset(
+    {BRANCH_VERB, PUSH_VERB, PR_OPEN_VERB, PR_REVIEW_VERB, PR_MERGE_VERB, PR_COMMENT_VERB}
+)
 
 _DEFAULT_CLI_KIND = "codex_cli"
 
@@ -503,6 +516,11 @@ class RunnerRalphFastApiClient(Protocol):
 
     async def get_question(self, question_id: str) -> dict[str, Any]:
         """A Question and its answer, for the Directive its hold wakes (PRD issue 60)."""
+
+    async def bind_product(
+        self, work_record_id: str, *, repository: str, base_branch: str
+    ) -> dict[str, Any]:
+        """The first `repo.branch` binds the Work Record's Product (ADR-0018 §5)."""
 
     async def get_directive_usage(
         self,
@@ -1204,6 +1222,49 @@ def _with_question[Output: (BranchPullRequestOutput, FixDirectiveOutput)](
     the loop holds on it once the Directive has run, whatever else the Directive did."""
 
     return replace(output, question=asked[0]) if asked else output
+
+
+def _with_binding(output: FixDirectiveOutput, bound: list[ProductBinding]) -> FixDirectiveOutput:
+    """The Product the attempt's `repo branch` bound rides out on the output (ADR-0018 §5),
+    and the bound repository's checkout is the Workspace from here on (§7)."""
+
+    if not bound or not output.workspace_path:
+        return output
+    binding = bound[0]
+    return replace(
+        output,
+        product_binding=binding,
+        workspace_path=str(_repository_checkout(Path(output.workspace_path), binding.repository)),
+    )
+
+
+def _repository_checkout(workspace_path: Path, repository: str) -> Path:
+    """Where an Organisation-scoped Work Record checks ``repository`` out (ADR-0018 §7).
+
+    Beneath its own Workspace, keyed on the repository's name. The Contract owns that
+    directory and its Directive is running while the Runner clones, so a component it
+    turned into a symlink is refused rather than followed out of the Workspace.
+    """
+
+    owner, name = _split_repo(repository)
+    root = workspace_path.resolve()
+    checkout = root / owner / name
+    for component in (root / owner, checkout):
+        if component.is_symlink():
+            raise GitWorkspacePolicyError(f"'{component}' is a symlink; refusing to check out")
+    return checkout
+
+
+def _bound_checkout(workspace_path: Path, carried: str) -> Path:
+    """The Workspace a Directive after binding runs in: the bound checkout the previous
+    Directive handed back, when it lies beneath this Work Record's own Workspace."""
+
+    if not carried:
+        return workspace_path
+    checkout = Path(carried).resolve()
+    if workspace_path.resolve() in checkout.parents and checkout.is_dir():
+        return checkout
+    return workspace_path
 
 
 def _question_prompt(question: Mapping[str, Any]) -> str:
@@ -1948,10 +2009,13 @@ class RunnerRalphActivities:
                 )
             contract_id = runtime_state.contract_id
             await self._record_uid_allocation(request.work_record_id, contract_id)
-            workspace_path = self._prepare_workspace(
-                workspace_root=workspace_root,
-                contract_id=contract_id,
-                work_record_id=request.work_record_id,
+            workspace_path = _bound_checkout(
+                self._prepare_workspace(
+                    workspace_root=workspace_root,
+                    contract_id=contract_id,
+                    work_record_id=request.work_record_id,
+                ),
+                request.workspace_path,
             )
             runtime_state = replace(runtime_state, workspace_path=workspace_path)
             attempt = await attempt_stack.enter_async_context(
@@ -2524,6 +2588,7 @@ class RunnerRalphActivities:
         reserve_max_tokens: int | None = None,
         mcp_plan: McpPlan | None = None,
         asked: list[QuestionAsked] | None = None,
+        bound: list[ProductBinding] | None = None,
     ) -> AsyncIterator[_DirectiveAttempt]:
         """Open one attempt's hook lifecycle and its callback socket (PRD issue 45).
 
@@ -2588,6 +2653,7 @@ class RunnerRalphActivities:
                             workspace_path,
                             directive_number=directive_number,
                             asked=asked,
+                            bound=bound,
                         ),
                         uid=uid,
                     )
@@ -3091,6 +3157,7 @@ class RunnerRalphActivities:
         *,
         directive_number: int = 0,
         asked: list[QuestionAsked] | None = None,
+        bound: list[ProductBinding] | None = None,
     ) -> CallbackHandlers:
         """What ``agentic-runner annotate | artifact upload | verb`` actually do.
 
@@ -3154,7 +3221,11 @@ class RunnerRalphActivities:
         async def verb(request: VerbRequest) -> VerbResponse:
             try:
                 decision = await self._evaluate_verb(
-                    work_record_id, state, verb=request.verb, identifier=request.resource
+                    work_record_id,
+                    state,
+                    verb=request.verb,
+                    identifier=request.resource,
+                    bound_product=bound[0].product_id if bound else None,
                 )
             except SeamUnavailableError as error:
                 # The Directive asked over its own socket, so it is answered rather than
@@ -3321,6 +3392,18 @@ class RunnerRalphActivities:
                 addressed_to=str(answer.get("addressed_to") or ""),
             )
 
+        bindings: list[ProductBinding] = [] if bound is None else bound
+
+        async def repo_read(request: RepoRequest) -> RepoResponse:
+            return await self._repo_callback(
+                work_record_id, state, workspace_path, request, verb=READ_VERB, bound=bindings
+            )
+
+        async def repo_branch(request: RepoRequest) -> RepoResponse:
+            return await self._repo_callback(
+                work_record_id, state, workspace_path, request, verb=BRANCH_VERB, bound=bindings
+            )
+
         return CallbackHandlers(
             annotate=annotate,
             artifact=artifact,
@@ -3328,6 +3411,8 @@ class RunnerRalphActivities:
             message_send=message_send,
             message_list=message_list,
             ask=ask,
+            repo_read=repo_read,
+            repo_branch=repo_branch,
         )
 
     def _open_store(self, state: _RuntimeContextState) -> tuple[MessageStore | None, str]:
@@ -3673,6 +3758,7 @@ class RunnerRalphActivities:
         verb: str,
         identifier: str,
         resource_type: str = REPO_RESOURCE_TYPE,
+        bound_product: str | None = None,
     ) -> VerbDecision:
         """The one local Grant evaluation, and the Evidence Event that records it.
 
@@ -3686,18 +3772,227 @@ class RunnerRalphActivities:
         await self._require_live_link(
             work_record_id, state, verb=verb, identifier=identifier, resource_type=resource_type
         )
+        snapshot = self._current_snapshot(state)
         decision = decide_verb(
-            self._current_snapshot(state),
+            snapshot,
             verb=verb,
             identifier=identifier,
             resource_type=resource_type,
         )
+        evidence = decision.evidence()
+        refusal = (
+            None
+            if decision.decision is Decision.DENY or resource_type != REPO_RESOURCE_TYPE
+            else self._product_scope_refusal(
+                state,
+                snapshot,
+                verb=verb,
+                identifier=identifier,
+                bound_product=bound_product or state.product_id,
+            )
+        )
+        if refusal is not None:
+            reason, detail = refusal
+            decision = replace(
+                decision,
+                decision=Decision.DENY,
+                reason=reason,
+                deciding_link=None,
+                deciding_entry=None,
+            )
+            evidence = {**decision.evidence(), **detail}
         await self._fastapi_client.append_evidence(
             work_record_id,
             source=_GRANT_EVALUATION_SOURCE,
-            payload=decision.evidence(),
+            payload=evidence,
         )
         return decision
+
+    def _product_scope_refusal(
+        self,
+        state: _RuntimeContextState,
+        snapshot: GrantSnapshot,
+        *,
+        verb: str,
+        identifier: str,
+        bound_product: str | None,
+    ) -> tuple[str, dict[str, object]] | None:
+        """Why a verb the Grant allows is still refused for the Product it touches.
+
+        Two rules on top of the Grant (ADR-0018), neither of which widens anything:
+
+        - §5: once a Work Record is bound, a write to a repository of a *second* Product
+          is refused -- one branch and one pull request per Work Record (ADR-0012), and
+          work across Products is an Epic, so the remedy is a child on that Product.
+        - §6: before binding, the Runner was routed on the Contract's selector alone, so
+          before any verb on a repository it checks its own tags against the selector of
+          the Product that owns it, and fails closed. After binding, routing carries the
+          Product's selector and ``assert_routed`` already holds it.
+
+        ``None`` when neither applies, including a repository no registry row in the
+        snapshot names a Product for: the Grant has already answered that one.
+        """
+
+        product_id = snapshot.product_of(identifier=identifier)
+        if product_id is None:
+            return None
+        if bound_product and verb in _REPOSITORY_WRITE_VERBS and product_id != bound_product:
+            return (
+                f"this Work Record is bound to Product {bound_product}, and {identifier} "
+                f"belongs to Product {product_id}: open a child Work Record on that Product "
+                "with work.open",
+                {
+                    "event": "work_record.second_product_refused",
+                    "bound_product_id": bound_product,
+                    "product_id": product_id,
+                    "remedy": "work.open",
+                },
+            )
+        if state.repository or self._routing_identity is None:
+            return None
+        selector = snapshot.runner_selector_of(product_id)
+        if selector is not None and selector_satisfied(selector, self._routing_identity.tags):
+            return None
+        return (
+            f"this Runner's tags do not satisfy the Runner selector of Product {product_id}, "
+            f"which owns {identifier}",
+            {
+                "event": "directive.repository_refused",
+                "product_id": product_id,
+                "runner_id": str(self._routing_identity.runner_id),
+                "selector": dict(selector or {}),
+            },
+        )
+
+    async def _repo_callback(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        workspace_path: Path,
+        request: RepoRequest,
+        *,
+        verb: str,
+        bound: list[ProductBinding],
+    ) -> RepoResponse:
+        """``agentic-runner repo read | branch``: an Organisation-scoped Work Record's
+        Workspace (ADR-0018 §5, §7).
+
+        Before binding, the Workspace is an empty directory and every repository read
+        is checked out beneath it. `branch` cuts the Work Record's work branch in one of
+        those checkouts and asks the control plane to bind the Product that owns the
+        repository; that checkout is the Workspace from then on, and the next Directive
+        is an ordinary Product-scoped one in it.
+
+        Both verbs go through `_evaluate_verb`, so they are evaluated, refused and
+        recorded exactly as the activity seams are.
+        """
+
+        def refused(reason: str, decision: str = Decision.DENY.value) -> RepoResponse:
+            return RepoResponse(
+                repository=request.repository, allowed=False, decision=decision, reason=reason
+            )
+
+        if self._git_workspace is None or self._workspace_root is None:
+            return refused("this Runner has no git workspace")
+        if state.repository:
+            return refused(
+                f"this Work Record is bound to {state.repository}; its Workspace is that checkout"
+            )
+        if bound and verb == BRANCH_VERB and bound[0].repository == request.repository:
+            return RepoResponse(
+                repository=request.repository,
+                allowed=True,
+                decision=Decision.ALLOW.value,
+                reason="already bound to this repository",
+                path=str(_repository_checkout(workspace_path, request.repository)),
+                product_id=bound[0].product_id,
+            )
+        try:
+            decision = await self._evaluate_verb(
+                work_record_id,
+                state,
+                verb=verb,
+                identifier=request.repository,
+                bound_product=bound[0].product_id if bound else None,
+            )
+        except SeamUnavailableError as error:
+            return refused(error.reason)
+        if not decision.allowed:
+            return refused(decision.reason, decision.decision.value)
+        if bound and verb == BRANCH_VERB:
+            return refused(
+                f"this Work Record is bound to {bound[0].repository}: one branch and one pull "
+                "request per Work Record; open a child Work Record with work.open"
+            )
+        checkout = _repository_checkout(workspace_path, request.repository)
+        git_workspace = self._git_workspace
+
+        async def checkout_default_branch() -> str:
+            checked_out = await asyncio.to_thread(
+                git_workspace.checkout_default_branch,
+                CheckoutDefaultBranchRequest(
+                    repo_full_name=request.repository, workspace_path=checkout
+                ),
+            )
+            return checked_out.base_branch
+
+        fresh = not checkout.is_dir()
+        # On an existing checkout this re-registers it with the adapter, which a Runner
+        # restart between two Directives would otherwise have forgotten.
+        await asyncio.to_thread(
+            git_workspace.clone_repository,
+            CloneWorkspaceRequest(
+                repo_full_name=request.repository,
+                remote_url=_github_remote_url(request.repository),
+                workspace_root=self._require_workspace_root(),
+                workspace_path=checkout,
+            ),
+        )
+        default_branch = await checkout_default_branch() if fresh else ""
+        product_id = ""
+        if verb == BRANCH_VERB:
+            base_ref = request.base_ref
+            if base_ref:
+                await asyncio.to_thread(
+                    git_workspace.fetch_base_branch,
+                    FetchBranchRequest(
+                        repo_full_name=request.repository,
+                        workspace_path=checkout,
+                        base_branch=base_ref,
+                    ),
+                )
+            else:
+                base_ref = default_branch or await checkout_default_branch()
+            await asyncio.to_thread(
+                git_workspace.checkout_work_branch,
+                CheckoutWorkBranchRequest(
+                    repo_full_name=request.repository,
+                    workspace_path=checkout,
+                    base_branch=base_ref,
+                    work_branch=state.work_branch,
+                ),
+            )
+            answer = await self._fastapi_client.bind_product(
+                work_record_id, repository=request.repository, base_branch=base_ref
+            )
+            product_id = str(answer.get("product_id") or "")
+            if answer.get("decision") != Decision.ALLOW.value or not product_id:
+                return refused(str(answer.get("reason") or "the control plane refused to bind"))
+            bound.append(
+                ProductBinding(
+                    repository=request.repository, base_ref=base_ref, product_id=product_id
+                )
+            )
+        if self._contract_isolation is not None:
+            self._contract_isolation.hand_workspace_to_contract(state.contract_id, checkout)
+        return RepoResponse(
+            repository=request.repository,
+            allowed=True,
+            decision=decision.decision.value,
+            reason=decision.reason,
+            path=str(checkout),
+            product_id=product_id,
+        )
 
     def _current_snapshot(self, state: _RuntimeContextState) -> GrantSnapshot:
         """The snapshot to decide *this* verb on, not the one the activity started with.
@@ -4890,13 +5185,16 @@ class RunnerRalphActivities:
         kind: _InPlaceDirective,
     ) -> FixDirectiveOutput:
         asked: list[QuestionAsked] = []
-        return _with_question(await self._run_in_place_turn(request, kind, asked), asked)
+        bound: list[ProductBinding] = []
+        ran = await self._run_in_place_turn(request, kind, asked, bound)
+        return _with_binding(_with_question(ran, asked), bound)
 
     async def _run_in_place_turn(
         self,
         request: FixDirectiveInput | MemberDirectiveInput,
         kind: _InPlaceDirective,
         asked: list[QuestionAsked],
+        bound: list[ProductBinding],
     ) -> FixDirectiveOutput:
         """One runtime turn in the Workspace the first Directive cloned, then push.
 
@@ -4977,6 +5275,7 @@ class RunnerRalphActivities:
                     sandbox=self._contract_sandbox(state),
                     mcp_plan=mcp_plan,
                     asked=asked,
+                    bound=bound,
                 )
             )
             # No checkout phase here: an in-place Directive runs in the Workspace the
@@ -5085,10 +5384,12 @@ class RunnerRalphActivities:
                     )
                 raise RuntimeError("Codex CLI fix directive failed")
             # A report's directory is no checkout (console-v2 issue 23): what the Agent
-            # wrote there stays there, and its report left as a Message.
+            # wrote there stays there, and its report left as a Message. Nor is an
+            # Organisation-scoped Work Record's before it binds (ADR-0018 §7): what it
+            # changed in the checkout it bound is committed by the next Directive.
             git_evidence = (
                 None
-                if state.kind == KIND_REPORT
+                if state.kind == KIND_REPORT or not state.repository
                 else self._git_workspace.collect_git_evidence(
                     state.workspace_path,
                     output_limit_bytes=_GIT_EVIDENCE_LIMIT_BYTES,
@@ -5426,7 +5727,8 @@ class RunnerRalphActivities:
         re-assembled tree is the work as it was last pushed, not a fresh branch off base.
 
         A report has no branch (console-v2 issue 23): its Workspace is the empty
-        directory alone, on its first Directive and after any re-route alike.
+        directory alone, on its first Directive and after any re-route alike. So is an
+        Organisation-scoped Work Record's before it binds a Product (ADR-0018 §7).
         """
 
         await self._assert_routed(request)
@@ -5441,7 +5743,7 @@ class RunnerRalphActivities:
             contract_id=contract_id,
             work_record_id=request.work_record_id,
         )
-        if state.kind == KIND_REPORT:
+        if state.kind == KIND_REPORT or not state.repository:
             await self._fastapi_client.append_evidence(
                 request.work_record_id,
                 source=_ROUTING_EVIDENCE_SOURCE,

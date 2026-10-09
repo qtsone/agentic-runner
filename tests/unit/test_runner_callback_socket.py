@@ -165,6 +165,9 @@ def test_no_route_in_the_table_carries_a_credential_shaped_field() -> None:
         ("POST", "/v0/message/list"),
         # PRD issue 60: `work.ask`, the Question seam.
         ("POST", "/v0/ask"),
+        # ADR-0018 §5, §7: an Organisation-scoped Work Record's reads and its binding.
+        ("POST", "/v0/repo/read"),
+        ("POST", "/v0/repo/branch"),
     }
     models: list[type[BaseModel]] = []
     for route in ROUTES.values():

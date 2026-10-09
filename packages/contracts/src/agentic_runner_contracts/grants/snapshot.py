@@ -27,6 +27,10 @@ CHANNEL_RESOURCE_TYPE: Final = "channel"
 
 CHANNEL_READ_VERB: Final = "read"
 CHANNEL_WRITE_VERB: Final = "write"
+# ADR-0018 §5: an Organisation-scoped Work Record reads any repository in reach, and
+# its first `branch` binds the Product that owns it.
+READ_VERB: Final = "read"
+BRANCH_VERB: Final = "branch"
 PUSH_VERB: Final = "push"
 PR_OPEN_VERB: Final = "pr.open"
 PR_REVIEW_VERB: Final = "pr.review"

@@ -13,6 +13,7 @@ from uuid import UUID
 
 from agentic_runner.integrations.git.contracts import (
     AdoptWorkspaceRequest,
+    CheckoutDefaultBranchRequest,
     CheckoutWorkBranchRequest,
     CheckoutWorkBranchResult,
     CloneWorkspaceRequest,
@@ -381,6 +382,36 @@ class LocalGitWorkspace:
         self._require_same_repo(record, request.repo_full_name)
         self._run_git(
             ["fetch", "origin", f"{base_branch}:refs/remotes/origin/{base_branch}"],
+            cwd=record.workspace_path,
+            record=record,
+        )
+        return FetchBranchResult(
+            repo_full_name=request.repo_full_name,
+            workspace_path=record.workspace_path,
+            base_branch=base_branch,
+        )
+
+    def checkout_default_branch(self, request: CheckoutDefaultBranchRequest) -> FetchBranchResult:
+        record = self._get_workspace(request.workspace_path)
+        self._require_same_repo(record, request.repo_full_name)
+        # Asked of the remote, not read off ``refs/remotes/origin/HEAD``: a clone sets that
+        # ref only when the remote's HEAD resolved at clone time.
+        advertised = self._run_git(
+            ["ls-remote", "--symref", "origin", "HEAD"],
+            cwd=record.workspace_path,
+            record=record,
+        ).stdout
+        remote_head = next(
+            (
+                line.split()[1]
+                for line in advertised.splitlines()
+                if line.startswith("ref: ") and line.endswith("\tHEAD")
+            ),
+            "",
+        )
+        base_branch = validate_base_branch(remote_head.removeprefix("refs/heads/"))
+        self._run_git(
+            ["checkout", "--detach", f"refs/remotes/origin/{base_branch}"],
             cwd=record.workspace_path,
             record=record,
         )

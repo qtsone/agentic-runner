@@ -175,6 +175,21 @@ class QuestionAsked:
     owner_confirmation: OwnerConfirmationPending | None = None
 
 
+@dataclass(frozen=True)
+class ProductBinding:
+    """An Organisation-scoped Work Record's first `repo.branch` bound it (ADR-0018 §5).
+
+    The control plane already set ``product_id`` and recorded `work_record.product_bound`
+    when the callback answered; this tells the loop that the Directive's Workspace is now
+    the checkout of ``repository`` on its work branch, cut from ``base_ref``, and that
+    the Work Record carries on as an ordinary Product-scoped one.
+    """
+
+    repository: str
+    base_ref: str
+    product_id: str
+
+
 class HarnessHoldKind(StrEnum):
     """Why a subscription-mode harness stopped on its person's account (local-agents 08)."""
 
@@ -676,6 +691,8 @@ class FixDirectiveOutput:
     question: QuestionAsked | None = None
     # Local-agents 08: the subscription harness hit its usage limit or lost its sign-in.
     harness_hold: HarnessHold | None = None
+    # ADR-0018 §5: this Directive bound its Organisation-scoped Work Record to a Product.
+    product_binding: ProductBinding | None = None
 
 
 @dataclass(frozen=True)

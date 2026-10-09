@@ -61,6 +61,14 @@ class FetchBranchResult:
 
 
 @dataclass(frozen=True)
+class CheckoutDefaultBranchRequest:
+    """Request to check out ``origin``'s default branch, detached, in a fresh clone."""
+
+    repo_full_name: str
+    workspace_path: Path
+
+
+@dataclass(frozen=True)
 class CheckoutWorkBranchRequest:
     """Request to create or reset a generated work branch from the base branch."""
 
@@ -171,6 +179,13 @@ class GitWorkspace(Protocol):
 
     def fetch_base_branch(self, request: FetchBranchRequest) -> FetchBranchResult:
         """Fetch the requested base branch into a workspace."""
+
+    def checkout_default_branch(self, request: CheckoutDefaultBranchRequest) -> FetchBranchResult:
+        """Check out the remote's default branch detached; its name is the result's base.
+
+        A repository an Organisation-scoped Work Record reads has no base branch of its
+        own yet (ADR-0018 §7): the clone's ``origin/HEAD`` is the one it reads.
+        """
 
     def checkout_work_branch(
         self,
