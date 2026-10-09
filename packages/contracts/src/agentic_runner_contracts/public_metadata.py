@@ -267,6 +267,19 @@ def system_job_id(job: str) -> str:
     return _require_verb("job", job)
 
 
+def routine_schedule_id(*, routine_id: UUID) -> str:
+    """The id of one Routine's Schedule and of the workflow each of its firings starts
+    (console-v2 issue 15, ADR-0017 §2).
+
+    Stable per Routine, as :func:`system_job_id` is per job, so ensuring the Schedule on
+    every edit re-points the one already there. Temporal suffixes the scheduled time to
+    the workflow id of each firing, which keeps two firings of one Routine distinct. The
+    Routine's title and instructions are operator-typed free text and never enter it.
+    """
+
+    return f"routine{_SEPARATOR}{routine_id}"
+
+
 def triage_workflow_id(*, nonce: UUID) -> str:
     """The id of a Triage Directive workflow, which drives no Work Record yet.
 
