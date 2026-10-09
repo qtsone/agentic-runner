@@ -98,6 +98,9 @@ class ContextAssemblyInput:
     repository: str
     base_ref: str
     reviewer: str | None
+    # ADR-0018 §5: re-assembled once an Organisation-scoped Work Record has bound its
+    # Product. Its Directives have run, so the lifecycle is not moved back to PLANNING.
+    after_binding: bool = False
 
 
 @dataclass(frozen=True)
