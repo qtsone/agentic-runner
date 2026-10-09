@@ -1,8 +1,9 @@
 """A Profile-named ACP command, through the real activity (local-agents 18).
 
 What only the activity can show: the command reaches the Agent Runtime on the request for
-a kind with no pinned bridge, and one sent for a pinned kind is refused non-retryably with
-Evidence naming the kind and the executable -- never an argument -- and spawns nothing.
+a kind with no pinned bridge, and one sent for a pinned kind, or whose program is not the
+executable the host pinned, is refused non-retryably with Evidence naming the kind and the
+executable -- never an argument -- and spawns nothing.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from test_runner_auth_mode_directives import (
 )
 
 from agentic_runner.activities import AGENT_RUNTIME_EVIDENCE_SOURCE, RunnerRalphActivities
+from agentic_runner.workers.acp_runtime import AcpRuntime
+from agentic_runner.workers.settings import WorkerSettings
 
 COMMAND = ["/opt/acp/gemini", "--experimental-acp", "--api-key=sk-live-0123456789abcdef"]
 
@@ -75,4 +78,36 @@ async def test_a_profile_named_command_for_a_pinned_kind_is_refused_with_evidenc
         "cli_kind": cli_kind,
         "executable": "gemini",
     }
+    assert "sk-live" not in repr(client.evidence)
+
+
+@pytest.mark.parametrize("pinned", ["/usr/local/bin/gemini", None])
+@pytest.mark.asyncio
+async def test_a_command_the_host_did_not_pin_is_refused_with_evidence(
+    tmp_path: Path, pinned: str | None
+) -> None:
+    client = _ProfileClient("gemini_cli")
+    runtime = AcpRuntime(
+        cli_kind="gemini_cli",
+        settings=WorkerSettings(
+            TEMPORAL_ADDRESS="127.0.0.1:7233",
+            INTERNAL_FASTAPI_BASE_URL="http://agentic-api.internal:8000",
+            WORKSPACE_ROOT=tmp_path,
+            ACP_PROFILE_CLI_KINDS=f"gemini_cli={pinned}" if pinned else "",
+        ),
+    )
+
+    with pytest.raises(ApplicationError) as refused:
+        await _serving(
+            client,
+            runtime,  # type: ignore[arg-type]
+            "gemini_cli",
+            tmp_path,
+        ).create_or_update_branch_pr(_branch_pr_input("user"))
+
+    assert refused.value.non_retryable is True
+    [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
+    assert evidence["event"] == "directive.acp_command_refused"
+    assert evidence["cli_kind"] == "gemini_cli"
+    assert evidence["executable"] == "gemini"
     assert "sk-live" not in repr(client.evidence)

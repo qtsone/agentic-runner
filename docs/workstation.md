@@ -25,10 +25,12 @@ macOS (`tests/install/workstation.sh`).
    left out.
 
    Any other ACP harness (Gemini, Cursor, …) runs the command its Agent Runtime Profile
-   names, and only if you opt in: list its `cli_kind` in the Runner's
-   `ACP_PROFILE_CLI_KINDS` setting (empty by default; `codex_cli` and `claude_code` are
-   refused there, their bridges are pinned). That command is an arbitrary executable on
-   your machine, so name only kinds whose Profile command you trust. It runs under the
+   names, and only if you opt in: pin its `cli_kind` to the absolute path of the executable
+   you trust in the Runner's `ACP_PROFILE_CLI_KINDS` setting, e.g.
+   `ACP_PROFILE_CLI_KINDS=gemini_cli=/usr/local/bin/gemini` (empty by default; `codex_cli`
+   and `claude_code` are refused there, their bridges are pinned). The Profile chooses
+   only the arguments: a command whose program is not exactly that path is refused, so
+   name only an executable you trust to run on your machine. It runs under the
    same Contract uid, sandbox, MCP servers, egress proxy and permission checks as a
    pinned bridge, and the Runner reports the kind so Work Records for it are routed here.
 2. **An Agent Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in

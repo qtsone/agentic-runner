@@ -124,7 +124,7 @@ from agentic_runner.workers._runtime_support import (
     bound_text,
     bound_text_tail,
 )
-from agentic_runner.workers.acp_runtime import ACP_BRIDGES
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime
 from agentic_runner.workers.agent_runtime import (
     AgentRuntime,
     AuthMode,
@@ -3014,7 +3014,9 @@ class RunnerRalphActivities:
         falls back to another runtime -- routing should not have sent it here, and a
         retry on this Runner would find the same registry. So does a Profile-named ACP
         command for a kind whose bridge the Runner pins (local-agents 18): the platform
-        never sends one, and the pinned bridge is the only thing that runs for that kind.
+        never sends one, and the pinned bridge is the only thing that runs for that kind --
+        and, for any other kind, a command whose ``argv[0]`` is not the executable the host
+        pinned for it.
         """
 
         if state.acp_command and state.cli_kind in ACP_BRIDGES:
@@ -3036,6 +3038,29 @@ class RunnerRalphActivities:
                 },
             )
         runtime = self._agent_runtimes.get(state.cli_kind)
+        command_refusal = (
+            runtime.acp_command_refusal(state.acp_command)
+            if isinstance(runtime, AcpRuntime)
+            else None
+        )
+        if command_refusal is not None:
+            await _raise_recorded(
+                ApplicationError(command_refusal, non_retryable=True),
+                self._fastapi_client,
+                work_record_id,
+                source=AGENT_RUNTIME_EVIDENCE_SOURCE,
+                actor=self._actor(),
+                payload={
+                    "event": "directive.acp_command_refused",
+                    "cli_kind": state.cli_kind,
+                    "executable": (
+                        redact_secret_like_text(Path(state.acp_command[0]).name)
+                        if state.acp_command
+                        else None
+                    ),
+                    "reason": command_refusal,
+                },
+            )
         if runtime is not None:
             return runtime
         served = sorted(self._agent_runtimes)

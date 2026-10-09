@@ -271,6 +271,7 @@ async def test_a_profile_named_acp_command_runs_as_the_contracts_uid(tmp_path: P
             INTERNAL_FASTAPI_BASE_URL="http://agentic-api.internal:8000",
             WORKSPACE_ROOT=tmp_path / "workspaces",
             CODEX_HOME=tmp_path / "codex-home",
+            ACP_PROFILE_CLI_KINDS=f"gemini_cli={os.path.realpath(sys.executable)}",
         ),
     )
 

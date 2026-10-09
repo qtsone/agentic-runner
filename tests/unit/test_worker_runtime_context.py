@@ -124,3 +124,12 @@ def test_cli_kind_admits_any_harness_the_registration_pattern_does() -> None:
     )
     with pytest.raises(ValidationError):
         WorkerRuntimeContext.model_validate({**payload, "cli_kind": "Gemini-CLI"})
+
+
+@pytest.mark.parametrize(
+    "acp_command",
+    [[], [""], ["/usr/bin/gemini", *["--flag"] * 32], ["/usr/bin/gemini", "x" * 1025]],
+)
+def test_an_acp_command_out_of_bounds_is_refused(acp_command: list[str]) -> None:
+    with pytest.raises(ValidationError):
+        WorkerRuntimeContext.model_validate(valid_context_payload() | {"acp_command": acp_command})

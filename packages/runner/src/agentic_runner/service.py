@@ -105,7 +105,7 @@ from agentic_runner.usage_windows import (
     UsageWindows,
 )
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
-from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_cli_kinds
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_executables
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.claude_sign_in import ClaudeSignIns
@@ -410,7 +410,7 @@ def build_agent_runtimes(
     """
 
     acp_kinds = {kind.strip() for kind in settings.ACP_CLI_KINDS.split(",") if kind.strip()}
-    profile_kinds = set(profile_acp_cli_kinds(settings))
+    profile_kinds = set(profile_acp_executables(settings))
     return {
         cli.cli_kind: (
             AcpRuntime(cli_kind=cli.cli_kind, settings=settings)
@@ -429,7 +429,7 @@ def with_profile_acp_cli_kinds(
     """The attestation, plus each kind the host opted in to run a Profile-named ACP command
     for, so routing sends that kind here and the registry serves it (local-agents 18).
 
-    The Runner cannot ask an executable it has not been sent for its version, so the
+    The Runner does not start the host's executable just to ask its version, so the
     version reported is the Runner's own: what serves the kind is this build's ACP runtime.
     No attestation stays none -- such a Runner is routed nothing at all.
     """
@@ -439,7 +439,7 @@ def with_profile_acp_cli_kinds(
     found = {cli.cli_kind for cli in attestation.clis}
     added = [
         CliVersion(cli_kind=kind, version=runner_version, meets_floor=True)
-        for kind in profile_acp_cli_kinds(settings)
+        for kind in profile_acp_executables(settings)
         if kind not in found
     ]
     # Validated, not copied: the attestation's cap on `clis` holds for these too.

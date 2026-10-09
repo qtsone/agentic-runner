@@ -37,9 +37,12 @@ Facts this module stands on (the LA-02 spike, re-read against the pinned bridge 
   unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``.
 
 A ``cli_kind`` with no pinned bridge (local-agents 18) runs the command its Agent Runtime
-Profile names, and only on a Runner whose host listed that kind in
-``ACP_PROFILE_CLI_KINDS``: it is an arbitrary executable, and none of the facts above are
-known for it. It gets exactly a pinned bridge's isolation -- the Contract's uid,
+Profile names, and only on a Runner whose host pinned that kind's executable in
+``ACP_PROFILE_CLI_KINDS`` (``gemini_cli=/usr/local/bin/gemini``). The Profile supplies the
+arguments, never the program: an ``argv[0]`` that is not exactly the host-pinned path is
+refused, or whoever edits the Profile would choose what runs on the host -- a shell, or a
+binary the repository ships. None of the facts above are known for that harness. It gets
+exactly a pinned bridge's isolation -- the Contract's uid,
 ``DirectiveSandbox``, the reserved env, the granted MCP servers, the egress proxy and the
 permission seam -- with the harness root as ``XDG_CONFIG_HOME``, the one config-root
 convention the Runner can assume of a harness it does not know.
@@ -97,7 +100,7 @@ from agentic_runner.workers.settings import WorkerSettings
 from agentic_runner_contracts.redaction import redact_secret_like_text
 from agentic_runner_contracts.runner_registration import UsageWindow
 
-__all__ = ["ACP_BRIDGES", "AcpBridge", "AcpRuntime", "profile_acp_cli_kinds"]
+__all__ = ["ACP_BRIDGES", "AcpBridge", "AcpRuntime", "profile_acp_executables"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,17 +142,20 @@ ACP_BRIDGES: Final[Mapping[str, AcpBridge]] = {
 _CLI_KIND_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 
-def profile_acp_cli_kinds(settings: WorkerSettings) -> tuple[str, ...]:
-    """The kinds this host opted in to run a Profile-named ACP command for (local-agents 18).
+def profile_acp_executables(settings: WorkerSettings) -> Mapping[str, str]:
+    """Each kind this host opted in to run a Profile-named ACP command for, to the absolute
+    path of the one executable it trusts for that kind (local-agents 18).
 
-    A pinned kind or a malformed one is a ValueError, so a typo stops the Runner starting
-    instead of leaving a kind silently unserved.
+    A pinned kind, a malformed one, a kind named twice or a path that is not absolute is a
+    ValueError, so a typo stops the Runner starting instead of leaving a kind silently
+    unserved or served by whatever a relative name resolves to.
     """
 
-    kinds = sorted(
-        {kind.strip() for kind in settings.ACP_PROFILE_CLI_KINDS.split(",") if kind.strip()}
-    )
-    for kind in kinds:
+    executables: dict[str, str] = {}
+    for entry in (part.strip() for part in settings.ACP_PROFILE_CLI_KINDS.split(",")):
+        if not entry:
+            continue
+        kind, separator, executable = (part.strip() for part in entry.partition("="))
         if kind in ACP_BRIDGES:
             raise ValueError(
                 f"ACP_PROFILE_CLI_KINDS names {kind!r}, whose ACP bridge the Runner pins; "
@@ -157,7 +163,15 @@ def profile_acp_cli_kinds(settings: WorkerSettings) -> tuple[str, ...]:
             )
         if not _CLI_KIND_PATTERN.fullmatch(kind):
             raise ValueError(f"ACP_PROFILE_CLI_KINDS names {kind!r}, which is not a cli_kind")
-    return tuple(kinds)
+        if not separator or not Path(executable).is_absolute():
+            raise ValueError(
+                f"ACP_PROFILE_CLI_KINDS must pin {kind!r} to an absolute executable path "
+                f"({kind}=/path/to/executable)"
+            )
+        if kind in executables:
+            raise ValueError(f"ACP_PROFILE_CLI_KINDS names {kind!r} twice")
+        executables[kind] = executable
+    return dict(sorted(executables.items()))
 
 
 _ACP_PROTOCOL_VERSION: Final[int] = 1
@@ -274,6 +288,9 @@ class AcpRuntime:
     ) -> None:
         self._cli_kind = cli_kind
         self._bridge = ACP_BRIDGES.get(cli_kind)
+        self._profile_executable = (
+            None if self._bridge is not None else profile_acp_executables(settings).get(cli_kind)
+        )
         self._settings = settings
         # Tests drive a fake ACP agent through this; production runs the pinned bridge.
         self._bridge_argv = list(bridge_argv) if bridge_argv is not None else None
@@ -290,6 +307,29 @@ class AcpRuntime:
     @property
     def _executable(self) -> str:
         return self._bridge.executable if self._bridge is not None else self._cli_kind
+
+    def acp_command_refusal(self, acp_command: Sequence[str]) -> str | None:
+        """Why this runtime will not run the Profile-named ``acp_command``, or None.
+
+        None for a pinned kind: its bridge runs and the Profile's command is never read
+        (the activity refuses one sent for it). For any other kind the host's pinned
+        executable must be exactly ``argv[0]``; the Profile chooses only the arguments.
+        """
+
+        if self._bridge is not None:
+            return None
+        if not acp_command:
+            return f"the Agent Runtime Profile names no ACP command for {self._cli_kind}"
+        if self._profile_executable is None:
+            return f"this Runner's host pinned no ACP executable for {self._cli_kind}"
+        if not Path(acp_command[0]).is_absolute():
+            return f"the Profile's ACP command for {self._cli_kind} is not an absolute path"
+        if acp_command[0] != self._profile_executable:
+            return (
+                f"the Profile's ACP command for {self._cli_kind} is not the executable this "
+                "Runner's host pinned for it"
+            )
+        return None
 
     @property
     def _timeout_seconds(self) -> int:
@@ -350,12 +390,11 @@ class AcpRuntime:
             if config_refusal:
                 return refuse("refused: Codex config file", config_refusal)
 
+        # The activity refuses this first, with Evidence; checked again where it runs.
+        command_refusal = self.acp_command_refusal(request.acp_command)
+        if command_refusal is not None:
+            return refuse("refused: Profile ACP command", command_refusal)
         argv = self._argv(request)
-        if not argv:
-            return refuse(
-                "refused: no ACP command",
-                f"the Agent Runtime Profile names no ACP command for {self._cli_kind}",
-            )
         command_hash = hash_command(argv)
         floor_refusal = command_policy_refusal(
             argv=argv,

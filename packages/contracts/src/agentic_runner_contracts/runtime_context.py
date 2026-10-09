@@ -110,10 +110,11 @@ class WorkerRuntimeContext(BaseModel):
     # Runner does not serve fails closed there.
     cli_kind: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
     # Local-agents 18: the argv the Agent Runtime Profile names for an ACP harness the
-    # Runner pins no bridge for. Only a Runner whose host opted in runs it, and a Runner
-    # refuses one sent for a pinned kind (`codex_cli`, `claude_code`). None: no command.
-    acp_command: list[Annotated[str, StringConstraints(min_length=1)]] | None = Field(
-        default=None, min_length=1
+    # Runner pins no bridge for. Only a Runner whose host pinned that kind's executable runs
+    # it, and only when `argv[0]` is exactly that path; a Runner refuses one sent for a
+    # pinned kind (`codex_cli`, `claude_code`). None: no command.
+    acp_command: list[Annotated[str, StringConstraints(min_length=1, max_length=1024)]] | None = (
+        Field(default=None, min_length=1, max_length=32)
     )
     repo: str
     base_branch: str
