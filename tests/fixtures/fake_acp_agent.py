@@ -13,6 +13,8 @@ import sys
 with open(os.environ["FAKE_ACP_SCENARIO"]) as scenario_file:
     scenario = json.load(scenario_file)
 record_path = scenario["record"]
+# A Codex thread id, which is what codex-acp hands out as the ACP session id.
+session_id = scenario.get("session_id", "019a0f00-0000-7000-8000-000000000001")
 next_id = 1000
 
 
@@ -77,7 +79,7 @@ while (message := read()) is not None:
         reply(
             message,
             {
-                "sessionId": "session-1",
+                "sessionId": session_id,
                 "modes": {
                     "currentModeId": "default",
                     "availableModes": [{"id": "default"}, {"id": "acceptEdits"}],
@@ -95,7 +97,7 @@ while (message := read()) is not None:
                     "id": next_id,
                     "method": "session/request_permission",
                     "params": {
-                        "sessionId": "session-1",
+                        "sessionId": session_id,
                         "toolCall": tool_call,
                         "options": [
                             {"optionId": "approved", "name": "Yes", "kind": "allow_once"},
@@ -116,7 +118,7 @@ while (message := read()) is not None:
                 "jsonrpc": "2.0",
                 "method": "session/update",
                 "params": {
-                    "sessionId": "session-1",
+                    "sessionId": session_id,
                     "update": {
                         "sessionUpdate": "agent_message_chunk",
                         "content": {"type": "text", "text": scenario.get("text", "done")},
@@ -129,14 +131,14 @@ while (message := read()) is not None:
                 {
                     "jsonrpc": "2.0",
                     "method": "session/update",
-                    "params": {"sessionId": "session-1", "update": update},
+                    "params": {"sessionId": session_id, "update": update},
                 }
             )
         if "rollout" in scenario:
             # Where Codex files the thread the session is.
             day = os.path.join(os.environ["CODEX_HOME"], "sessions", "2026", "10", "10")
             os.makedirs(day, exist_ok=True)
-            name = "rollout-2026-10-10T00-00-00-session-1.jsonl"
+            name = f"rollout-2026-10-10T00-00-00-{session_id}.jsonl"
             with open(os.path.join(day, name), "w") as rollout:
                 rollout.writelines(json.dumps(line) + "\n" for line in scenario["rollout"])
         if "prompt_error" in scenario:

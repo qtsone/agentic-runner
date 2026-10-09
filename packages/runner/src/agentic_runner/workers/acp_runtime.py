@@ -34,11 +34,15 @@ Facts this module stands on (the LA-02 spike, re-read against the pinned bridge 
   is refused, and a harness-root ``config.toml`` may hold only ``_CODEX_HARNESS_ROOT_KEYS``
   (LA-19): nothing may load that the Runner did not choose.
 - claude-agent-acp loads the Workspace's settings, hooks, ``.mcp.json`` and ``CLAUDE.md``
-  unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``. Those
-  keep the harness root's ``settings.json`` (the ``user`` source), which the Contract's uid
-  can write: an allow rule, a hook, an ``env`` or an ``apiKeyHelper`` there would act
-  outside the permission seam in every later Directive of that Contract. So it may hold
-  only ``_CLAUDE_HARNESS_ROOT_KEYS`` (LA-12d item 2).
+  unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``. The
+  harness root is the Contract's uid's to write, and its ``user`` source is more than
+  ``settings.json``: a skill's or command's ``allowed-tools`` is an allow rule, and an
+  agent, a hook or ``CLAUDE.md`` would steer every later Directive of that Contract. So no
+  setting source loads at all, the ``user`` one included: measured on claude 2.1.280, the
+  harness root's skills, commands, agents, ``CLAUDE.md`` and settings stay out while its
+  ``.credentials.json`` login still signs the requests (LA-12d item 2). The bridge itself
+  still reads the harness root's ``settings.json`` for the initial mode, bypass and model
+  list, so that file may hold only ``_CLAUDE_HARNESS_ROOT_KEYS``.
 - A Claude permission request for an MCP tool names no command. It carries the serving
   server in ``_meta.claudeCode.mcpServer``, and ``source: "dynamic"`` is a server from the
   CLI's ``--mcp-config``: the ones ``session/new`` sent, the only ones ``strictMcpConfig``
@@ -196,8 +200,8 @@ _CODEX_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
 )
 
 # What a harness-root `settings.json` may set: the choices Claude Code writes there itself.
-# `permissions`, `hooks`, `env`, `apiKeyHelper`, `enabledPlugins` and the rest would be the
-# Contract's own file steering every later turn.
+# The CLI no longer loads it, but the bridge does; `permissions`, `hooks`, `env`,
+# `apiKeyHelper`, `enabledPlugins` and the rest would be the Contract's own file steering it.
 _CLAUDE_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
     {"$schema", "model", "effortLevel", "alwaysThinkingEnabled"}
 )
@@ -207,8 +211,9 @@ _CLAUDE_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
 _CLAUDE_SENT_MCP_SOURCE: Final[str] = "dynamic"
 
 _CLAUDE_SESSION_OPTIONS: Final[Mapping[str, object]] = {
-    # The harness root's own settings only: no Workspace settings, hooks or CLAUDE.md.
-    "settingSources": ["user"],
+    # No settings file, hook, skill, command, agent or CLAUDE.md from anywhere, the
+    # Contract's harness root included; the login is not a setting source and still loads.
+    "settingSources": [],
     # Only the servers sent over ACP; never the Workspace's `.mcp.json`.
     "strictMcpConfig": True,
     # Bypass is never offered as a mode, whatever a settings file asks for.
@@ -1122,6 +1127,12 @@ def _codex_rollout_usage(
     the Codex thread id, which names the rollout file.
     """
 
+    # The id goes into a glob, and a subscription harness root keeps other Directives'
+    # rollouts: anything but a thread id could match, and meter, one of theirs.
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        return None
     total: Mapping[str, Any] | None = None
     model = reported[0].model if reported else None
     try:
