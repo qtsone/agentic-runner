@@ -12,9 +12,9 @@ macOS (`tests/install/workstation.sh`).
    finds them on your `PATH`; it does not bundle them. It serves every CLI it finds, and
    refuses to install if it finds neither.
 
-   The ACP bridges are optional, and used only for the CLIs the Runner's `ACP_CLI_KINDS`
-   setting names (empty by default). To try them, install the versions the Runner pins
-   (`ACP_BRIDGES` in `agentic_runner/workers/acp_runtime.py`):
+   The ACP bridges are optional, and used only for the CLIs `install --acp-cli-kinds` names
+   (none by default; see [Install](#install)). To try them, install the versions the Runner
+   pins (`ACP_BRIDGES` in `agentic_runner/workers/acp_runtime.py`):
 
    ```sh
    npm install --global --omit=optional \
@@ -80,6 +80,12 @@ Runner's own identity. Revoke the token on **/me/runners** once your Runner show
 
 The Runner captures the `PATH` you installed from. If you install a CLI later, run
 `agentic-runner install` again so the Runner can find it.
+
+To drive a CLI through its ACP bridge, name its kind on `install`:
+`--acp-cli-kinds codex_cli,claude_code`. The Runner keeps it in the Organisation's
+`workstation.json`, and a later `install` without the flag keeps it too;
+`--acp-cli-kinds ''` turns ACP off. Set it this way, not in the plist or the unit file:
+`install` rewrites both. A kind with no pinned bridge is refused.
 
 ## Sign in to Codex and Claude Code
 
