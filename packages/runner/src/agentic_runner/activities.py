@@ -124,6 +124,7 @@ from agentic_runner.workers._runtime_support import (
     bound_text,
     bound_text_tail,
 )
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES
 from agentic_runner.workers.agent_runtime import (
     AgentRuntime,
     AuthMode,
@@ -595,6 +596,8 @@ class _RuntimeContextState:
     # PRD decision 12: what a runtime asked per command does when the command policy has
     # no answer. Carried on the same `command_policy` blob as the ceiling above.
     permission_fallback: PermissionFallback = PermissionFallback.DENY
+    # Local-agents 18: the Profile-named ACP command, for a kind with no pinned bridge.
+    acp_command: tuple[str, ...] = ()
     # Pushed on change and applied on receipt (ADR-0011 §11, PRD issue 44): the evaluator
     # is local, so a narrowing lands on the next verb this state is read for.
     grant_snapshot: GrantSnapshot = UNENFORCED_SNAPSHOT
@@ -2053,6 +2056,7 @@ class RunnerRalphActivities:
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
                     permission_fallback=runtime_state.permission_fallback,
+                    acp_command=runtime_state.acp_command,
                     prompt=attempt.skills_preamble
                     + _directive_prompt(
                         completion_criteria=runtime_state.completion_criteria,
@@ -3008,9 +3012,29 @@ class RunnerRalphActivities:
         Fails closed (local-agents 01): a kind this process does not serve fails the
         Directive non-retryably, with Evidence naming the kind and the Runner, and never
         falls back to another runtime -- routing should not have sent it here, and a
-        retry on this Runner would find the same registry.
+        retry on this Runner would find the same registry. So does a Profile-named ACP
+        command for a kind whose bridge the Runner pins (local-agents 18): the platform
+        never sends one, and the pinned bridge is the only thing that runs for that kind.
         """
 
+        if state.acp_command and state.cli_kind in ACP_BRIDGES:
+            await _raise_recorded(
+                ApplicationError(
+                    f"the Runner pins the ACP bridge for {state.cli_kind!r}; a Profile-named "
+                    "ACP command is refused for it",
+                    non_retryable=True,
+                ),
+                self._fastapi_client,
+                work_record_id,
+                source=AGENT_RUNTIME_EVIDENCE_SOURCE,
+                actor=self._actor(),
+                payload={
+                    "event": "directive.acp_command_refused",
+                    "cli_kind": state.cli_kind,
+                    # The executable's name only: its arguments may carry a secret.
+                    "executable": redact_secret_like_text(Path(state.acp_command[0]).name),
+                },
+            )
         runtime = self._agent_runtimes.get(state.cli_kind)
         if runtime is not None:
             return runtime
@@ -3425,6 +3449,7 @@ class RunnerRalphActivities:
             model=runtime_context.model,
             memory_limit_bytes=_profile_memory_limit_bytes(runtime_context.command_policy),
             permission_fallback=_profile_permission_fallback(runtime_context.command_policy),
+            acp_command=tuple(runtime_context.acp_command or ()),
             grant_snapshot=snapshot,
             grant_snapshot_payload=snapshot_payload,
             persona_slug=runtime_context.persona_slug,
@@ -4699,6 +4724,7 @@ class RunnerRalphActivities:
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
                     permission_fallback=state.permission_fallback,
+                    acp_command=state.acp_command,
                     prompt=attempt.skills_preamble
                     + _learning_prompt(
                         request,
@@ -4960,6 +4986,7 @@ class RunnerRalphActivities:
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
                     permission_fallback=state.permission_fallback,
+                    acp_command=state.acp_command,
                     prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
                     base_branch=request.base_ref,
                     work_branch=state.work_branch,

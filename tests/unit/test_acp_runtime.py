@@ -19,9 +19,9 @@ from typing import Any
 import pytest
 
 from agentic_runner.activities import _model_usage_reports, _profile_permission_fallback
-from agentic_runner.service import build_agent_runtimes
+from agentic_runner.service import build_agent_runtimes, with_profile_acp_cli_kinds
 from agentic_runner.workers._runtime_support import RESERVED_DIRECTIVE_ENV
-from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_cli_kinds
 from agentic_runner.workers.agent_runtime import (
     REFUSED_PERMISSION_MODE,
     AuthMode,
@@ -33,7 +33,14 @@ from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
-from agentic_runner_contracts.runner_registration import CliVersion, UsageWindow
+from agentic_runner_contracts.runner_registration import (
+    CliVersion,
+    HostAttestation,
+    InstallChannel,
+    SessionKind,
+    StoreKind,
+    UsageWindow,
+)
 
 FAKE_AGENT = Path(__file__).parents[1] / "fixtures" / "fake_acp_agent.py"
 PROXY = "http://127.0.0.1:4000/attempt/a1"
@@ -122,7 +129,7 @@ def _request(
     if auth_mode == AuthMode.API_KEY:
         env.update(
             {"OPENAI_BASE_URL": f"{PROXY}/v1", "OPENAI_API_KEY": BEARER}
-            if cli_kind == "codex_cli"
+            if cli_kind != "claude_code"
             else {"ANTHROPIC_BASE_URL": PROXY, "ANTHROPIC_AUTH_TOKEN": BEARER}
         )
     env.update(extra_env or {})
@@ -704,3 +711,165 @@ def test_the_image_ships_the_bridge_versions_the_runtime_pins() -> None:
 
     assert f"ARG CODEX_ACP_VERSION={ACP_BRIDGES['codex_cli'].version}\n" in dockerfile
     assert f"ARG CLAUDE_AGENT_ACP_VERSION={ACP_BRIDGES['claude_code'].version}\n" in dockerfile
+
+
+def _profile_runtime(tmp_path: Path) -> AcpRuntime:
+    return AcpRuntime(cli_kind="gemini_cli", settings=_settings(tmp_path))
+
+
+def _profile_request(
+    tmp_path: Path,
+    fake: Fake,
+    command: tuple[str, ...],
+    **kwargs: Any,
+) -> DirectiveRequest:
+    return replace(_request(tmp_path, fake, cli_kind="gemini_cli", **kwargs), acp_command=command)
+
+
+@pytest.mark.asyncio
+async def test_a_profile_named_command_runs_one_prompt_under_a_pinned_bridges_isolation(
+    tmp_path: Path, _no_rlimits: list[DirectiveSandbox]
+) -> None:
+    fake = Fake(tmp_path, text="all done")
+    granted = (McpServerEntry(slug="runnermcp", command="/usr/bin/runner-mcp", args=("--stdio",)),)
+    request = _profile_request(
+        tmp_path,
+        fake,
+        (sys.executable, str(FAKE_AGENT), "--experimental-acp"),
+        mcp_servers=granted,
+    )
+
+    result = await _profile_runtime(tmp_path).execute_directive(request)
+
+    assert result.exit_code == 0, result.error
+    assert fake.argv == ["--experimental-acp"]
+    assert [m["method"] for m in fake.received() if "method" in m] == [
+        "initialize",
+        "session/new",
+        "session/prompt",
+    ]
+    (new,) = fake.received("session/new")
+    assert new["params"]["mcpServers"] == [
+        {"name": "runnermcp", "command": "/usr/bin/runner-mcp", "args": ["--stdio"], "env": []}
+    ]
+    assert "_meta" not in new["params"], "the Claude session options are claude_code's alone"
+    assert not fake.received("authenticate")
+    # The Contract's sandbox, its harness root as the config root, and the proxy pair.
+    assert _no_rlimits == [request.sandbox]
+    assert request.sandbox is not None
+    assert fake.env["XDG_CONFIG_HOME"] == str(request.sandbox.harness_config_dir)
+    assert fake.env["HOME"] == str(request.sandbox.home_dir)
+    assert fake.env["OPENAI_BASE_URL"] == f"{PROXY}/v1"
+    assert "CODEX_HOME" not in fake.env and "CLAUDE_CONFIG_DIR" not in fake.env
+    python = Path(sys.executable).name
+    assert f"cli_kind=gemini_cli; command={python};" in result.evidence.guard_mode
+
+
+@pytest.mark.asyncio
+async def test_a_profile_named_command_with_a_secret_looking_argument_never_starts(
+    tmp_path: Path,
+) -> None:
+    fake = Fake(tmp_path)
+
+    result = await _profile_runtime(tmp_path).execute_directive(
+        _profile_request(
+            tmp_path, fake, (sys.executable, str(FAKE_AGENT), "--api-key=sk-live-0123456789abcdef")
+        )
+    )
+
+    assert result.exit_code == 126
+    assert not fake.record_path.exists()
+    assert "sk-live" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_a_profile_named_command_is_asked_like_a_pinned_bridge(tmp_path: Path) -> None:
+    fake = Fake(tmp_path, permissions=[TOUCH_OUTSIDE], stop_reason="cancelled")
+
+    result = await _profile_runtime(tmp_path).execute_directive(
+        _profile_request(tmp_path, fake, (sys.executable, str(FAKE_AGENT)))
+    )
+
+    assert fake.permission_answers() == [{"outcome": "selected", "optionId": "cancel"}]
+    assert "permission denied: touch /tmp/acp-should-not-exist" in " ".join(result.evidence.notes)
+
+
+@pytest.mark.asyncio
+async def test_an_unpinned_kind_with_no_profile_command_is_refused(tmp_path: Path) -> None:
+    fake = Fake(tmp_path)
+
+    result = await _profile_runtime(tmp_path).execute_directive(
+        _profile_request(tmp_path, fake, ())
+    )
+
+    assert result.exit_code == 126
+    assert "names no ACP command for gemini_cli" in result.error
+    assert not fake.record_path.exists(), "nothing is spawned"
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_kind_never_runs_a_profile_named_command(tmp_path: Path) -> None:
+    fake = Fake(tmp_path)
+    request = replace(_request(tmp_path, fake), acp_command=("/opt/elsewhere/agent",))
+
+    result = await _runtime(tmp_path).execute_directive(request)
+
+    assert result.exit_code == 0, result.error
+    assert fake.argv == []
+    assert "bridge=@agentclientprotocol/codex-acp@" in result.evidence.guard_mode
+
+
+@pytest.mark.asyncio
+async def test_extra_env_cannot_move_a_profile_commands_config_root(tmp_path: Path) -> None:
+    fake = Fake(tmp_path)
+    request = _profile_request(
+        tmp_path,
+        fake,
+        (sys.executable, str(FAKE_AGENT)),
+        extra_env={"XDG_CONFIG_HOME": str(tmp_path / "elsewhere")},
+    )
+
+    await _profile_runtime(tmp_path).execute_directive(request)
+
+    assert request.sandbox is not None
+    assert fake.env["XDG_CONFIG_HOME"] == str(request.sandbox.harness_config_dir)
+
+
+def test_a_host_serves_and_reports_only_the_profile_kinds_it_opted_in_to(tmp_path: Path) -> None:
+    codex = CliVersion(cli_kind="codex_cli", version="0.159.2", meets_floor=True)
+    attestation = HostAttestation(
+        build_id="0" * 64,
+        install_channel=InstallChannel.HELM,
+        os="linux 6.8",
+        session_kind=SessionKind.CONTAINER,
+        store_kind=StoreKind.NONE,
+        clis=[codex],
+    )
+    settings = _settings(tmp_path, ACP_PROFILE_CLI_KINDS="gemini_cli, cursor_agent")
+
+    reported = with_profile_acp_cli_kinds(attestation, settings)
+    assert reported is not None
+    runtimes = build_agent_runtimes(settings, reported.clis)
+
+    assert sorted(cli.cli_kind for cli in reported.clis if cli.meets_floor) == [
+        "codex_cli",
+        "cursor_agent",
+        "gemini_cli",
+    ]
+    assert isinstance(runtimes["gemini_cli"], AcpRuntime)
+    assert isinstance(runtimes["cursor_agent"], AcpRuntime)
+    assert with_profile_acp_cli_kinds(attestation, _settings(tmp_path)) == attestation
+    assert "gemini_cli" not in build_agent_runtimes(_settings(tmp_path), reported.clis)
+
+
+@pytest.mark.parametrize("kinds", ["codex_cli", "gemini_cli,claude_code", "Gemini"])
+def test_a_host_cannot_opt_in_a_pinned_or_malformed_kind(tmp_path: Path, kinds: str) -> None:
+    with pytest.raises(ValueError, match="ACP_PROFILE_CLI_KINDS"):
+        profile_acp_cli_kinds(_settings(tmp_path, ACP_PROFILE_CLI_KINDS=kinds))
+
+
+def test_an_unpinned_kind_reports_a_permission_mode_the_heartbeat_admits(tmp_path: Path) -> None:
+    capabilities = AcpRuntime(cli_kind="gemini_cli", settings=_settings(tmp_path)).capabilities()
+
+    assert re.fullmatch(r"[a-z][a-z0-9_=;.-]{0,95}", capabilities.permission_mode)
+    assert capabilities.permission_mode != REFUSED_PERMISSION_MODE

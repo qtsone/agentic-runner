@@ -103,6 +103,9 @@ class DirectiveRequest:
     auth_mode: AuthMode = AuthMode.API_KEY
     # Read only by a runtime the harness asks per command (the ACP runtime).
     permission_fallback: PermissionFallback = PermissionFallback.DENY
+    # The Profile-named ACP command (local-agents 18). Read only by the ACP runtime, and
+    # only for a `cli_kind` it pins no bridge for.
+    acp_command: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

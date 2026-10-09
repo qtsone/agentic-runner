@@ -140,6 +140,14 @@ class WorkerSettings(BaseSettings):
             "the pinned ACP bridge instead of the per-CLI runtime (local-agents 12)."
         ),
     )
+    ACP_PROFILE_CLI_KINDS: str = Field(
+        default="",
+        description=(
+            "Comma-separated cli_kinds, other than `codex_cli` and `claude_code`, for which "
+            "this Runner's host opts in to run the ACP command an Agent Runtime Profile names "
+            "(local-agents 18). Empty: no Profile-named command ever runs here."
+        ),
+    )
     CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS: bool = Field(
         default=False,
         description=(
