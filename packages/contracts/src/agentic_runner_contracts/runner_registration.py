@@ -247,7 +247,21 @@ class HarnessSelfTest(BaseModel):
     reason: SelfTestFailure | None = None
 
 
-_HARNESS_DESCRIPTOR_FIELDS: Final = ("auth_modes", "permission_mode", "self_test")
+class UsageWindow(BaseModel):
+    """One subscription usage window, as the harness itself last reported it (local-agents
+    10): which window, how much of it is used, and when it resets. A percentage and a time
+    -- never an account, a plan or anything the harness authenticated with."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # ``five_hour``, ``seven_day``, ``seven_day_opus``…: the vendor's own window name
+    # where it has one.
+    name: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
+    used_percent: float = Field(ge=0.0, le=100.0)
+    resets_at: datetime | None = None
+
+
+_OPTIONAL_HARNESS_FIELDS: Final = ("auth_modes", "permission_mode", "self_test", "usage_windows")
 
 
 class HarnessVersion(BaseModel):
@@ -256,7 +270,9 @@ class HarnessVersion(BaseModel):
     ``auth_modes``, ``permission_mode`` and ``self_test`` are the runtime's descriptor
     (local-agents 17), self-reported like everything else here. The permission mode is
     what the Runner passes the harness, reported and never trusted as a gate (ADR-0011
-    §12).
+    §12). ``usage_windows`` is present only for a Contract signed in to a subscription on
+    a user-hosted Runner, once the harness has said how much of it is used (local-agents
+    10).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -272,15 +288,17 @@ class HarnessVersion(BaseModel):
         Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_=;.-]{0,95}$")] | None
     ) = None
     self_test: HarnessSelfTest | None = None
+    usage_windows: list[UsageWindow] | None = Field(default=None, max_length=8)
 
     @model_serializer(mode="wrap")
-    def _omit_absent_descriptor(self, handler: SerializerFunctionWrapHandler) -> Any:
-        # A control plane on contracts 3.3 forbids extra keys, so a row without the
-        # descriptor is the body it already parses. One with it needs the control plane
-        # on this minor first -- upgrade the control plane before the Runner.
+    def _omit_absent_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # An older control plane forbids extra keys, so a row without these is the body
+        # it already parses (the descriptor arrived in 3.4, the usage windows in 3.7). A
+        # row with one needs the control plane on that minor first -- upgrade the control
+        # plane before the Runner.
         body = handler(self)
         if isinstance(body, dict):
-            for name in _HARNESS_DESCRIPTOR_FIELDS:
+            for name in _OPTIONAL_HARNESS_FIELDS:
                 if body.get(name) is None:
                     body.pop(name, None)
         return body

@@ -42,6 +42,10 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `SignInCodeRelay` on `HeartbeatEnvelope.sign_in_codes`. Additive; the envelope omits the
 # key while it is empty. But the ack forbids extra keys, so the platform must not relay a
 # code to a Runner below 3.6.
+# 3.7.0 (local-agents 10): `HarnessVersion.usage_windows` and `UsageWindow`. Additive; the
+# row omits the key while it is absent, so a control plane on 3.6 parses a beat unchanged
+# until a user-hosted Runner has read a subscription's windows -- upgrade the control
+# plane before the Runner.
 __version__ = "3.6.0"
 
 __all__ = ["__version__"]
