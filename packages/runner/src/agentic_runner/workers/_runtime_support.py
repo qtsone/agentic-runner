@@ -42,7 +42,10 @@ from agentic_runner.workers.contract_isolation import DirectiveSandbox
 # the funder anyway, or route it round the Profile's egress allow-list. The two Claude Code
 # bearers are here for the last reason too: either would authenticate the harness on a
 # credential the Runner never chose, around the proxy and the mode it decided
-# (local-agents 04; research 01 §4 gap 6).
+# (local-agents 04; research 01 §4 gap 6). The ACP bridges' control variables are here
+# for the same reason (local-agents 12): each swaps the vendor binary, hands approvals
+# back to the harness's own reviewer, authenticates the bridge, or re-enables the MCP
+# filtering that drops a granted server.
 RESERVED_DIRECTIVE_ENV: Final[frozenset[str]] = frozenset(
     {
         "HOME",
@@ -53,6 +56,20 @@ RESERVED_DIRECTIVE_ENV: Final[frozenset[str]] = frozenset(
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CODEX_PATH",
+        "CODEX_CONFIG",
+        "CODEX_API_KEY",
+        "MODEL_PROVIDER",
+        "DEFAULT_AUTH_REQUEST",
+        "INITIAL_AGENT_MODE",
+        "NO_BROWSER",
+        "APP_SERVER_LOGS",
+        "DISABLE_MCP_CONFIG_FILTERING",
+        "CLAUDE_CODE_EXECUTABLE",
+        "CLAUDE_MODEL_CONFIG",
+        "CLAUDE_AGENT_LOGS",
+        "MAX_THINKING_TOKENS",
+        "ANTHROPIC_MODEL",
         CALLBACK_SOCKET_ENV,
         CALLBACK_TOKEN_ENV,
         *PROXY_ENV_NAMES,
@@ -154,10 +171,10 @@ async def run_subprocess_exec(
                     timeout=timeout_seconds,
                 )
             except (TimeoutError, asyncio.CancelledError):
-                await _terminate_process_tree(process)
+                await terminate_process_tree(process)
                 raise
     except PriorAttemptAliveError:
-        await _terminate_process_tree(process)
+        await terminate_process_tree(process)
         raise
 
     return SubprocessResult(
@@ -240,7 +257,7 @@ async def _read_stream_limited(
     return bytes(tail), total_bytes > limit_bytes
 
 
-async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+async def terminate_process_tree(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
     with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -379,7 +396,7 @@ async def run_subprocess_launch_and_detach(
         raise RuntimeError(f"process failed to start: {error.__class__.__name__}") from None
 
     if process.stdout is None:
-        await _terminate_process_tree(process)
+        await terminate_process_tree(process)
         raise RuntimeError("process stdout stream was unavailable")
 
     loop = asyncio.get_running_loop()
@@ -408,7 +425,7 @@ async def run_subprocess_launch_and_detach(
                 _detach(process)
                 return text
     except BaseException:
-        await _terminate_process_tree(process)
+        await terminate_process_tree(process)
         raise
 
 

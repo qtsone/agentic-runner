@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -166,7 +166,7 @@ class FakeControlPlane:
     contracts_floor: str = contracts_version
     contract_id: UUID = DEFAULT_CONTRACT_ID
     agent_id: UUID = DEFAULT_AGENT_ID
-    cli_kind: Literal["codex_cli", "claude_code"] = "codex_cli"
+    cli_kind: str = "codex_cli"
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)
     runner_ids: list[UUID] = field(default_factory=list)

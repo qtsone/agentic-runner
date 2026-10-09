@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.5.0](https://github.com/qtsone/agentic-runner/compare/v3.4.2...v3.5.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** the ACP Agent Runtime drives the pinned codex-acp and claude-agent-acp bridges (QTS-893) ([#32](https://github.com/qtsone/agentic-runner/issues/32)) ([c954c59](https://github.com/qtsone/agentic-runner/commit/c954c59e496c5963f1ab98ad2e86539c43301a4f))
+
+## [3.4.2](https://github.com/qtsone/agentic-runner/compare/v3.4.1...v3.4.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **runner:** spawn without RLIMIT_NPROC where no Contract uid holds it (QTS-1321) ([#35](https://github.com/qtsone/agentic-runner/issues/35)) ([eaedae8](https://github.com/qtsone/agentic-runner/commit/eaedae8d1424de192e581d1a3bdf9ad4a2888383))
+
 ## [3.4.1](https://github.com/qtsone/agentic-runner/compare/v3.4.0...v3.4.1) (2026-10-08)
 
 

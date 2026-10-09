@@ -639,7 +639,7 @@ async def test_macos_short_lived_sign_in_gets_a_per_contract_keychain(
 async def test_a_beat_with_no_relay_outcome_omits_the_key(
     tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
 ) -> None:
-    """A control plane on contracts 3.4 forbids extra keys, so an ordinary beat must still
+    """A control plane on contracts 3.5 forbids extra keys, so an ordinary beat must still
     be the body it parses."""
 
     stream, registration = _stream(tmp_path, _sign_ins(isolation, fake_claude))

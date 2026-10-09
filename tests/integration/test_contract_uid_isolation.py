@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,8 +28,11 @@ from agentic_runner.integrations.git.workspace import (
     require_runner_owned_git_dir,
 )
 from agentic_runner.workers._runtime_support import run_subprocess_exec
+from agentic_runner.workers.acp_runtime import AcpRuntime
+from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN_FILE, ClaudeSignIns, launcher_argv
 from agentic_runner.workers.contract_isolation import ContractIsolation
+from agentic_runner.workers.settings import WorkerSettings
 from agentic_runner.workers.skills import SkillDeliveryError, remove_skills, write_skills
 from agentic_runner_contracts.runtime_context import SkillVersionSpec
 from agentic_runner_contracts.sealed_credential import SignInCodeOutcome
@@ -156,6 +161,78 @@ async def test_a_directive_of_one_contract_cannot_read_another_contracts_tree(
     )
     assert exit_code != 0
     assert "Permission denied" in stderr
+
+
+@pytest.mark.asyncio
+async def test_the_acp_bridge_and_its_harness_run_as_the_contracts_uid(tmp_path: Path) -> None:
+    """Local-agents 12: the bridge is spawned like a per-CLI harness, so the same line holds.
+
+    A fake ACP agent stands in for the bridge and records its own uid, the uid of a child
+    it spawns (the harness, in production) and what it can read of both Contracts' roots.
+    """
+
+    require_uid_separation()
+
+    isolation = ContractIsolation(
+        workspace_root=tmp_path / "workspaces",
+        state_dir=tmp_path / "state",
+        uid_min=60_000,
+        uid_max=60_009,
+        max_processes=512,
+        memory_limit_bytes=4 * 1024**3,
+    )
+    _make_traversable(tmp_path)
+    workspace_a = isolation.prepare_workspace(CONTRACT_A, WORK_RECORD_A)
+    isolation.prepare_workspace(CONTRACT_B, WORK_RECORD_B)
+    sandbox_a = isolation.sandbox(CONTRACT_A, runtime_kind="codex_cli")
+    sandbox_b = isolation.sandbox(CONTRACT_B, runtime_kind="codex_cli")
+    secret_b = sandbox_b.harness_config_dir / "auth.json"
+    secret_b.write_text('{"refresh_token": "contract-b"}')
+    os.chown(secret_b, sandbox_b.uid or 0, sandbox_b.gid or 0)
+    record = tmp_path / "record.jsonl"
+    record.touch(mode=0o666)
+    record.chmod(0o666)
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text(json.dumps({"record": str(record), "probe_reads": [str(secret_b)]}))
+    scenario.chmod(0o644)
+    fake_agent = Path(__file__).parents[1] / "fixtures" / "fake_acp_agent.py"
+    runtime = AcpRuntime(
+        cli_kind="codex_cli",
+        settings=WorkerSettings(
+            TEMPORAL_ADDRESS="127.0.0.1:7233",
+            INTERNAL_FASTAPI_BASE_URL="http://agentic-api.internal:8000",
+            WORKSPACE_ROOT=tmp_path / "workspaces",
+            CODEX_HOME=tmp_path / "codex-home",
+        ),
+        # The interpreter itself, not the venv's link to it: the fake needs only stdlib.
+        bridge_argv=[os.path.realpath(sys.executable), str(fake_agent)],
+    )
+
+    result = await runtime.execute_directive(
+        DirectiveRequest(
+            workspace_path=workspace_a,
+            prompt="Implement the change.",
+            base_branch="main",
+            work_branch="agent/wr-a",
+            sandbox=sandbox_a,
+            extra_env=(
+                ("FAKE_ACP_SCENARIO", str(scenario)),
+                ("OPENAI_BASE_URL", "http://127.0.0.1:4000/attempt/a/v1"),
+                ("OPENAI_API_KEY", "attempt-bearer-not-a-secret"),
+            ),
+            auth_mode=AuthMode.API_KEY,
+        )
+    )
+
+    assert result.exit_code == 0, result.error
+    entries = [json.loads(line) for line in record.read_text().splitlines()]
+    seen = next(entry for entry in entries if "uid" in entry)
+    assert seen["uid"] == sandbox_a.uid
+    assert seen["child_uid"] == str(sandbox_a.uid)
+    assert seen["reads"][str(secret_b)] == "PermissionError"
+    # The per-attempt provider root is the Contract's own, readable by the bridge it serves.
+    started_on = next(entry for entry in entries if "codex_config" in entry)
+    assert 'model_provider = "agentic_runner"' in started_on["codex_config"]
 
 
 @pytest.mark.asyncio

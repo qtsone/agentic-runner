@@ -11,6 +11,18 @@ macOS (`tests/install/workstation.sh`).
 1. **Codex or Claude Code.** Install `codex`, `claude`, or both, the usual way. The Runner
    finds them on your `PATH`; it does not bundle them. It serves every CLI it finds, and
    refuses to install if it finds neither.
+
+   The ACP bridges are optional, and used only for the CLIs the Runner's `ACP_CLI_KINDS`
+   setting names (empty by default). To try them, install the versions the Runner pins
+   (`ACP_BRIDGES` in `agentic_runner/workers/acp_runtime.py`):
+
+   ```sh
+   npm install --global --omit=optional \
+     @agentclientprotocol/codex-acp@2.1.1 @agentclientprotocol/claude-agent-acp@0.88.0
+   ```
+
+   They drive the `codex` and `claude` already on your `PATH`, so their bundled copies are
+   left out.
 2. **An Agent Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in
    the console, labelled after the machine (`alice-laptop`). It is shown once and installs
    for 7 days. Your Organisation's Admin can also mint one on the Organisation Console's

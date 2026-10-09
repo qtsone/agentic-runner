@@ -99,6 +99,7 @@ from agentic_runner.sealed_box import (
 from agentic_runner.tiny_http import HttpRequest, read_request, write_json
 from agentic_runner.triage_activities import RunnerTriageActivities
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.claude_sign_in import ClaudeSignIns
@@ -394,10 +395,18 @@ def build_agent_runtimes(
     picks from here by the Work Record's `cli_kind` (local-agents 01) -- there is no
     process-wide choice. The same `clis` ride the heartbeat's attestation, so what this
     Runner serves and what routing believes it serves are one list.
+
+    Which runtime serves a kind -- its pinned ACP bridge or the per-CLI one -- is this
+    Runner's setting (`ACP_CLI_KINDS`), never the payload's (local-agents 12 items 6, 7).
     """
 
+    acp_kinds = {kind.strip() for kind in settings.ACP_CLI_KINDS.split(",") if kind.strip()}
     return {
-        cli.cli_kind: _RUNTIMES[cli.cli_kind](settings)
+        cli.cli_kind: (
+            AcpRuntime(cli_kind=cli.cli_kind, settings=settings)
+            if cli.cli_kind in acp_kinds and cli.cli_kind in ACP_BRIDGES
+            else _RUNTIMES[cli.cli_kind](settings)
+        )
         for cli in clis
         if cli.meets_floor and cli.cli_kind in _RUNTIMES
     }

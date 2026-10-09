@@ -112,3 +112,15 @@ def test_a_skill_body_over_64_kib_is_refused() -> None:
         WorkerRuntimeContext.model_validate(
             valid_context_payload() | {"skills": [_skill(body=body)]}
         )
+
+
+def test_cli_kind_admits_any_harness_the_registration_pattern_does() -> None:
+    """Local-agents 12 item 6: which runtime serves a kind is the Runner's choice."""
+
+    payload = valid_context_payload()
+
+    assert WorkerRuntimeContext.model_validate({**payload, "cli_kind": "gemini_cli"}).cli_kind == (
+        "gemini_cli"
+    )
+    with pytest.raises(ValidationError):
+        WorkerRuntimeContext.model_validate({**payload, "cli_kind": "Gemini-CLI"})
