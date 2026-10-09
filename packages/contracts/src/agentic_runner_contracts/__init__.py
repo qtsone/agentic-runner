@@ -46,6 +46,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # row omits the key while it is absent, so a control plane on 3.6 parses a beat unchanged
 # until a user-hosted Runner has read a subscription's windows -- upgrade the control
 # plane before the Runner.
+# 3.8.0 (console-v2 issue 30): `oauth_connector` -- `OAuthStart`, `SealedOAuthCode` and
+# `OAuthDisconnect` on `HeartbeatAck.oauth_starts` / `oauth_codes` / `oauth_disconnects`,
+# and `OAuthAuthorizeUrl`, token `SealedCredential`s and `OAuthOutcome` on
+# `HeartbeatEnvelope.oauth_authorizations` / `oauth_tokens` / `oauth_outcomes`. Additive;
+# the envelope omits each key while it is empty. But the ack forbids extra keys, so the
+# platform must not send an OAuth item to a Runner below 3.8.
 __version__ = "3.7.0"
 
 __all__ = ["__version__"]
