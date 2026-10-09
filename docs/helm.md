@@ -76,6 +76,11 @@ it. The chart never chooses for you. A `contract_uid` Runner that cannot change 
 refuses to start, logs `refusing to start (isolation_unavailable)` naming `CAP_SETUID`, and
 stays NotReady.
 
+Do not put `codex_cli` in `ACP_CLI_KINDS` on a Runner pod. ACP Codex runs every command in
+its bwrap sandbox, and the default `RuntimeDefault` seccomp profile stops bwrap creating a
+namespace in either isolation mode, so every command fails. ACP Codex runs only on a host
+where bwrap starts; Codex on a pod uses the per-CLI runtime.
+
 ## The Recipient Key
 
 Funders seal credentials to a Runner's Recipient Key. The chart keeps **one key per

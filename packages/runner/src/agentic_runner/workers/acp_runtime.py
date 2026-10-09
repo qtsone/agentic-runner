@@ -34,7 +34,19 @@ Facts this module stands on (the LA-02 spike, re-read against the pinned bridge 
   is refused, and a harness-root ``config.toml`` may hold only ``_CODEX_HARNESS_ROOT_KEYS``
   (LA-19): nothing may load that the Runner did not choose.
 - claude-agent-acp loads the Workspace's settings, hooks, ``.mcp.json`` and ``CLAUDE.md``
-  unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``.
+  unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``. The
+  harness root is the Contract's uid's to write, and its ``user`` source is more than
+  ``settings.json``: a skill's or command's ``allowed-tools`` is an allow rule, and an
+  agent, a hook or ``CLAUDE.md`` would steer every later Directive of that Contract. So no
+  setting source loads at all, the ``user`` one included: measured on claude 2.1.280, the
+  harness root's skills, commands, agents, ``CLAUDE.md`` and settings stay out while its
+  ``.credentials.json`` login still signs the requests (LA-12d item 2). The bridge itself
+  still reads the harness root's ``settings.json`` for the initial mode, bypass and model
+  list, so that file may hold only ``_CLAUDE_HARNESS_ROOT_KEYS``.
+- A Claude permission request for an MCP tool names no command. It carries the serving
+  server in ``_meta.claudeCode.mcpServer``, and ``source: "dynamic"`` is a server from the
+  CLI's ``--mcp-config``: the ones ``session/new`` sent, the only ones ``strictMcpConfig``
+  loads. A granted server's tool is allowed (LA-12d item 1).
 
 A ``cli_kind`` with no pinned bridge (local-agents 18) runs the command its Agent Runtime
 Profile names, and only on a Runner whose host pinned that kind's executable in
@@ -187,9 +199,21 @@ _CODEX_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
     {"model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity", "notice"}
 )
 
+# What a harness-root `settings.json` may set: the choices Claude Code writes there itself.
+# The CLI no longer loads it, but the bridge does; `permissions`, `hooks`, `env`,
+# `apiKeyHelper`, `enabledPlugins` and the rest would be the Contract's own file steering it.
+_CLAUDE_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {"$schema", "model", "effortLevel", "alwaysThinkingEnabled"}
+)
+# The `mcpServer.source` of a server the CLI got from `--mcp-config`, which is where the
+# bridge puts `session/new`'s servers. A name alone is the config key as authored, so a
+# server from any other source could reuse a granted slug.
+_CLAUDE_SENT_MCP_SOURCE: Final[str] = "dynamic"
+
 _CLAUDE_SESSION_OPTIONS: Final[Mapping[str, object]] = {
-    # The harness root's own settings only: no Workspace settings, hooks or CLAUDE.md.
-    "settingSources": ["user"],
+    # No settings file, hook, skill, command, agent or CLAUDE.md from anywhere, the
+    # Contract's harness root included; the login is not a setting source and still loads.
+    "settingSources": [],
     # Only the servers sent over ACP; never the Workspace's `.mcp.json`.
     "strictMcpConfig": True,
     # Bypass is never offered as a mode, whatever a settings file asks for.
@@ -267,6 +291,7 @@ class _Turn:
     output: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     held: bool = False
+    session_id: str = ""
     usage_windows: tuple[UsageWindow, ...] = ()
 
 
@@ -389,6 +414,10 @@ class AcpRuntime:
             )
             if config_refusal:
                 return refuse("refused: Codex config file", config_refusal)
+        if self._is_claude and harness_root is not None:
+            settings_refusal = _claude_settings_refusal(harness_root)
+            if settings_refusal:
+                return refuse("refused: Claude settings file", settings_refusal)
 
         # The activity refuses this first, with Evidence; checked again where it runs.
         command_refusal = self.acp_command_refusal(request.acp_command)
@@ -539,7 +568,7 @@ class AcpRuntime:
             with recorded_group(process.pid):
                 try:
                     stop_reason, model_usage, error = await asyncio.wait_for(
-                        self._turn(connection, request, workspace_path, extra_env),
+                        self._turn(connection, request, workspace_path, extra_env, turn),
                         timeout=self._timeout_seconds,
                     )
                 finally:
@@ -551,6 +580,17 @@ class AcpRuntime:
             await terminate_process_tree(process)
             raise
         stderr = await stderr_task
+        if self._is_codex and turn.session_id:
+            # After the bridge exited, so Codex has flushed the rollout, and before the
+            # api_key attempt root holding it is removed.
+            codex_home = Path(env[ACP_BRIDGES["codex_cli"].config_root_env])
+            total = await asyncio.to_thread(
+                _codex_rollout_usage, codex_home, turn.session_id, model_usage
+            )
+            if total is None:
+                turn.notes.append("usage: the bridge's last model call only; no rollout total")
+            else:
+                model_usage = total
         return stop_reason, model_usage, stderr, error
 
     async def _turn(
@@ -559,6 +599,7 @@ class AcpRuntime:
         request: DirectiveRequest,
         workspace_path: Path,
         extra_env: Mapping[str, str],
+        turn: _Turn,
     ) -> tuple[str, tuple[ModelUsage, ...], str]:
         try:
             await connection.request(
@@ -584,7 +625,7 @@ class AcpRuntime:
                     }
                 }
             session = await connection.request("session/new", session_params)
-            session_id = str(session.get("sessionId") or "")
+            session_id = turn.session_id = str(session.get("sessionId") or "")
             if self._is_claude and _offers_mode(session, _CLAUDE_MODE):
                 await connection.request(
                     "session/set_mode", {"sessionId": session_id, "modeId": _CLAUDE_MODE}
@@ -625,19 +666,22 @@ class AcpRuntime:
         turn: _Turn,
     ) -> Mapping[str, Any]:
         tool_call = params.get("toolCall") or {}
-        raw_input = tool_call.get("rawInput") if isinstance(tool_call, Mapping) else None
-        argv, cwd = _requested_command(raw_input, workspace_path)
-        described = (
-            shlex.join(argv)
-            if argv
-            else str(tool_call.get("title") or "an action")
-            if isinstance(tool_call, Mapping)
-            else "an action"
+        title = str(tool_call.get("title") or "") if isinstance(tool_call, Mapping) else ""
+        mcp_server = (
+            _granted_mcp_server(tool_call, request.mcp_servers or ()) if self._is_claude else None
         )
-        described = _redact(described)
-        # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid nothing
-        # else keeps an allowlisted command out of another Work Record's Workspace.
-        verdict, reason = _verdict(argv, cwd, request, workspace_path)
+        if mcp_server is not None:
+            # Checked first: an MCP tool's arguments are not a command, even one named so.
+            described = _redact(f"{title} (MCP server {mcp_server})")
+            verdict, reason = _Verdict.ALLOW, "a granted MCP server's tool"
+        else:
+            raw_input = tool_call.get("rawInput") if isinstance(tool_call, Mapping) else None
+            argv, cwd = _requested_command(raw_input, workspace_path)
+            described = _redact(shlex.join(argv) if argv else title or "an action")
+            # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid
+            # nothing else keeps an allowlisted command out of another Work Record's
+            # Workspace.
+            verdict, reason = _verdict(argv, cwd, request, workspace_path)
         options = params.get("options") or []
         if verdict == _Verdict.ALLOW:
             turn.notes.append(f"permission allowed: {described}")
@@ -879,6 +923,44 @@ def _codex_config_refusal(workspace_path: Path, harness_root: Path | None) -> st
     return None
 
 
+def _claude_settings_refusal(harness_root: Path) -> str | None:
+    """Why the harness root's ``settings.json`` refuses a Claude Directive, or None.
+
+    As ``_codex_config_refusal``: the key names, never the path, reach the control plane.
+    """
+
+    try:
+        text = (harness_root / "settings.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "the harness root's settings.json cannot be read"
+    try:
+        settings = json.loads(text)
+    except ValueError:
+        return "the harness root's settings.json does not parse"
+    if not isinstance(settings, dict):
+        return "the harness root's settings.json is not an object"
+    unexpected = sorted(set(settings) - _CLAUDE_HARNESS_ROOT_KEYS)
+    if unexpected:
+        return f"the harness root's settings.json sets {', '.join(unexpected)}; remove them"
+    return None
+
+
+def _granted_mcp_server(tool_call: object, granted: Sequence[McpServerEntry]) -> str | None:
+    """The granted server a Claude permission request's MCP tool is served by, or None."""
+
+    if not isinstance(tool_call, Mapping):
+        return None
+    meta = tool_call.get("_meta")
+    claude = meta.get("claudeCode") if isinstance(meta, Mapping) else None
+    server = claude.get("mcpServer") if isinstance(claude, Mapping) else None
+    if not isinstance(server, Mapping) or server.get("source") != _CLAUDE_SENT_MCP_SOURCE:
+        return None
+    name = server.get("name")
+    return name if isinstance(name, str) and name in {e.slug for e in granted} else None
+
+
 @contextlib.contextmanager
 def _attempt_codex_home(
     proxy_url: str, harness_root: Path, sandbox: DirectiveSandbox | None
@@ -1032,6 +1114,62 @@ def _model_usage(response: Mapping[str, Any]) -> tuple[ModelUsage, ...]:
             )
         )
     return tuple(usage)
+
+
+def _codex_rollout_usage(
+    codex_home: Path, session_id: str, reported: tuple[ModelUsage, ...]
+) -> tuple[ModelUsage, ...] | None:
+    """The whole turn's usage from the Codex thread's rollout, or None if it has none.
+
+    codex-acp 2.1.1 reports ``tokenUsage.last`` -- the turn's last model call -- as the
+    prompt response's ``model_usage`` (LA-12d item 4). One Directive is one session with
+    one turn, so the thread's ``total_token_usage`` is that turn's. The ACP session id is
+    the Codex thread id, which names the rollout file.
+    """
+
+    # The id goes into a glob, and a subscription harness root keeps other Directives'
+    # rollouts: anything but a thread id could match, and meter, one of theirs.
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        return None
+    total: Mapping[str, Any] | None = None
+    model = reported[0].model if reported else None
+    try:
+        for path in (codex_home / "sessions").rglob(f"rollout-*-{session_id}.jsonl"):
+            with path.open(encoding="utf-8") as rollout:
+                for line in rollout:
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    payload = entry.get("payload") if isinstance(entry, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    if entry.get("type") == "turn_context" and isinstance(
+                        payload.get("model"), str
+                    ):
+                        model = model or payload["model"]
+                    info = payload.get("info") if payload.get("type") == "token_count" else None
+                    usage = info.get("total_token_usage") if isinstance(info, dict) else None
+                    if isinstance(usage, dict):
+                        total = usage
+    except OSError:
+        return None
+    if total is None or model is None:
+        return None
+    cached = _count(total, "cached_input_tokens")
+    return (
+        ModelUsage(
+            model=model,
+            # Net of the cached part, as the bridge's own count is.
+            input_tokens=max(_count(total, "input_tokens") - cached, 0),
+            output_tokens=_count(total, "output_tokens"),
+            cached_read_tokens=cached,
+            cached_write_tokens=_count(total, "cache_write_input_tokens"),
+            reasoning_output_tokens=_count(total, "reasoning_output_tokens"),
+        ),
+    )
 
 
 def _count(values: Mapping[str, Any], key: str) -> int:

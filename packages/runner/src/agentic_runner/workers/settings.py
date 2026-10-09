@@ -137,7 +137,9 @@ class WorkerSettings(BaseSettings):
         default="",
         description=(
             "Comma-separated cli_kinds (`codex_cli`, `claude_code`) this Runner serves through "
-            "the pinned ACP bridge instead of the per-CLI runtime (local-agents 12)."
+            "the pinned ACP bridge instead of the per-CLI runtime (local-agents 12). Never "
+            "`codex_cli` on a Runner pod: its bwrap sandbox cannot start under the default "
+            "seccomp profile (LA-12d item 3)."
         ),
     )
     ACP_PROFILE_CLI_KINDS: str = Field(
