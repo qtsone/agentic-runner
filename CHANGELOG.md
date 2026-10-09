@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.8.0](https://github.com/qtsone/agentic-runner/compare/v3.7.0...v3.8.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** OAuth on the Runner -- PKCE start, sealed code exchange, refresh, revoke (QTS-909) ([#38](https://github.com/qtsone/agentic-runner/issues/38)) ([c35e239](https://github.com/qtsone/agentic-runner/commit/c35e239d40d967650380a40ecb60f242dd6b8c54))
+
 # [3.7.0](https://github.com/qtsone/agentic-runner/compare/v3.6.0...v3.7.0) (2026-10-09)
 
 
