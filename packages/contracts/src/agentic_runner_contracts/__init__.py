@@ -59,6 +59,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Additive with a default. A Runner one minor behind has no `repo read` / `repo branch`
 # callback, so an Organisation-scoped Work Record on it reads and writes nothing and ends
 # Organisation-scoped; the platform's bind endpoint must ship before the Runner calls it.
-__version__ = "3.10.0"
+__version__ = "3.11.0"
 
 __all__ = ["__version__"]

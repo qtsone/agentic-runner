@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.11.0](https://github.com/qtsone/agentic-runner/compare/v3.10.0...v3.11.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** repo read/branch, Product binding and the per-repository tag check (ADR-0018 §5-§7, QTS-1106) ([#41](https://github.com/qtsone/agentic-runner/issues/41)) ([187abcb](https://github.com/qtsone/agentic-runner/commit/187abcb75aa172e4b3fcb3a4c1d8eafbce9fcf21))
+
 # [3.10.0](https://github.com/qtsone/agentic-runner/compare/v3.9.0...v3.10.0) (2026-10-09)
 
 
