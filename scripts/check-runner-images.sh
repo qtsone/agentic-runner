@@ -1,18 +1,20 @@
 #!/usr/bin/env sh
-# The image test for PRD issue 46: the barebones Runner image carries python, git, codex
-# and claude and none of pytest, buf or alembic, and a contract_uid Runner without
+# The image test for PRD issue 46: the barebones Runner image carries python, git, codex,
+# claude and their pinned ACP bridges (local-agents 12) and none of pytest, buf or alembic, and a contract_uid Runner without
 # CAP_SETUID refuses to start. Usage: check-runner-images.sh <runner image>
 set -eu
 
 runner="$1"
 
-echo "== ${runner}: the four tools are present"
+echo "== ${runner}: the tools are present"
 docker run --rm --entrypoint sh "${runner}" -c '
   set -e
-  for tool in python git codex claude; do command -v "$tool" >/dev/null || { echo "missing: $tool"; exit 1; }; done
+  for tool in python git codex claude codex-acp claude-agent-acp; do command -v "$tool" >/dev/null || { echo "missing: $tool"; exit 1; }; done
   agentic-runner --version
   codex --version
   claude --version
+  codex-acp --version
+  claude-agent-acp --version
 '
 echo "== ${runner}: no test tooling, no buf, no Alembic"
 docker run --rm --entrypoint sh "${runner}" -c '
