@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.12.0](https://github.com/qtsone/agentic-runner/compare/v3.11.0...v3.12.0) (2026-10-09)
+
+
+### Features
+
+* **contracts:** the attestation names each CLI's pinned ACP bridge (QTS-1322) ([#43](https://github.com/qtsone/agentic-runner/issues/43)) ([9340d8b](https://github.com/qtsone/agentic-runner/commit/9340d8b94543455b8ad3879649a1eb8901bacd5d)), closes [#32](https://github.com/qtsone/agentic-runner/issues/32)
+
 # [3.11.0](https://github.com/qtsone/agentic-runner/compare/v3.10.0...v3.11.0) (2026-10-09)
 
 
