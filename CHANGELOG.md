@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.6.0](https://github.com/qtsone/agentic-runner/compare/v3.5.0...v3.6.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** Claude Code in-place sign-in per Contract, long-lived token by default (QTS-890) ([#36](https://github.com/qtsone/agentic-runner/issues/36)) ([26a1f62](https://github.com/qtsone/agentic-runner/commit/26a1f62c969f23c88a8e6367787e7ff474fddcc8)), closes [#32](https://github.com/qtsone/agentic-runner/issues/32)
+
 # [3.5.0](https://github.com/qtsone/agentic-runner/compare/v3.4.2...v3.5.0) (2026-10-09)
 
 

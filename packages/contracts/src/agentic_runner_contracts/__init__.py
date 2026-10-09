@@ -42,6 +42,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `SignInCodeRelay` on `HeartbeatEnvelope.sign_in_codes`. Additive; the envelope omits the
 # key while it is empty. But the ack forbids extra keys, so the platform must not relay a
 # code to a Runner below 3.6.
-__version__ = "3.5.0"
+__version__ = "3.6.0"
 
 __all__ = ["__version__"]
