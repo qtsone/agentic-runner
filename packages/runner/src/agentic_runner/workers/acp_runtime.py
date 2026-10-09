@@ -35,6 +35,17 @@ Facts this module stands on (the LA-02 spike, re-read against the pinned bridge 
   (LA-19): nothing may load that the Runner did not choose.
 - claude-agent-acp loads the Workspace's settings, hooks, ``.mcp.json`` and ``CLAUDE.md``
   unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``.
+
+A ``cli_kind`` with no pinned bridge (local-agents 18) runs the command its Agent Runtime
+Profile names, and only on a Runner whose host pinned that kind's executable in
+``ACP_PROFILE_CLI_KINDS`` (``gemini_cli=/usr/local/bin/gemini``). The Profile supplies the
+arguments, never the program: an ``argv[0]`` that is not exactly the host-pinned path is
+refused, or whoever edits the Profile would choose what runs on the host -- a shell, or a
+binary the repository ships. None of the facts above are known for that harness. It gets
+exactly a pinned bridge's isolation -- the Contract's uid,
+``DirectiveSandbox``, the reserved env, the granted MCP servers, the egress proxy and the
+permission seam -- with the harness root as ``XDG_CONFIG_HOME``, the one config-root
+convention the Runner can assume of a harness it does not know.
 """
 
 from __future__ import annotations
@@ -86,9 +97,10 @@ from agentic_runner.workers.command_policy import CommandPolicy, evaluate_comman
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
+from agentic_runner_contracts.redaction import redact_secret_like_text
 from agentic_runner_contracts.runner_registration import UsageWindow
 
-__all__ = ["ACP_BRIDGES", "AcpBridge", "AcpRuntime"]
+__all__ = ["ACP_BRIDGES", "AcpBridge", "AcpRuntime", "profile_acp_executables"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +138,41 @@ ACP_BRIDGES: Final[Mapping[str, AcpBridge]] = {
         config_root_env="CLAUDE_CONFIG_DIR",
     ),
 }
+
+_CLI_KIND_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def profile_acp_executables(settings: WorkerSettings) -> Mapping[str, str]:
+    """Each kind this host opted in to run a Profile-named ACP command for, to the absolute
+    path of the one executable it trusts for that kind (local-agents 18).
+
+    A pinned kind, a malformed one, a kind named twice or a path that is not absolute is a
+    ValueError, so a typo stops the Runner starting instead of leaving a kind silently
+    unserved or served by whatever a relative name resolves to.
+    """
+
+    executables: dict[str, str] = {}
+    for entry in (part.strip() for part in settings.ACP_PROFILE_CLI_KINDS.split(",")):
+        if not entry:
+            continue
+        kind, separator, executable = (part.strip() for part in entry.partition("="))
+        if kind in ACP_BRIDGES:
+            raise ValueError(
+                f"ACP_PROFILE_CLI_KINDS names {kind!r}, whose ACP bridge the Runner pins; "
+                "a Profile never names the command for it"
+            )
+        if not _CLI_KIND_PATTERN.fullmatch(kind):
+            raise ValueError(f"ACP_PROFILE_CLI_KINDS names {kind!r}, which is not a cli_kind")
+        if not separator or not Path(executable).is_absolute():
+            raise ValueError(
+                f"ACP_PROFILE_CLI_KINDS must pin {kind!r} to an absolute executable path "
+                f"({kind}=/path/to/executable)"
+            )
+        if kind in executables:
+            raise ValueError(f"ACP_PROFILE_CLI_KINDS names {kind!r} twice")
+        executables[kind] = executable
+    return dict(sorted(executables.items()))
+
 
 _ACP_PROTOCOL_VERSION: Final[int] = 1
 # ACP frames are single JSON lines; a tool call carrying a file diff runs far past
@@ -224,7 +271,8 @@ class _Turn:
 
 
 class AcpRuntime:
-    """An Agent Runtime that serves one ``cli_kind`` through its pinned ACP bridge."""
+    """An Agent Runtime that serves one ``cli_kind`` through its pinned ACP bridge, or, for
+    a kind with none, through the command the Directive's Profile names."""
 
     auth_modes = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     # Never a key of its own: an `api_key` Directive runs on the attempt's proxy pair.
@@ -239,7 +287,10 @@ class AcpRuntime:
         ask: Ask = ask_over_callback,
     ) -> None:
         self._cli_kind = cli_kind
-        self._bridge = ACP_BRIDGES[cli_kind]
+        self._bridge = ACP_BRIDGES.get(cli_kind)
+        self._profile_executable = (
+            None if self._bridge is not None else profile_acp_executables(settings).get(cli_kind)
+        )
         self._settings = settings
         # Tests drive a fake ACP agent through this; production runs the pinned bridge.
         self._bridge_argv = list(bridge_argv) if bridge_argv is not None else None
@@ -248,6 +299,37 @@ class AcpRuntime:
     @property
     def _is_codex(self) -> bool:
         return self._cli_kind == "codex_cli"
+
+    @property
+    def _is_claude(self) -> bool:
+        return self._cli_kind == "claude_code"
+
+    @property
+    def _executable(self) -> str:
+        return self._bridge.executable if self._bridge is not None else self._cli_kind
+
+    def acp_command_refusal(self, acp_command: Sequence[str]) -> str | None:
+        """Why this runtime will not run the Profile-named ``acp_command``, or None.
+
+        None for a pinned kind: its bridge runs and the Profile's command is never read
+        (the activity refuses one sent for it). For any other kind the host's pinned
+        executable must be exactly ``argv[0]``; the Profile chooses only the arguments.
+        """
+
+        if self._bridge is not None:
+            return None
+        if not acp_command:
+            return f"the Agent Runtime Profile names no ACP command for {self._cli_kind}"
+        if self._profile_executable is None:
+            return f"this Runner's host pinned no ACP executable for {self._cli_kind}"
+        if not Path(acp_command[0]).is_absolute():
+            return f"the Profile's ACP command for {self._cli_kind} is not an absolute path"
+        if acp_command[0] != self._profile_executable:
+            return (
+                f"the Profile's ACP command for {self._cli_kind} is not the executable this "
+                "Runner's host pinned for it"
+            )
+        return None
 
     @property
     def _timeout_seconds(self) -> int:
@@ -285,8 +367,10 @@ class AcpRuntime:
             return self._refused(request, directive_workspace_id, guard_mode, error)
 
         extra_env = dict(request.extra_env)
+        # The name `llm_proxy.attempt_env` gave this kind its endpoint under.
         proxy_url = extra_env.get(
-            PROXY_BASE_URL_ENV if self._is_codex else "ANTHROPIC_BASE_URL", ""
+            "ANTHROPIC_BASE_URL" if self._cli_kind.startswith("claude") else PROXY_BASE_URL_ENV,
+            "",
         )
         if request.auth_mode == AuthMode.API_KEY and not proxy_url:
             # Without the proxy pair the only credential left for the harness is a login in
@@ -306,7 +390,11 @@ class AcpRuntime:
             if config_refusal:
                 return refuse("refused: Codex config file", config_refusal)
 
-        argv = self._argv(request.auth_mode)
+        # The activity refuses this first, with Evidence; checked again where it runs.
+        command_refusal = self.acp_command_refusal(request.acp_command)
+        if command_refusal is not None:
+            return refuse("refused: Profile ACP command", command_refusal)
+        argv = self._argv(request)
         command_hash = hash_command(argv)
         floor_refusal = command_policy_refusal(
             argv=argv,
@@ -319,18 +407,26 @@ class AcpRuntime:
         if floor_refusal is not None:
             return refuse(f"refused: command policy ({floor_refusal})", floor_refusal)
 
+        if self._bridge is not None:
+            runs = f"bridge={self._bridge.package}@{self._bridge.version}"
+        else:
+            # The executable's name and nothing of its arguments here; the note below
+            # carries them, scrubbed (local-agents 18 item 4).
+            command = redact_secret_like_text(Path(argv[0]).name)
+            runs = f"cli_kind={self._cli_kind}; command={command}"
         guard_mode = (
-            f"runtime=acp; bridge={self._bridge.package}@{self._bridge.version}; "
-            f"auth={request.auth_mode.value}; permission=command-policy; "
-            f"fallback={request.permission_fallback.value}"
+            f"runtime=acp; {runs}; auth={request.auth_mode.value}; "
+            f"permission=command-policy; fallback={request.permission_fallback.value}"
         )
         turn = _Turn()
+        if self._bridge is None:
+            turn.notes.append(f"profile ACP command: {redact_secret_like_text(shlex.join(argv))}")
         timed_out = False
         async with contextlib.AsyncExitStack() as stack:
             env = self._env(request, harness_root)
             if self._is_codex and request.auth_mode == AuthMode.API_KEY:
                 assert harness_root is not None  # Codex always has one: see _harness_root
-                env[self._bridge.config_root_env] = str(
+                env[ACP_BRIDGES["codex_cli"].config_root_env] = str(
                     stack.enter_context(_attempt_codex_home(proxy_url, harness_root, sandbox))
                 )
             apply_extra_env(env, request.extra_env)
@@ -343,7 +439,7 @@ class AcpRuntime:
             except TimeoutError:
                 timed_out = True
                 stop_reason, model_usage, stderr = "", (), ""
-                error = f"{self._bridge.executable} timed out after {self._timeout_seconds}s"
+                error = f"{self._executable} timed out after {self._timeout_seconds}s"
             except OSError as exception:
                 return self._result(
                     request,
@@ -377,9 +473,13 @@ class AcpRuntime:
             model_usage=model_usage,
         )
 
-    def _argv(self, auth_mode: AuthMode) -> list[str]:
+    def _argv(self, request: DirectiveRequest) -> list[str]:
+        if self._bridge is None:
+            # Only for a kind with no pinned bridge: for a pinned one the activity refuses a
+            # Profile-named command before it gets here, and this never reads it.
+            return list(request.acp_command)
         argv = list(self._bridge_argv) if self._bridge_argv else [self._bridge.executable]
-        if not self._is_codex and auth_mode == AuthMode.API_KEY:
+        if self._is_claude and request.auth_mode == AuthMode.API_KEY:
             # The bridge's own guard: refuse any turn that would bill a claude.ai login.
             argv.append("--hide-claude-auth")
         return argv
@@ -395,12 +495,16 @@ class AcpRuntime:
         path = os.environ.get("PATH") or os.defpath
         env = {"PATH": path}
         if harness_root is not None:
-            env[self._bridge.config_root_env] = str(harness_root)
+            config_root_env = (
+                self._bridge.config_root_env if self._bridge is not None else "XDG_CONFIG_HOME"
+            )
+            env[config_root_env] = str(harness_root)
         if request.sandbox is not None:
             env["HOME"] = str(request.sandbox.home_dir)
             env["TMPDIR"] = str(request.sandbox.tmp_dir)
-        program = self._bridge.harness_program
-        env[self._bridge.harness_path_env] = shutil.which(program, path=path) or program
+        if self._bridge is not None:
+            program = self._bridge.harness_program
+            env[self._bridge.harness_path_env] = shutil.which(program, path=path) or program
         if self._is_codex:
             env["INITIAL_AGENT_MODE"] = "workspace-write"
             env["NO_BROWSER"] = "1"
@@ -473,7 +577,7 @@ class AcpRuntime:
                 "cwd": str(workspace_path),
                 "mcpServers": acp_mcp_servers(request.mcp_servers or (), extra_env),
             }
-            if not self._is_codex:
+            if self._is_claude:
                 session_params["_meta"] = {
                     "claudeCode": {
                         "options": {**_CLAUDE_SESSION_OPTIONS, "model": self._settings.CLAUDE_MODEL}
@@ -481,7 +585,7 @@ class AcpRuntime:
                 }
             session = await connection.request("session/new", session_params)
             session_id = str(session.get("sessionId") or "")
-            if not self._is_codex and _offers_mode(session, _CLAUDE_MODE):
+            if self._is_claude and _offers_mode(session, _CLAUDE_MODE):
                 await connection.request(
                     "session/set_mode", {"sessionId": session_id, "modeId": _CLAUDE_MODE}
                 )
@@ -492,7 +596,7 @@ class AcpRuntime:
         except AcpError as exception:
             return "", (), str(exception)
         except ConnectionError as exception:
-            return "", (), str(exception) or f"{self._bridge.executable} closed its stdout"
+            return "", (), str(exception) or f"{self._executable} closed its stdout"
         return str(response.get("stopReason") or ""), _model_usage(response), ""
 
     def _handler(
@@ -561,7 +665,7 @@ class AcpRuntime:
         guard_mode: str,
         error: str,
     ) -> DirectiveResult:
-        command_hash = hash_command([self._bridge.executable, "refused"])
+        command_hash = hash_command([self._executable, "refused"])
         return DirectiveResult(
             exit_code=126,
             stdout="",

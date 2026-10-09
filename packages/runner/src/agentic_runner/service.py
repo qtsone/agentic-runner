@@ -107,7 +107,7 @@ from agentic_runner.usage_windows import (
     UsageWindows,
 )
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
-from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime
+from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_executables
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.claude_sign_in import ClaudeSignIns
@@ -165,6 +165,7 @@ __all__ = [
     "run",
     "run_runner_lifecycle_hook",
     "run_worker_until_terminated",
+    "with_profile_acp_cli_kinds",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -406,18 +407,47 @@ def build_agent_runtimes(
 
     Which runtime serves a kind -- its pinned ACP bridge or the per-CLI one -- is this
     Runner's setting (`ACP_CLI_KINDS`), never the payload's (local-agents 12 items 6, 7).
+    A kind the host opted in to run a Profile-named command for (`ACP_PROFILE_CLI_KINDS`,
+    local-agents 18) reaches `clis` through :func:`with_profile_acp_cli_kinds`.
     """
 
     acp_kinds = {kind.strip() for kind in settings.ACP_CLI_KINDS.split(",") if kind.strip()}
+    profile_kinds = set(profile_acp_executables(settings))
     return {
         cli.cli_kind: (
             AcpRuntime(cli_kind=cli.cli_kind, settings=settings)
-            if cli.cli_kind in acp_kinds and cli.cli_kind in ACP_BRIDGES
+            if cli.cli_kind in profile_kinds
+            or (cli.cli_kind in acp_kinds and cli.cli_kind in ACP_BRIDGES)
             else _RUNTIMES[cli.cli_kind](settings)
         )
         for cli in clis
-        if cli.meets_floor and cli.cli_kind in _RUNTIMES
+        if cli.meets_floor and (cli.cli_kind in _RUNTIMES or cli.cli_kind in profile_kinds)
     }
+
+
+def with_profile_acp_cli_kinds(
+    attestation: HostAttestation | None, settings: WorkerSettings
+) -> HostAttestation | None:
+    """The attestation, plus each kind the host opted in to run a Profile-named ACP command
+    for, so routing sends that kind here and the registry serves it (local-agents 18).
+
+    The Runner does not start the host's executable just to ask its version, so the
+    version reported is the Runner's own: what serves the kind is this build's ACP runtime.
+    No attestation stays none -- such a Runner is routed nothing at all.
+    """
+
+    if attestation is None:
+        return None
+    found = {cli.cli_kind for cli in attestation.clis}
+    added = [
+        CliVersion(cli_kind=kind, version=runner_version, meets_floor=True)
+        for kind in profile_acp_executables(settings)
+        if kind not in found
+    ]
+    # Validated, not copied: the attestation's cap on `clis` holds for these too.
+    return HostAttestation.model_validate(
+        {**attestation.model_dump(), "clis": [*attestation.clis, *added]}
+    )
 
 
 async def run_runner_lifecycle_hook(hooks: HookRunner, name: HookName) -> None:
@@ -927,6 +957,11 @@ async def run(
     # with, unless the operator points them at an internal address explicitly.
     os.environ.setdefault("INTERNAL_FASTAPI_BASE_URL", control_plane)
     settings = get_worker_settings()
+    try:
+        attestation = with_profile_acp_cli_kinds(attestation, settings)
+    except ValueError as error:
+        print(f"refusing to start: {error}", flush=True)
+        return 1
     state_dir = config.state_dir
 
     readiness = readiness or Readiness(int(os.environ.get(READINESS_PORT_ENV, "").strip() or 0))

@@ -51,6 +51,7 @@ RESERVED_DIRECTIVE_ENV: Final[frozenset[str]] = frozenset(
         "HOME",
         "PATH",
         "TMPDIR",
+        "XDG_CONFIG_HOME",
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
         "ANTHROPIC_API_KEY",

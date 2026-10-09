@@ -23,6 +23,16 @@ macOS (`tests/install/workstation.sh`).
 
    They drive the `codex` and `claude` already on your `PATH`, so their bundled copies are
    left out.
+
+   Any other ACP harness (Gemini, Cursor, …) runs the command its Agent Runtime Profile
+   names, and only if you opt in: pin its `cli_kind` to the absolute path of the executable
+   you trust in the Runner's `ACP_PROFILE_CLI_KINDS` setting, e.g.
+   `ACP_PROFILE_CLI_KINDS=gemini_cli=/usr/local/bin/gemini` (empty by default; `codex_cli`
+   and `claude_code` are refused there, their bridges are pinned). The Profile chooses
+   only the arguments: a command whose program is not exactly that path is refused, so
+   name only an executable you trust to run on your machine. It runs under the
+   same Contract uid, sandbox, MCP servers, egress proxy and permission checks as a
+   pinned bridge, and the Runner reports the kind so Work Records for it are routed here.
 2. **An Agent Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in
    the console, labelled after the machine (`alice-laptop`). It is shown once and installs
    for 7 days. Your Organisation's Admin can also mint one on the Organisation Console's

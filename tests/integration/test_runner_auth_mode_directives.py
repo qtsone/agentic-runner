@@ -184,10 +184,11 @@ def _activities(
     proxy: _Proxy | None = None,
     isolation: ContractIsolation | None = None,
     usage_windows: UsageWindows | None = None,
+    cli_kind: str = "codex_cli",
 ) -> RunnerRalphActivities:
     return RunnerRalphActivities(
         client,  # type: ignore[arg-type]
-        agent_runtimes={"codex_cli": runtime},
+        agent_runtimes={cli_kind: runtime},
         git_workspace=FakeGitWorkspace(status_evidence=" M README.md", diff_evidence="+change"),
         github_client=FakeGitHubClient(),
         workspace_root=tmp_path,

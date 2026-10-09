@@ -236,6 +236,71 @@ async def test_the_acp_bridge_and_its_harness_run_as_the_contracts_uid(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_a_profile_named_acp_command_runs_as_the_contracts_uid(tmp_path: Path) -> None:
+    """Local-agents 18: a Profile-named command gets exactly a pinned bridge's line."""
+
+    require_uid_separation()
+
+    isolation = ContractIsolation(
+        workspace_root=tmp_path / "workspaces",
+        state_dir=tmp_path / "state",
+        uid_min=60_000,
+        uid_max=60_009,
+        max_processes=512,
+        memory_limit_bytes=4 * 1024**3,
+    )
+    _make_traversable(tmp_path)
+    workspace_a = isolation.prepare_workspace(CONTRACT_A, WORK_RECORD_A)
+    isolation.prepare_workspace(CONTRACT_B, WORK_RECORD_B)
+    sandbox_a = isolation.sandbox(CONTRACT_A, runtime_kind="gemini_cli")
+    sandbox_b = isolation.sandbox(CONTRACT_B, runtime_kind="gemini_cli")
+    secret_b = sandbox_b.harness_config_dir / "oauth_creds.json"
+    secret_b.write_text('{"refresh_token": "contract-b"}')
+    os.chown(secret_b, sandbox_b.uid or 0, sandbox_b.gid or 0)
+    record = tmp_path / "record.jsonl"
+    record.touch(mode=0o666)
+    record.chmod(0o666)
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text(json.dumps({"record": str(record), "probe_reads": [str(secret_b)]}))
+    scenario.chmod(0o644)
+    fake_agent = Path(__file__).parents[1] / "fixtures" / "fake_acp_agent.py"
+    runtime = AcpRuntime(
+        cli_kind="gemini_cli",
+        settings=WorkerSettings(
+            TEMPORAL_ADDRESS="127.0.0.1:7233",
+            INTERNAL_FASTAPI_BASE_URL="http://agentic-api.internal:8000",
+            WORKSPACE_ROOT=tmp_path / "workspaces",
+            CODEX_HOME=tmp_path / "codex-home",
+            ACP_PROFILE_CLI_KINDS=f"gemini_cli={os.path.realpath(sys.executable)}",
+        ),
+    )
+
+    result = await runtime.execute_directive(
+        DirectiveRequest(
+            workspace_path=workspace_a,
+            prompt="Implement the change.",
+            base_branch="main",
+            work_branch="agent/wr-a",
+            sandbox=sandbox_a,
+            extra_env=(
+                ("FAKE_ACP_SCENARIO", str(scenario)),
+                ("OPENAI_BASE_URL", "http://127.0.0.1:4000/attempt/a/v1"),
+                ("OPENAI_API_KEY", "attempt-bearer-not-a-secret"),
+            ),
+            auth_mode=AuthMode.API_KEY,
+            acp_command=(os.path.realpath(sys.executable), str(fake_agent)),
+        )
+    )
+
+    assert result.exit_code == 0, result.error
+    entries = [json.loads(line) for line in record.read_text().splitlines()]
+    seen = next(entry for entry in entries if "uid" in entry)
+    assert seen["uid"] == sandbox_a.uid
+    assert seen["child_uid"] == str(sandbox_a.uid)
+    assert seen["reads"][str(secret_b)] == "PermissionError"
+
+
+@pytest.mark.asyncio
 async def test_the_spawn_floor_binds_the_contracts_processes(tmp_path: Path) -> None:
     """``RLIMIT_NPROC`` and the memory ceiling are on the process, not just in a config."""
 
