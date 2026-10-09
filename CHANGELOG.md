@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.12.2](https://github.com/qtsone/agentic-runner/compare/v3.12.1...v3.12.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **runner:** keep ACP_CLI_KINDS across a workstation reinstall (QTS-1355) ([#45](https://github.com/qtsone/agentic-runner/issues/45)) ([36e97dc](https://github.com/qtsone/agentic-runner/commit/36e97dcd060d5c290843343fb7de468869593998))
+
 ## [3.12.1](https://github.com/qtsone/agentic-runner/compare/v3.12.0...v3.12.1) (2026-10-09)
 
 
