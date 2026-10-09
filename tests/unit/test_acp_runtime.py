@@ -19,7 +19,11 @@ from typing import Any
 import pytest
 
 from agentic_runner.activities import _model_usage_reports, _profile_permission_fallback
-from agentic_runner.service import build_agent_runtimes, with_profile_acp_cli_kinds
+from agentic_runner.service import (
+    build_agent_runtimes,
+    with_acp_bridges,
+    with_profile_acp_cli_kinds,
+)
 from agentic_runner.workers._runtime_support import RESERVED_DIRECTIVE_ENV
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_executables
 from agentic_runner.workers.agent_runtime import (
@@ -34,6 +38,7 @@ from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
 from agentic_runner_contracts.runner_registration import (
+    AcpBridgeVersion,
     CliVersion,
     HostAttestation,
     InstallChannel,
@@ -836,6 +841,49 @@ async def test_extra_env_cannot_move_a_profile_commands_config_root(tmp_path: Pa
 
     assert request.sandbox is not None
     assert fake.env["XDG_CONFIG_HOME"] == str(request.sandbox.harness_config_dir)
+
+
+def test_the_attestation_names_the_pinned_bridge_of_each_kind_served_through_acp(
+    tmp_path: Path,
+) -> None:
+    attestation = HostAttestation(
+        build_id="0" * 64,
+        install_channel=InstallChannel.HELM,
+        os="linux 6.8",
+        session_kind=SessionKind.CONTAINER,
+        store_kind=StoreKind.NONE,
+        clis=[
+            CliVersion(cli_kind="codex_cli", version="0.159.2", meets_floor=True),
+            CliVersion(cli_kind="claude_code", version="2.1.295", meets_floor=True),
+        ],
+    )
+
+    reported = with_acp_bridges(attestation, _settings(tmp_path, ACP_CLI_KINDS="codex_cli"))
+
+    assert reported is not None
+    codex, claude = reported.clis
+    assert codex.acp_bridge == AcpBridgeVersion(
+        package="@agentclientprotocol/codex-acp", version=ACP_BRIDGES["codex_cli"].version
+    )
+    assert claude.acp_bridge is None
+    assert "acp_bridge" not in claude.model_dump()
+    assert with_acp_bridges(attestation, _settings(tmp_path)) == attestation
+
+
+def test_a_kind_below_its_floor_names_no_bridge(tmp_path: Path) -> None:
+    attestation = HostAttestation(
+        build_id="0" * 64,
+        install_channel=InstallChannel.HELM,
+        os="linux 6.8",
+        session_kind=SessionKind.CONTAINER,
+        store_kind=StoreKind.NONE,
+        clis=[CliVersion(cli_kind="codex_cli", version="0.1.0", meets_floor=False)],
+    )
+
+    reported = with_acp_bridges(attestation, _settings(tmp_path, ACP_CLI_KINDS="codex_cli"))
+
+    assert reported is not None
+    assert reported.clis[0].acp_bridge is None
 
 
 def test_a_host_serves_and_reports_only_the_profile_kinds_it_opted_in_to(tmp_path: Path) -> None:

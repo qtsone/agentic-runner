@@ -121,6 +121,7 @@ from agentic_runner_contracts.channel_messages import TranscriptDelivery
 from agentic_runner_contracts.routing import RunnerRoutingIdentity
 from agentic_runner_contracts.runner_registration import (
     RECENT_OUTCOMES_MAX,
+    AcpBridgeVersion,
     CliVersion,
     DirectiveOutcome,
     EgressPosture,
@@ -411,18 +412,51 @@ def build_agent_runtimes(
     local-agents 18) reaches `clis` through :func:`with_profile_acp_cli_kinds`.
     """
 
-    acp_kinds = {kind.strip() for kind in settings.ACP_CLI_KINDS.split(",") if kind.strip()}
+    pinned_kinds = _pinned_acp_cli_kinds(settings)
     profile_kinds = set(profile_acp_executables(settings))
     return {
         cli.cli_kind: (
             AcpRuntime(cli_kind=cli.cli_kind, settings=settings)
-            if cli.cli_kind in profile_kinds
-            or (cli.cli_kind in acp_kinds and cli.cli_kind in ACP_BRIDGES)
+            if cli.cli_kind in profile_kinds or cli.cli_kind in pinned_kinds
             else _RUNTIMES[cli.cli_kind](settings)
         )
         for cli in clis
         if cli.meets_floor and (cli.cli_kind in _RUNTIMES or cli.cli_kind in profile_kinds)
     }
+
+
+def _pinned_acp_cli_kinds(settings: WorkerSettings) -> set[str]:
+    """The kinds `ACP_CLI_KINDS` routes through a bridge this Runner pins."""
+
+    named = {kind.strip() for kind in settings.ACP_CLI_KINDS.split(",") if kind.strip()}
+    return named & ACP_BRIDGES.keys()
+
+
+def with_acp_bridges(
+    attestation: HostAttestation | None, settings: WorkerSettings
+) -> HostAttestation | None:
+    """The attestation, with each kind this Runner serves through its pinned ACP bridge
+    carrying that bridge's package and version (QTS-1322), so the console shows what
+    actually drives the CLI. A kind below its floor is not served, so it names no bridge.
+    """
+
+    if attestation is None:
+        return None
+    pinned_kinds = _pinned_acp_cli_kinds(settings)
+    clis = [
+        cli.model_copy(
+            update={
+                "acp_bridge": AcpBridgeVersion(
+                    package=ACP_BRIDGES[cli.cli_kind].package,
+                    version=ACP_BRIDGES[cli.cli_kind].version,
+                )
+            }
+        )
+        if cli.meets_floor and cli.cli_kind in pinned_kinds
+        else cli
+        for cli in attestation.clis
+    ]
+    return attestation.model_copy(update={"clis": clis})
 
 
 def with_profile_acp_cli_kinds(
@@ -958,7 +992,7 @@ async def run(
     os.environ.setdefault("INTERNAL_FASTAPI_BASE_URL", control_plane)
     settings = get_worker_settings()
     try:
-        attestation = with_profile_acp_cli_kinds(attestation, settings)
+        attestation = with_profile_acp_cli_kinds(with_acp_bridges(attestation, settings), settings)
     except ValueError as error:
         print(f"refusing to start: {error}", flush=True)
         return 1

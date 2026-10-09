@@ -59,6 +59,10 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Additive with a default. A Runner one minor behind has no `repo read` / `repo branch`
 # callback, so an Organisation-scoped Work Record on it reads and writes nothing and ends
 # Organisation-scoped; the platform's bind endpoint must ship before the Runner calls it.
+# 3.12.0 (QTS-1322): `CliVersion.acp_bridge` and `AcpBridgeVersion`. Additive; the row
+# omits the key while it is absent, so a control plane on 3.11 parses an attestation
+# unchanged until a Runner serves a kind through its pinned ACP bridge (`ACP_CLI_KINDS`) --
+# upgrade the control plane before the Runner.
 __version__ = "3.11.0"
 
 __all__ = ["__version__"]
