@@ -54,6 +54,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # platform must not send an OAuth item to a Runner below 3.8.
 # 3.10.0 (console-v2 issue 15): `public_metadata.routine_schedule_id`. Additive, and only
 # the platform builds the name; a Runner never sees a Routine.
-__version__ = "3.9.0"
+__version__ = "3.10.0"
 
 __all__ = ["__version__"]

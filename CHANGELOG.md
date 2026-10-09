@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.10.0](https://github.com/qtsone/agentic-runner/compare/v3.9.0...v3.10.0) (2026-10-09)
+
+
+### Features
+
+* **contracts:** public_metadata.routine_schedule_id for one Routine's Schedule (QTS-921) ([#40](https://github.com/qtsone/agentic-runner/issues/40)) ([3bc3e57](https://github.com/qtsone/agentic-runner/commit/3bc3e576388e4bf83f6b9fba45ea663c95325f10))
+
 # [3.9.0](https://github.com/qtsone/agentic-runner/compare/v3.8.0...v3.9.0) (2026-10-09)
 
 
