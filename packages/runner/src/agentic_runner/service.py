@@ -98,6 +98,12 @@ from agentic_runner.sealed_box import (
 )
 from agentic_runner.tiny_http import HttpRequest, read_request, write_json
 from agentic_runner.triage_activities import RunnerTriageActivities
+from agentic_runner.usage_windows import (
+    ClaudeUsageScreenProbe,
+    CodexRateLimitsProbe,
+    UsageWindowProbe,
+    UsageWindows,
+)
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime
 from agentic_runner.workers.agent_runtime import AgentRuntime
@@ -581,6 +587,8 @@ class ControlPlaneStream:
     runtimes: Mapping[str, AgentRuntime] = field(default_factory=dict)
     contracts: ContractIsolation | None = None
     self_tests: HarnessSelfTests | None = None
+    # Local-agents 10: each subscription's usage windows; None off a user-hosted Runner.
+    usage_windows: UsageWindows | None = None
     # Local-agents 04b: which delivered references fill the LLM proxy's slot, and where.
     llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
     # Local-agents 05: the Claude Code sign-ins a relayed code is typed into.
@@ -651,6 +659,11 @@ class ControlPlaneStream:
             self_test=(
                 self.self_tests.result(contract_id, cli_kind)
                 if self.self_tests is not None
+                else None
+            ),
+            usage_windows=(
+                self.usage_windows.windows(contract_id, cli_kind)
+                if self.usage_windows is not None and not delivered
                 else None
             ),
         )
@@ -1016,6 +1029,9 @@ async def _serve_registered(
         served=runtimes,
         monotonic=time.monotonic,
     )
+    usage_windows = build_usage_windows(
+        host_party=state.host_party, runtimes=runtimes, isolation=isolation, in_flight=in_flight
+    )
     stream = ControlPlaneStream(
         client=RunnerRegistrationClient(base_url=control_plane, client=http_client),
         state=state,
@@ -1043,6 +1059,7 @@ async def _serve_registered(
         runtimes=runtimes,
         contracts=isolation,
         self_tests=self_tests,
+        usage_windows=usage_windows,
     )
     stream.sources = UserSourcePoller(
         stream=SignedIntakeStream(stream.client, state),
@@ -1104,6 +1121,7 @@ async def _serve_registered(
                 messages=messages,
                 tool_servers=tool_servers,
                 sign_ins=sign_ins,
+                usage_windows=usage_windows,
                 # The wake signal rides the connection this process polls with: one
                 # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
                 signaller=TemporalWorkflowSignaller(client),
@@ -1121,13 +1139,20 @@ async def _serve_registered(
         self_test = asyncio.create_task(
             _self_test_forever(self_tests, isolation, SELF_TEST_SWEEP_SECONDS)
         )
+        sweeps = [beat, poll, self_test]
+        if usage_windows is not None:
+            sweeps.append(
+                asyncio.create_task(
+                    _usage_windows_forever(usage_windows, isolation, proxy, SELF_TEST_SWEEP_SECONDS)
+                )
+            )
         readiness.ready = True
         await run_runner_lifecycle_hook(hooks, HookName.RUNNER_STARTUP)
         try:
             await run_worker_until_terminated(worker, stop=stop)
         finally:
             readiness.ready = False
-            for task in (beat, poll, self_test):
+            for task in sweeps:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
@@ -1227,6 +1252,56 @@ async def _self_test_forever(
         await asyncio.sleep(interval)
 
 
+def build_usage_windows(
+    *,
+    host_party: str,
+    runtimes: Mapping[str, AgentRuntime],
+    isolation: ContractIsolation,
+    in_flight: DirectivesInFlight,
+) -> UsageWindows | None:
+    """A probe per served harness, or None off a user-hosted Runner (local-agents 10).
+
+    Subscriptions follow the person (local-agents 04): only a user-hosted Runner runs one,
+    so only there is a usage window anyone's to read.
+    """
+
+    if host_party != "user":
+        return None
+    probes: dict[str, UsageWindowProbe] = {
+        "codex_cli": CodexRateLimitsProbe(),
+        "claude_code": ClaudeUsageScreenProbe(),
+    }
+    return UsageWindows(
+        probes={kind: probe for kind, probe in probes.items() if kind in runtimes},
+        sandbox_for=lambda contract_id, cli_kind: isolation.existing_sandbox(
+            contract_id, runtime_kind=cli_kind
+        ),
+        in_flight=in_flight,
+        monotonic=time.monotonic,
+    )
+
+
+async def _usage_windows_forever(
+    usage_windows: UsageWindows, isolation: ContractIsolation, proxy: LlmProxy, interval: float
+) -> None:
+    """Each signed-in harness root's usage windows, whenever its probe falls due
+    (local-agents 10). A root with a delivered key runs on the proxy, not a subscription."""
+
+    while True:
+        delivered = {
+            (str(slot.contract_id), slot.runtime_kind)
+            for slot in proxy.slots.statuses()
+            if slot.present
+        }
+        try:
+            await usage_windows.run_due(
+                [root for root in isolation.harness_roots() if root not in delivered]
+            )
+        except Exception as error:  # noqa: BLE001 - a lost sweep is retried on the next one
+            _logger.warning("usage window sweep failed: %s", error)
+        await asyncio.sleep(interval)
+
+
 def _activities(
     fastapi: RunnerFastApiClient,
     *,
@@ -1245,6 +1320,7 @@ def _activities(
     signaller: TemporalWorkflowSignaller | None = None,
     tool_servers: ToolServerHealthLog | None = None,
     sign_ins: ClaudeSignIns | None = None,
+    usage_windows: UsageWindows | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1292,6 +1368,7 @@ def _activities(
         tool_server_health=tool_servers,
         attempt_records=attempt_records,
         directives_in_flight=directives_in_flight,
+        usage_windows=usage_windows,
     )
     return [
         *ralph.activity_callables(),

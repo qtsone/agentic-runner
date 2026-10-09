@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from agentic_runner.workers.harness_usage import extract_claude_result
 from agentic_runner_contracts.activity_io import HarnessHold, HarnessHoldKind
 
-__all__ = ["classify_harness_outcome"]
+__all__ = ["classify_harness_outcome", "next_wall_clock", "wall_clock_zone"]
 
 _CLAUDE_CODE: Final[str] = "claude_code"
 _CODEX_CLI: Final[str] = "codex_cli"
@@ -121,7 +121,7 @@ def classify_harness_outcome(
     clock = reset.search(text, limit.end())
     return HarnessHold(
         kind=HarnessHoldKind.USAGE_LIMIT,
-        retry_not_before=_next_wall_clock(clock.group("clock"), now) if clock else None,
+        retry_not_before=next_wall_clock(clock.group("clock"), now) if clock else None,
     )
 
 
@@ -185,7 +185,7 @@ def _joined(*parts: str) -> str:
     return "\n".join(part.strip() for part in parts if part and part.strip())
 
 
-def _next_wall_clock(text: str, now: datetime) -> str | None:
+def next_wall_clock(text: str, now: datetime) -> str | None:
     match = _CLOCK_RE.match(text.strip())
     if match is None:
         return None
@@ -193,14 +193,14 @@ def _next_wall_clock(text: str, now: datetime) -> str | None:
     if not 1 <= hour <= 12 or not 0 <= minute <= 59:
         return None
     hour = hour % 12 + (12 if match.group("half").lower() == "p" else 0)
-    local_now = now.astimezone(_zone(match.group("zone")))
+    local_now = now.astimezone(wall_clock_zone(match.group("zone")))
     candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= local_now:
         candidate += timedelta(days=1)
     return candidate.astimezone(UTC).isoformat()
 
 
-def _zone(name: str | None) -> tzinfo | None:
+def wall_clock_zone(name: str | None) -> tzinfo | None:
     """The zone the harness named, or None -- ``astimezone``'s "this host's own"."""
 
     if not name:

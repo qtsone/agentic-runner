@@ -124,6 +124,14 @@ while (message := read()) is not None:
                 },
             }
         )
+        for update in scenario.get("updates", []):
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {"sessionId": "session-1", "update": update},
+                }
+            )
         if "prompt_error" in scenario:
             reply(message, error=scenario["prompt_error"])
             continue
