@@ -47,6 +47,7 @@ from agentic_runner_contracts.grants.seam import (
     decide_verb,
 )
 from agentic_runner_contracts.grants.snapshot import (
+    BRANCH_VERB,
     CHANNEL_READ_VERB,
     CHANNEL_RESOURCE_TYPE,
     CHANNEL_WRITE_VERB,
@@ -56,6 +57,7 @@ from agentic_runner_contracts.grants.snapshot import (
     PR_OPEN_VERB,
     PR_REVIEW_VERB,
     PUSH_VERB,
+    READ_VERB,
     REPO_RESOURCE_TYPE,
     UNENFORCED_SNAPSHOT,
     GrantSnapshot,
@@ -64,6 +66,7 @@ from agentic_runner_contracts.grants.snapshot import (
 )
 
 __all__ = [
+    "BRANCH_VERB",
     "CATALOGUE_V1",
     "CATALOGUE_V2",
     "CATALOGUE_V3",
@@ -81,6 +84,7 @@ __all__ = [
     "PR_OPEN_VERB",
     "PR_REVIEW_VERB",
     "PUSH_VERB",
+    "READ_VERB",
     "REPO_RESOURCE_TYPE",
     "UNENFORCED_SNAPSHOT",
     "Decision",

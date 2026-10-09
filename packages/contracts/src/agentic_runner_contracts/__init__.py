@@ -54,6 +54,11 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # platform must not send an OAuth item to a Runner below 3.8.
 # 3.10.0 (console-v2 issue 15): `public_metadata.routine_schedule_id`. Additive, and only
 # the platform builds the name; a Runner never sees a Routine.
+# 3.11.0 (ADR-0018 §5-§7, QTS-1106): `ProductBinding` on `FixDirectiveOutput.product_binding`,
+# `ContextAssemblyInput.after_binding`, `grants.READ_VERB` / `BRANCH_VERB`.
+# Additive with a default. A Runner one minor behind has no `repo read` / `repo branch`
+# callback, so an Organisation-scoped Work Record on it reads and writes nothing and ends
+# Organisation-scoped; the platform's bind endpoint must ship before the Runner calls it.
 __version__ = "3.10.0"
 
 __all__ = ["__version__"]

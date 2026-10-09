@@ -10,6 +10,7 @@ from agentic_runner.integrations.git.contracts import (
     DEFAULT_COMMIT_AUTHOR_EMAIL,
     DEFAULT_COMMIT_AUTHOR_NAME,
     AdoptWorkspaceRequest,
+    CheckoutDefaultBranchRequest,
     CheckoutWorkBranchRequest,
     CloneWorkspaceRequest,
     CommitAllRequest,
@@ -586,6 +587,26 @@ def test_local_git_workspace_prepares_new_clone_without_local_head(
     assert result.attested_head_sha == approved_head
     assert result.status_summary == ""
     assert current_head == approved_head
+
+
+def test_local_git_workspace_checks_out_the_remotes_default_branch_detached(
+    tmp_path: Path,
+) -> None:
+    """An Organisation-scoped Work Record's read has no base of its own (ADR-0018 §7)."""
+
+    remote_path, base_commit = _seed_bare_remote(tmp_path, base_branch="trunk")
+    _run_git(["--git-dir", str(remote_path), "symbolic-ref", "HEAD", "refs/heads/trunk"])
+    workspace, workspace_path = _clone_workspace(tmp_path, remote_path)
+
+    result = workspace.checkout_default_branch(
+        CheckoutDefaultBranchRequest(repo_full_name="qts/agentic-os", workspace_path=workspace_path)
+    )
+
+    assert result.base_branch == "trunk"
+    assert (workspace_path / "README.md").read_text(encoding="utf-8") == "seed\n"
+    assert _run_git(["rev-parse", "HEAD"], cwd=workspace_path).stdout.strip() == base_commit
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_git(["symbolic-ref", "-q", "HEAD"], cwd=workspace_path)
 
 
 def test_local_git_workspace_rejects_verifier_workspace_when_approved_sha_is_not_work_branch_tip(

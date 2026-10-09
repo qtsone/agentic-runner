@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agentic_runner.integrations.git.contracts import (
     AdoptWorkspaceRequest,
+    CheckoutDefaultBranchRequest,
     CheckoutWorkBranchRequest,
     CheckoutWorkBranchResult,
     CloneWorkspaceRequest,
@@ -63,6 +64,7 @@ class FakeGitWorkspace:
         self._next_commit_number = 1
         self._status_evidence = status_evidence
         self._diff_evidence = diff_evidence
+        self.default_branch = "main"
 
     @property
     def calls(self) -> tuple[FakeGitWorkspaceCall, ...]:
@@ -144,6 +146,17 @@ class FakeGitWorkspace:
             repo_full_name=request.repo_full_name,
             workspace_path=record.workspace_path,
             base_branch=request.base_branch,
+        )
+
+    def checkout_default_branch(self, request: CheckoutDefaultBranchRequest) -> FetchBranchResult:
+        record = self._get_workspace(request.workspace_path)
+        self._require_same_repo(record, request.repo_full_name)
+        record.base_branch = self.default_branch
+        self._record_call("checkout_default_branch", request.repo_full_name, record.workspace_path)
+        return FetchBranchResult(
+            repo_full_name=request.repo_full_name,
+            workspace_path=record.workspace_path,
+            base_branch=self.default_branch,
         )
 
     def checkout_work_branch(

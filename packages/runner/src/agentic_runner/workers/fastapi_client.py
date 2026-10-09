@@ -75,8 +75,9 @@ class RunnerFastApiClient:
     for *bookkeeping* — its activities do the thing and return facts, and the workflow
     records them through platform activities (``PlatformRalphActivities``). What is left
     here is what an activity genuinely cannot do without: the Work Record's runtime
-    context, the Directive's metered usage, Questions and Owner Confirmations, and the
-    Evidence its verb seams write. Every path is on the public Runner surface; the
+    context, the Directive's metered usage, Questions and Owner Confirmations, the
+    Product binding the `repo.branch` seam asks for (ADR-0018 §5), and the Evidence its
+    verb seams write. Every path is on the public Runner surface; the
     authoritative list of the routes a Runner calls is this class plus
     ``registration.py``'s constants (tests/integration/test_runner_api_surface.py).
 
@@ -194,6 +195,21 @@ class RunnerFastApiClient:
         return await self._post(
             f"{self._prefix}/work-records/{_path_segment(work_record_id)}/evidence",
             request_payload,
+        )
+
+    async def bind_product(
+        self, work_record_id: str, *, repository: str, base_branch: str
+    ) -> dict[str, Any]:
+        """Bind an Organisation-scoped Work Record to ``repository``'s Product (ADR-0018 §5).
+
+        The control plane resolves the Product from its own registry, sets it and records
+        `work_record.product_bound` in one transaction; ``decision`` is ``deny`` with a
+        ``reason`` when the repository is out of reach or a second Product's.
+        """
+
+        return await self._post(
+            f"{self._prefix}/work-records/{_path_segment(work_record_id)}/product-binding",
+            {"repository": repository, "base_branch": base_branch},
         )
 
     async def transition_work_record(

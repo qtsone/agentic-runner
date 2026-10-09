@@ -233,6 +233,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ask.add_argument("text", nargs="?", help="the question; omitted reads stdin")
 
+    repo = subcommands.add_parser(
+        "repo",
+        help="check out a repository in reach; `branch` binds an Organisation-wide Work Record "
+        "to its Product (ADR-0018)",
+    )
+    repo.add_argument("action", choices=("read", "branch"))
+    repo.add_argument("repository", help="owner/name")
+    repo.add_argument(
+        "--base", default="", help="`branch` only: the base branch; default the repository's"
+    )
+
     subcommands.add_parser("config", help="print the resolved configuration (flag > env > file)")
 
     arguments = parser.parse_args(argv)
@@ -390,6 +401,11 @@ def _request(arguments: argparse.Namespace) -> tuple[str, dict[str, object]]:
     if arguments.command == "ask":
         return "/v0/ask", {
             "text": arguments.text if arguments.text is not None else sys.stdin.read()
+        }
+    if arguments.command == "repo":
+        return f"/v0/repo/{arguments.action}", {
+            "repository": arguments.repository,
+            "base_ref": arguments.base,
         }
     if arguments.command == "message":
         if arguments.action == "list":
