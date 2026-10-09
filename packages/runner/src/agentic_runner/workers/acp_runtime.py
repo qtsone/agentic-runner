@@ -34,7 +34,15 @@ Facts this module stands on (the LA-02 spike, re-read against the pinned bridge 
   is refused, and a harness-root ``config.toml`` may hold only ``_CODEX_HARNESS_ROOT_KEYS``
   (LA-19): nothing may load that the Runner did not choose.
 - claude-agent-acp loads the Workspace's settings, hooks, ``.mcp.json`` and ``CLAUDE.md``
-  unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``.
+  unless ``session/new`` carries the three options in ``_CLAUDE_SESSION_OPTIONS``. Those
+  keep the harness root's ``settings.json`` (the ``user`` source), which the Contract's uid
+  can write: an allow rule, a hook, an ``env`` or an ``apiKeyHelper`` there would act
+  outside the permission seam in every later Directive of that Contract. So it may hold
+  only ``_CLAUDE_HARNESS_ROOT_KEYS`` (LA-12d item 2).
+- A Claude permission request for an MCP tool names no command. It carries the serving
+  server in ``_meta.claudeCode.mcpServer``, and ``source: "dynamic"`` is a server from the
+  CLI's ``--mcp-config``: the ones ``session/new`` sent, the only ones ``strictMcpConfig``
+  loads. A granted server's tool is allowed (LA-12d item 1).
 
 A ``cli_kind`` with no pinned bridge (local-agents 18) runs the command its Agent Runtime
 Profile names, and only on a Runner whose host pinned that kind's executable in
@@ -186,6 +194,17 @@ _CODEX_PROVIDER_ID: Final[str] = "agentic_runner"
 _CODEX_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
     {"model", "model_reasoning_effort", "model_reasoning_summary", "model_verbosity", "notice"}
 )
+
+# What a harness-root `settings.json` may set: the choices Claude Code writes there itself.
+# `permissions`, `hooks`, `env`, `apiKeyHelper`, `enabledPlugins` and the rest would be the
+# Contract's own file steering every later turn.
+_CLAUDE_HARNESS_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {"$schema", "model", "effortLevel", "alwaysThinkingEnabled"}
+)
+# The `mcpServer.source` of a server the CLI got from `--mcp-config`, which is where the
+# bridge puts `session/new`'s servers. A name alone is the config key as authored, so a
+# server from any other source could reuse a granted slug.
+_CLAUDE_SENT_MCP_SOURCE: Final[str] = "dynamic"
 
 _CLAUDE_SESSION_OPTIONS: Final[Mapping[str, object]] = {
     # The harness root's own settings only: no Workspace settings, hooks or CLAUDE.md.
@@ -389,6 +408,10 @@ class AcpRuntime:
             )
             if config_refusal:
                 return refuse("refused: Codex config file", config_refusal)
+        if self._is_claude and harness_root is not None:
+            settings_refusal = _claude_settings_refusal(harness_root)
+            if settings_refusal:
+                return refuse("refused: Claude settings file", settings_refusal)
 
         # The activity refuses this first, with Evidence; checked again where it runs.
         command_refusal = self.acp_command_refusal(request.acp_command)
@@ -625,19 +648,22 @@ class AcpRuntime:
         turn: _Turn,
     ) -> Mapping[str, Any]:
         tool_call = params.get("toolCall") or {}
-        raw_input = tool_call.get("rawInput") if isinstance(tool_call, Mapping) else None
-        argv, cwd = _requested_command(raw_input, workspace_path)
-        described = (
-            shlex.join(argv)
-            if argv
-            else str(tool_call.get("title") or "an action")
-            if isinstance(tool_call, Mapping)
-            else "an action"
+        title = str(tool_call.get("title") or "") if isinstance(tool_call, Mapping) else ""
+        mcp_server = (
+            _granted_mcp_server(tool_call, request.mcp_servers or ()) if self._is_claude else None
         )
-        described = _redact(described)
-        # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid nothing
-        # else keeps an allowlisted command out of another Work Record's Workspace.
-        verdict, reason = _verdict(argv, cwd, request, workspace_path)
+        if mcp_server is not None:
+            # Checked first: an MCP tool's arguments are not a command, even one named so.
+            described = _redact(f"{title} (MCP server {mcp_server})")
+            verdict, reason = _Verdict.ALLOW, "a granted MCP server's tool"
+        else:
+            raw_input = tool_call.get("rawInput") if isinstance(tool_call, Mapping) else None
+            argv, cwd = _requested_command(raw_input, workspace_path)
+            described = _redact(shlex.join(argv) if argv else title or "an action")
+            # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid
+            # nothing else keeps an allowlisted command out of another Work Record's
+            # Workspace.
+            verdict, reason = _verdict(argv, cwd, request, workspace_path)
         options = params.get("options") or []
         if verdict == _Verdict.ALLOW:
             turn.notes.append(f"permission allowed: {described}")
@@ -877,6 +903,44 @@ def _codex_config_refusal(workspace_path: Path, harness_root: Path | None) -> st
     if unexpected:
         return f"the harness root's config.toml sets {', '.join(unexpected)}; remove them"
     return None
+
+
+def _claude_settings_refusal(harness_root: Path) -> str | None:
+    """Why the harness root's ``settings.json`` refuses a Claude Directive, or None.
+
+    As ``_codex_config_refusal``: the key names, never the path, reach the control plane.
+    """
+
+    try:
+        text = (harness_root / "settings.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "the harness root's settings.json cannot be read"
+    try:
+        settings = json.loads(text)
+    except ValueError:
+        return "the harness root's settings.json does not parse"
+    if not isinstance(settings, dict):
+        return "the harness root's settings.json is not an object"
+    unexpected = sorted(set(settings) - _CLAUDE_HARNESS_ROOT_KEYS)
+    if unexpected:
+        return f"the harness root's settings.json sets {', '.join(unexpected)}; remove them"
+    return None
+
+
+def _granted_mcp_server(tool_call: object, granted: Sequence[McpServerEntry]) -> str | None:
+    """The granted server a Claude permission request's MCP tool is served by, or None."""
+
+    if not isinstance(tool_call, Mapping):
+        return None
+    meta = tool_call.get("_meta")
+    claude = meta.get("claudeCode") if isinstance(meta, Mapping) else None
+    server = claude.get("mcpServer") if isinstance(claude, Mapping) else None
+    if not isinstance(server, Mapping) or server.get("source") != _CLAUDE_SENT_MCP_SOURCE:
+        return None
+    name = server.get("name")
+    return name if isinstance(name, str) and name in {e.slug for e in granted} else None
 
 
 @contextlib.contextmanager
