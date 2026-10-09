@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.7.0](https://github.com/qtsone/agentic-runner/compare/v3.6.0...v3.7.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** subscription usage windows in the heartbeat (QTS-892) ([#37](https://github.com/qtsone/agentic-runner/issues/37)) ([5aa8be5](https://github.com/qtsone/agentic-runner/commit/5aa8be5650d992b8b45c5904d1a9f68948b7b862))
+
 # [3.6.0](https://github.com/qtsone/agentic-runner/compare/v3.5.0...v3.6.0) (2026-10-09)
 
 

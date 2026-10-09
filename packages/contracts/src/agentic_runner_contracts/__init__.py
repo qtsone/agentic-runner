@@ -46,6 +46,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # row omits the key while it is absent, so a control plane on 3.6 parses a beat unchanged
 # until a user-hosted Runner has read a subscription's windows -- upgrade the control
 # plane before the Runner.
-__version__ = "3.6.0"
+__version__ = "3.7.0"
 
 __all__ = ["__version__"]
