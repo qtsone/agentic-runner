@@ -36,6 +36,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # kinds to the registration pattern `^[a-z][a-z0-9_]{0,31}$`. Additive: every payload that
 # parsed still parses; a Runner one minor behind refuses a context naming a new kind, which
 # fails that Directive closed, and routing sends a kind only to a Runner that reports it.
-__version__ = "3.4.2"
+__version__ = "3.5.0"
 
 __all__ = ["__version__"]

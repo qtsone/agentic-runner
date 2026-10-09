@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.5.0](https://github.com/qtsone/agentic-runner/compare/v3.4.2...v3.5.0) (2026-10-09)
+
+
+### Features
+
+* **runner:** the ACP Agent Runtime drives the pinned codex-acp and claude-agent-acp bridges (QTS-893) ([#32](https://github.com/qtsone/agentic-runner/issues/32)) ([c954c59](https://github.com/qtsone/agentic-runner/commit/c954c59e496c5963f1ab98ad2e86539c43301a4f))
+
 ## [3.4.2](https://github.com/qtsone/agentic-runner/compare/v3.4.1...v3.4.2) (2026-10-08)
 
 
