@@ -691,6 +691,58 @@ async def test_usage_comes_from_the_prompt_responses_model_usage(tmp_path: Path)
             reasoning_output_tokens=3,
         ),
     )
+    assert "usage: the bridge's last model call only; no rollout total" in result.evidence.notes
+
+
+def _token_count(input_tokens: int, cached: int, output: int, reasoning: int) -> dict[str, Any]:
+    usage = {
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached,
+        "cache_write_input_tokens": 0,
+        "output_tokens": output,
+        "reasoning_output_tokens": reasoning,
+        "total_tokens": input_tokens + output,
+    }
+    return {
+        "type": "event_msg",
+        "payload": {"type": "token_count", "info": {"total_token_usage": usage}},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_mode", [AuthMode.API_KEY, AuthMode.SUBSCRIPTION])
+async def test_codex_usage_is_the_rollouts_turn_total_not_the_last_model_call(
+    tmp_path: Path, auth_mode: AuthMode
+) -> None:
+    fake = Fake(
+        tmp_path,
+        # codex-acp 2.1.1's `model_usage`: `tokenUsage.last`, the last model call only.
+        model_usage=[
+            {"model": "gpt-6.1-sol", "token_count": {"inputTokens": 2, "outputTokens": 1}}
+        ],
+        rollout=[
+            {"type": "turn_context", "payload": {"model": "gpt-6.1-sol"}},
+            _token_count(input_tokens=500, cached=400, output=40, reasoning=10),
+            {"type": "event_msg", "payload": {"type": "token_count", "info": None}},
+            _token_count(input_tokens=1000, cached=900, output=70, reasoning=20),
+        ],
+    )
+
+    result = await _runtime(tmp_path).execute_directive(
+        _request(tmp_path, fake, auth_mode=auth_mode)
+    )
+
+    assert result.exit_code == 0, result.error
+    assert result.model_usage == (
+        ModelUsage(
+            model="gpt-6.1-sol",
+            input_tokens=100,
+            output_tokens=70,
+            cached_read_tokens=900,
+            reasoning_output_tokens=20,
+        ),
+    )
+    assert not any(note.startswith("usage:") for note in result.evidence.notes)
 
 
 @pytest.mark.asyncio

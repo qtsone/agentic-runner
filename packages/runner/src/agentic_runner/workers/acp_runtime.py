@@ -286,6 +286,7 @@ class _Turn:
     output: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     held: bool = False
+    session_id: str = ""
     usage_windows: tuple[UsageWindow, ...] = ()
 
 
@@ -562,7 +563,7 @@ class AcpRuntime:
             with recorded_group(process.pid):
                 try:
                     stop_reason, model_usage, error = await asyncio.wait_for(
-                        self._turn(connection, request, workspace_path, extra_env),
+                        self._turn(connection, request, workspace_path, extra_env, turn),
                         timeout=self._timeout_seconds,
                     )
                 finally:
@@ -574,6 +575,17 @@ class AcpRuntime:
             await terminate_process_tree(process)
             raise
         stderr = await stderr_task
+        if self._is_codex and turn.session_id:
+            # After the bridge exited, so Codex has flushed the rollout, and before the
+            # api_key attempt root holding it is removed.
+            codex_home = Path(env[ACP_BRIDGES["codex_cli"].config_root_env])
+            total = await asyncio.to_thread(
+                _codex_rollout_usage, codex_home, turn.session_id, model_usage
+            )
+            if total is None:
+                turn.notes.append("usage: the bridge's last model call only; no rollout total")
+            else:
+                model_usage = total
         return stop_reason, model_usage, stderr, error
 
     async def _turn(
@@ -582,6 +594,7 @@ class AcpRuntime:
         request: DirectiveRequest,
         workspace_path: Path,
         extra_env: Mapping[str, str],
+        turn: _Turn,
     ) -> tuple[str, tuple[ModelUsage, ...], str]:
         try:
             await connection.request(
@@ -607,7 +620,7 @@ class AcpRuntime:
                     }
                 }
             session = await connection.request("session/new", session_params)
-            session_id = str(session.get("sessionId") or "")
+            session_id = turn.session_id = str(session.get("sessionId") or "")
             if self._is_claude and _offers_mode(session, _CLAUDE_MODE):
                 await connection.request(
                     "session/set_mode", {"sessionId": session_id, "modeId": _CLAUDE_MODE}
@@ -1096,6 +1109,56 @@ def _model_usage(response: Mapping[str, Any]) -> tuple[ModelUsage, ...]:
             )
         )
     return tuple(usage)
+
+
+def _codex_rollout_usage(
+    codex_home: Path, session_id: str, reported: tuple[ModelUsage, ...]
+) -> tuple[ModelUsage, ...] | None:
+    """The whole turn's usage from the Codex thread's rollout, or None if it has none.
+
+    codex-acp 2.1.1 reports ``tokenUsage.last`` -- the turn's last model call -- as the
+    prompt response's ``model_usage`` (LA-12d item 4). One Directive is one session with
+    one turn, so the thread's ``total_token_usage`` is that turn's. The ACP session id is
+    the Codex thread id, which names the rollout file.
+    """
+
+    total: Mapping[str, Any] | None = None
+    model = reported[0].model if reported else None
+    try:
+        for path in (codex_home / "sessions").rglob(f"rollout-*-{session_id}.jsonl"):
+            with path.open(encoding="utf-8") as rollout:
+                for line in rollout:
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    payload = entry.get("payload") if isinstance(entry, dict) else None
+                    if not isinstance(payload, dict):
+                        continue
+                    if entry.get("type") == "turn_context" and isinstance(
+                        payload.get("model"), str
+                    ):
+                        model = model or payload["model"]
+                    info = payload.get("info") if payload.get("type") == "token_count" else None
+                    usage = info.get("total_token_usage") if isinstance(info, dict) else None
+                    if isinstance(usage, dict):
+                        total = usage
+    except OSError:
+        return None
+    if total is None or model is None:
+        return None
+    cached = _count(total, "cached_input_tokens")
+    return (
+        ModelUsage(
+            model=model,
+            # Net of the cached part, as the bridge's own count is.
+            input_tokens=max(_count(total, "input_tokens") - cached, 0),
+            output_tokens=_count(total, "output_tokens"),
+            cached_read_tokens=cached,
+            cached_write_tokens=_count(total, "cache_write_input_tokens"),
+            reasoning_output_tokens=_count(total, "reasoning_output_tokens"),
+        ),
+    )
 
 
 def _count(values: Mapping[str, Any], key: str) -> int:

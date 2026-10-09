@@ -132,6 +132,13 @@ while (message := read()) is not None:
                     "params": {"sessionId": "session-1", "update": update},
                 }
             )
+        if "rollout" in scenario:
+            # Where Codex files the thread the session is.
+            day = os.path.join(os.environ["CODEX_HOME"], "sessions", "2026", "10", "10")
+            os.makedirs(day, exist_ok=True)
+            name = "rollout-2026-10-10T00-00-00-session-1.jsonl"
+            with open(os.path.join(day, name), "w") as rollout:
+                rollout.writelines(json.dumps(line) + "\n" for line in scenario["rollout"])
         if "prompt_error" in scenario:
             reply(message, error=scenario["prompt_error"])
             continue
