@@ -449,6 +449,19 @@ class StoreKind(StrEnum):
     NONE = "none"
 
 
+class AcpBridgeVersion(BaseModel):
+    """The ACP bridge a Runner pins in front of one CLI (local-agents 12 item 2): its npm
+    package and version, the Runner's own constants -- never a path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    package: Annotated[
+        str,
+        StringConstraints(pattern=r"^(@[a-z0-9][a-z0-9._-]{0,63}/)?[a-z0-9][a-z0-9._-]{0,127}$"),
+    ]
+    version: Annotated[str, StringConstraints(pattern=r"^[0-9][0-9A-Za-z.+-]{0,63}$")]
+
+
 class CliVersion(BaseModel):
     """One Agent Runtime CLI found on ``PATH`` -- never bundled on a workstation (23 item 2).
 
@@ -461,6 +474,18 @@ class CliVersion(BaseModel):
     cli_kind: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
     version: Annotated[str, StringConstraints(pattern=r"^[0-9][0-9A-Za-z.+-]{0,63}$")]
     meets_floor: bool
+    # Set only for a kind this Runner serves through its pinned ACP bridge (QTS-1322).
+    acp_bridge: AcpBridgeVersion | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_acp_bridge(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A control plane below 3.12 forbids the key, so a row without a bridge is the
+        # body it already parses -- upgrade the control plane before a Runner sets
+        # ``ACP_CLI_KINDS``.
+        body = handler(self)
+        if isinstance(body, dict) and body.get("acp_bridge") is None:
+            body.pop("acp_bridge", None)
+        return body
 
 
 class HostAttestation(BaseModel):
