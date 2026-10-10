@@ -192,3 +192,46 @@ def test_the_snapshot_parses_the_reach_of_an_organisation_scoped_work_record() -
     assert snapshot.runner_selector_of("product-2") == {}
     assert snapshot.runner_selector_of("product-3") is None
     assert snapshot.product_of(identifier="other/repo") is None
+
+
+@pytest.mark.parametrize(
+    ("registered", "repository"),
+    [("qtsone/foo", "QTSone/Foo"), ("QTSone/Foo", "qtsone/foo")],
+)
+def test_the_registry_places_a_repository_in_scope_whatever_its_case(
+    registered: str, repository: str
+) -> None:
+    # QTS-1239: GitHub ignores case, so the registry's repository match does too.
+    snapshot = GrantSnapshot(
+        agent_id="agent-1",
+        contract_id="contract-1",
+        contract_state="active",
+        dispatchable=True,
+        resources=(
+            ResourceRegistration(
+                resource_type="repo",
+                selector=registered,
+                in_contract_scope=True,
+                required_human_approvals=2,
+                product_id="product-1",
+            ),
+        ),
+    )
+
+    assert snapshot.in_contract_scope(resource_type="repo", identifier=repository)
+    assert snapshot.required_human_approvals(identifier=repository) == 2
+    assert snapshot.product_of(identifier=repository) == "product-1"
+
+
+def test_a_channel_selector_still_matches_case_exactly() -> None:
+    snapshot = GrantSnapshot(
+        agent_id="agent-1",
+        contract_id="contract-1",
+        contract_state="active",
+        dispatchable=True,
+        resources=(
+            ResourceRegistration(resource_type="channel", selector="Ops", in_contract_scope=True),
+        ),
+    )
+
+    assert not snapshot.in_contract_scope(resource_type="channel", identifier="ops")
