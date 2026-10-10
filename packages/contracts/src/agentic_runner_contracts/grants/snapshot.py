@@ -185,7 +185,7 @@ class GrantSnapshot:
                 for registration in self.resources
                 if registration.resource_type == resource_type
                 and registration.in_contract_scope
-                and fnmatchcase(identifier, registration.selector)
+                and _registry_matches(resource_type, identifier, registration.selector)
             ),
             None,
         )
@@ -228,7 +228,7 @@ class GrantSnapshot:
         return any(
             registration.resource_type == resource_type
             and registration.in_contract_scope
-            and fnmatchcase(identifier, registration.selector)
+            and _registry_matches(resource_type, identifier, registration.selector)
             for registration in self.resources
         )
 
@@ -247,9 +247,18 @@ class GrantSnapshot:
             for registration in self.resources
             if registration.resource_type == resource_type
             and registration.in_contract_scope
-            and fnmatchcase(identifier, registration.selector)
+            and _registry_matches(resource_type, identifier, registration.selector)
         ]
         return max(matches, default=DEFAULT_REQUIRED_HUMAN_APPROVALS)
+
+
+def _registry_matches(resource_type: str, identifier: str, selector: str) -> bool:
+    # GitHub ignores case in owner/name and the registry holds repositories lower-cased
+    # (agentic-os migration 0100), so a Work Record naming `QTSone/Foo` is the registered
+    # `qtsone/foo`.
+    if resource_type == REPO_RESOURCE_TYPE:
+        return fnmatchcase(identifier.lower(), selector.lower())
+    return fnmatchcase(identifier, selector)
 
 
 UNENFORCED_SNAPSHOT: Final = GrantSnapshot(enforced=False)

@@ -63,6 +63,10 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # omits the key while it is absent, so a control plane on 3.11 parses an attestation
 # unchanged until a Runner serves a kind through its pinned ACP bridge (`ACP_CLI_KINDS`) --
 # upgrade the control plane before the Runner.
+# 3.12.3 (QTS-1239): no surface change. The registry's repository match -- scope, Product
+# and approval count -- ignores case, as GitHub does. A Runner below it matches the
+# lower-cased registry exactly, so a Work Record naming its repository in mixed case is out
+# of scope there: roll it out with agentic-os migration 0100.
 __version__ = "3.12.2"
 
 __all__ = ["__version__"]
