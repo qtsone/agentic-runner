@@ -68,10 +68,11 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `SignInCodeOutcome`, `sign_in_code_binding`, `ContractDeviceLoginInput.method` and
 # `ContractDeviceLoginResult.sign_in_id` (Temporal drops a key a dataclass lacks). A
 # removal, and a minor on purpose: a major would refuse every 3.x Runner at bootstrap, and
-# the wire stays compatible in one order. A Runner on 3.13 parses an ack without the key,
-# and sends none while no code reaches it. But the ack forbids extra keys, so a Runner on
-# 3.14 refuses the `"sign_in_codes": []` a control plane on 3.13 still sends -- upgrade
-# the control plane before the Runner. A Claude Code sign-in is `agentic-runner sign-in`.
+# the wire stays compatible both ways once the control plane relays no code (QTS-1350). A
+# Runner on 3.13 parses an ack without the key, and sends none while no code reaches it. A
+# Runner on 3.14 drops the empty `"sign_in_codes": []` a control plane on 3.13 still
+# sends, and refuses an ack that carries a code. A Claude Code sign-in is now
+# `agentic-runner sign-in`, on the Runner.
 __version__ = "3.13.0"
 
 __all__ = ["__version__"]

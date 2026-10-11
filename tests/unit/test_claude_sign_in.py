@@ -453,8 +453,8 @@ async def test_no_console_starts_a_claude_sign_in(isolation: ContractIsolation) 
 
 
 def test_the_ack_carries_no_sign_in_code() -> None:
-    """Contracts 3.14: the field is gone, and the ack forbids extra keys -- which is why
-    the control plane upgrades before the Runner."""
+    """Contracts 3.14: the field is gone. A 3.13 control plane's empty one still parses, so
+    either side may upgrade first; an ack that carries a code is refused."""
 
     ack = {
         "runner_id": str(uuid4()),
@@ -463,10 +463,19 @@ def test_the_ack_carries_no_sign_in_code() -> None:
         "tag_set_version": 1,
         "accepts_new_directives": True,
     }
+    code = {
+        "contract_id": CONTRACT_A,
+        "sign_in_id": "si_" + "0" * 32,
+        "recipient_key_id": "rk_" + "0" * 32,
+        "ciphertext": "c2VhbGVk",
+    }
 
-    HeartbeatAck.model_validate(ack)
+    assert HeartbeatAck.model_validate({**ack, "sign_in_codes": []}) == (
+        HeartbeatAck.model_validate(ack)
+    )
+    assert "sign_in_codes" not in HeartbeatAck.model_validate(ack).model_dump()
     with pytest.raises(ValidationError):
-        HeartbeatAck.model_validate({**ack, "sign_in_codes": []})
+        HeartbeatAck.model_validate({**ack, "sign_in_codes": [code]})
 
 
 # ------------------------------------------------------------------ the command

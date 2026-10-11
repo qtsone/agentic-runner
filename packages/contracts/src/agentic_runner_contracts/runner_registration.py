@@ -39,6 +39,7 @@ from pydantic import (
     SerializerFunctionWrapHandler,
     StringConstraints,
     model_serializer,
+    model_validator,
 )
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
@@ -627,6 +628,17 @@ class HeartbeatAck(BaseModel):
     """What the control plane says back: a refreshed token, the floor, and any hold."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_empty_sign_in_codes(cls, data: Any) -> Any:
+        # A control plane on contracts 3.13 sends `"sign_in_codes": []` on every ack. Empty,
+        # it says nothing, so a Runner on 3.14 drops it rather than refuse every beat; a
+        # code in it is still an extra key, and refused (QTS-1448). Remove once the
+        # control plane is on 3.14.
+        if isinstance(data, dict) and data.get("sign_in_codes") == []:
+            return {key: value for key, value in data.items() if key != "sign_in_codes"}
+        return data
 
     runner_id: UUID
     # Null while the Runner is held (ADR-0013 §7, issue 39's own refusal): it keeps the
