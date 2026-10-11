@@ -73,6 +73,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Runner on 3.14 drops the empty `"sign_in_codes": []` a control plane on 3.13 still
 # sends, and refuses an ack that carries a code. A Claude Code sign-in is now
 # `agentic-runner sign-in`, on the Runner.
-__version__ = "3.13.0"
+__version__ = "3.14.0"
 
 __all__ = ["__version__"]

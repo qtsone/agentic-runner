@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.14.0](https://github.com/qtsone/agentic-runner/compare/v3.13.0...v3.14.0) (2026-10-11)
+
+
+### Features
+
+* **runner:** `agentic-runner sign-in` runs Claude Code's own sign-in; the sign-in-code relay is removed (QTS-1448) ([#48](https://github.com/qtsone/agentic-runner/issues/48)) ([278ddad](https://github.com/qtsone/agentic-runner/commit/278ddad176b44dc47292f0be44210eac5c6e39a9))
+
 # [3.13.0](https://github.com/qtsone/agentic-runner/compare/v3.12.2...v3.13.0) (2026-10-11)
 
 
