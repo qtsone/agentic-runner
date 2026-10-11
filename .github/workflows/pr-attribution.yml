@@ -1,0 +1,54 @@
+# Attribution gate on every pull request (QTS-675, cloud-1 ADR-0017). On commits an
+# agent account authored, requires exactly one `Co-authored-by: <Agent> <bot email>`
+# trailer from the roster; on a body an agent account opened, rejects any
+# `Co-authored-by:` line, because the trailer lives on the commit (QTS-1381). Both
+# reject vendor, Paperclip and host-identity attribution before it reaches `main`,
+# where it is permanent.
+#
+# Its own file rather than a job in the main PR workflow: `edited` is load-bearing
+# here, and adding it to that workflow would make a pull request body edit re-run
+# the whole validation pipeline on the shared ARC pool — including the body edit
+# that fixes a failure this check reported.
+name: pr-attribution
+
+# No `paths` or `branches` filter, deliberately. A filtered workflow does not report
+# at all on a pull request that misses its filter, so once this becomes a required
+# check it would leave such a pull request blocked rather than passing.
+on:
+  pull_request:
+    # `edited` is load-bearing. The pull request body is an input to the check, so
+    # without it a body that fixes a reported failure never re-runs and the run
+    # stays red on a payload that no longer matches the pull request.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-attribution-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  attribution:
+    name: Attribution
+    runs-on: ${{ vars.GHA_RUNNER_OVERRIDE || (github.event.repository.custom_properties.GHA_RUNNER_TYPE == 'PRIVATE' && format('arc-{0}', github.event.repository.custom_properties.GHA_RUNNER_SIZE) || 'ubuntu-latest') }}
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0 because the action walks base..head and a depth-1 clone has
+      # neither end of that range.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: qtsone/actions/git/attribution@main
+        with:
+          # A bot's pull request body is upstream release notes, not authored text,
+          # and a changelog it quotes can hold the vendor footer verbatim. The action
+          # itself checks a body only when an agent login opened the pull request
+          # (QTS-1386), so this is a second skip on the caller side.
+          #
+          # Negated on purpose. An empty string is falsy in an Actions expression,
+          # so the obvious `is-bot && '' || body` form falls through to the body for
+          # exactly the case it means to skip.
+          pr-body: ${{ github.event.pull_request.user.type != 'Bot' && github.event.pull_request.body || '' }}
