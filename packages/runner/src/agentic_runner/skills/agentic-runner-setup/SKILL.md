@@ -23,9 +23,10 @@ The prompt they pasted from the console holds these. Ask for any that is missing
   Runners page. It is the only control plane address you use, and only as a value you
   pass to the Runner. Never call it or any other control plane address yourself.
 - **Temporal address**: `host:port`, from the same page.
-- **Agent Token**: the one-time credential the Runner exchanges for its own identity when
-  it registers. It may be absent: the person can paste it themselves at the Runner's
-  prompt.
+
+The **Agent Token** is not one of them. It is the reusable credential a Runner registers
+with, and the person types it only where the Runner reads it, never into this
+conversation.
 
 ## Rules
 
@@ -33,11 +34,11 @@ The prompt they pasted from the console holds these. Ask for any that is missing
   it does, in one line.
 - **Stop on the first failure.** Show the exact error, link the doc section below that
   covers it, and stop. Do not retry with other flags, do not work around it.
-- **The Agent Token and every credential value stay secret.** Never print, echo, log or
-  repeat one, never put one in a command's arguments, and never write one to a file. The
-  only way you hand a value to the Runner is the environment of the one command that reads
-  it, or its standard input. When the person's install way needs the token in a file or a
-  Kubernetes Secret, the person types it there, not you.
+- **Never ask for the Agent Token or any credential value in this conversation.** Anything
+  said here reaches the model vendor and stays in this CLI's history. Every command that
+  reads a credential is one the person runs in their own terminal, and the person types the
+  value there. If the person pastes a token or a key here anyway, do not use it: tell them
+  to revoke it in the console and mint or create a new one.
 - You use only the `agentic-runner` command, the standard tools named in the docs (`uv`,
   `docker`, `kubectl`, `helm`) and read-only checks such as `command -v`.
 
@@ -75,17 +76,17 @@ missing.
 
 **This machine.** Follow
 https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#install. Install the
-Runner, then register it for the Organisation, giving the Agent Token in the environment of
-that one command:
+Runner, then show the person the command that registers it for the Organisation and ask
+them to run it in their own terminal. The Runner asks them for the Agent Token there,
+without showing it:
 
 ```sh
 uv tool install agentic-runner
-AGENTIC_AGENT_TOKEN='<agent-token>' agentic-runner install <org> --control-plane <control-plane-url> --temporal-address <temporal-address>
+agentic-runner install <org> --control-plane <control-plane-url> --temporal-address <temporal-address>
 ```
 
-If the person did not give you the token, run the same command without
-`AGENTIC_AGENT_TOKEN=…` and ask them to run it in their own terminal, where the Runner asks
-for the token without showing it.
+You run the first line. Do not run the second yourself: wait until the person says it
+finished, and ask for its last lines of output.
 
 **Docker.** Follow
 https://github.com/qtsone/agentic-runner/blob/main/docs/docker.md#the-env-file and then

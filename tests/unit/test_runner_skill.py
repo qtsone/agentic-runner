@@ -87,6 +87,16 @@ def test_the_skill_names_no_control_plane_address_and_calls_none() -> None:
     assert "controlPlane.url" in text
 
 
+def test_the_skill_never_takes_the_agent_token_into_the_conversation() -> None:
+    """The Agent Token is reusable: in the CLI's context it reaches the model vendor and the
+    CLI's transcript, so the person types it into the Runner's own prompt (QTS-924 review)."""
+
+    text = skill.text()
+    assert "AGENTIC_AGENT_TOKEN" not in text
+    assert "<agent-token>" not in text
+    assert "Never ask for the Agent Token" in text
+
+
 def test_every_doc_link_names_a_section_the_docs_have() -> None:
     docs = Path(__file__).resolve().parents[2] / "docs"
     links = re.findall(r"blob/main/docs/(\w+\.md)(?:#([\w-]+))?", skill.text())
@@ -104,8 +114,6 @@ def _skill_commands() -> list[list[str]]:
     commands = []
     for line in (line for block in blocks for line in block.splitlines()):
         words = shlex.split(line.split("|")[-1])
-        while words and "=" in words[0]:
-            words.pop(0)  # the environment of the one command, `AGENTIC_AGENT_TOKEN=…`
         if words[:1] == ["agentic-runner"]:
             commands.append(words[1:])
     return commands
@@ -159,6 +167,7 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     )
 
     install, credential, status = (_fill(words, root) for words in commands)
+    # What the person types at the Runner's own prompt, in their terminal.
     monkeypatch.setenv(cli.AGENT_TOKEN_ENV, AGENT_TOKEN)
     assert await asyncio.to_thread(cli.main, install) == 0
     monkeypatch.delenv(cli.AGENT_TOKEN_ENV)
