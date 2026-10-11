@@ -2,8 +2,9 @@
 
 What only the activity can show: the mode reaches the Agent Runtime on the request, a
 shared Runner's refusal is non-retryable with Evidence naming the rule and spawns nothing,
-the choice depends on the host party alone, and a login left in a Contract's harness root
-on a shared Runner is reported once, as a count.
+a shared Runner that runs the Contract as its own uid with a login in its harness root
+runs the subscription (QTS-1450), and a login left in a Contract's harness root on a
+shared Runner that cannot use it is reported once, as a count.
 """
 
 from __future__ import annotations
@@ -29,7 +30,10 @@ from agentic_runner.activities import (
     HARNESS_LOGIN_RESIDUE_SOURCE,
     RunnerRalphActivities,
 )
-from agentic_runner.auth_mode import SHARED_RUNNER_SUBSCRIPTION_RULE
+from agentic_runner.auth_mode import (
+    SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
+    SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+)
 from agentic_runner.credentials import CredentialResolver, EmptyCredentialStore
 from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.integrations.git.fake_workspace import FakeGitWorkspace
@@ -162,7 +166,7 @@ class _Proxy:
         )
 
 
-def _isolation(tmp_path: Path) -> ContractIsolation:
+def _isolation(tmp_path: Path, *, can_separate_uids: bool = False) -> ContractIsolation:
     return ContractIsolation(
         workspace_root=tmp_path,
         state_dir=tmp_path / ".state",
@@ -170,8 +174,26 @@ def _isolation(tmp_path: Path) -> ContractIsolation:
         uid_max=20_100,
         max_processes=64,
         memory_limit_bytes=1 << 30,
-        can_separate_uids=False,
+        can_separate_uids=can_separate_uids,
     )
+
+
+@pytest.fixture
+def contract_uids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ContractIsolation:
+    """A Runner that runs each Contract as its own uid. The chown that hands a tree to that
+    uid needs root, which the uid line's own test has (`test_contract_uid_isolation.py`);
+    here only the decision is under test, so it is a no-op."""
+
+    monkeypatch.setattr("os.chown", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("os.lchown", lambda *_args, **_kwargs: None)
+    return _isolation(tmp_path, can_separate_uids=True)
+
+
+def _sign_in(isolation: ContractIsolation, login_file: str = "auth.json") -> Path:
+    login = isolation.harness_config_dir(CONTRACT_ID, "codex_cli") / login_file
+    login.parent.mkdir(parents=True, exist_ok=True)
+    login.write_text('{"tokens": {"refresh_token": "never-read"}}')
+    return login
 
 
 def _activities(
@@ -280,12 +302,88 @@ async def test_a_shared_runner_refuses_a_directive_that_would_need_a_subscriptio
         ).create_or_update_branch_pr(_branch_pr_input(host_party))
 
     assert refused.value.non_retryable is True
-    assert refused.value.type == SHARED_RUNNER_SUBSCRIPTION_RULE
+    assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
     assert runtime.requests == [], "nothing is spawned on a refused mode"
     [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
     assert evidence["event"] == "directive.auth_mode_refused"
-    assert evidence["rule"] == SHARED_RUNNER_SUBSCRIPTION_RULE
+    assert evidence["rule"] == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
     assert evidence["host_party"] == host_party
+
+
+@pytest.mark.parametrize("host_party", ["organisation", "account"])
+@pytest.mark.asyncio
+async def test_a_shared_runner_without_contract_uids_refuses_even_with_a_login(
+    tmp_path: Path, host_party: str
+) -> None:
+    isolation = _isolation(tmp_path)
+    _sign_in(isolation)
+    runtime = _Codex()
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            _Client(),
+            runtime,
+            tmp_path=tmp_path,
+            host_party=host_party,
+            proxy=_Proxy(holds=False),
+            isolation=isolation,
+        ).create_or_update_branch_pr(_branch_pr_input(host_party))
+
+    assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
+    assert runtime.requests == []
+
+
+@pytest.mark.parametrize("host_party", ["organisation", "account"])
+@pytest.mark.asyncio
+async def test_a_customer_operated_cluster_runner_runs_a_signed_in_subscription(
+    tmp_path: Path, contract_uids: ContractIsolation, host_party: str
+) -> None:
+    """QTS-1450's acceptance: Contract uids and a login in that Contract's harness root."""
+
+    _sign_in(contract_uids)
+    runtime = _Codex()
+
+    await _activities(
+        _Client(),
+        runtime,
+        tmp_path=tmp_path,
+        host_party=host_party,
+        proxy=_Proxy(holds=False),
+        isolation=contract_uids,
+    ).create_or_update_branch_pr(_branch_pr_input(host_party))
+
+    [request] = runtime.requests
+    assert request.auth_mode == AuthMode.SUBSCRIPTION
+    assert "OPENAI_API_KEY" not in dict(request.extra_env)
+    assert request.sandbox is not None and request.sandbox.uid == contract_uids.uid_for(CONTRACT_ID)
+
+
+@pytest.mark.asyncio
+async def test_a_customer_operated_cluster_runner_refuses_a_contract_not_signed_in(
+    tmp_path: Path, contract_uids: ContractIsolation
+) -> None:
+    client = _Client()
+    runtime = _Codex()
+    # Another Contract's login is no login for this one.
+    other = contract_uids.harness_config_dir(str(uuid4()), "codex_cli") / "auth.json"
+    other.parent.mkdir(parents=True)
+    other.write_text("{}")
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            client,
+            runtime,
+            tmp_path=tmp_path,
+            host_party="organisation",
+            proxy=_Proxy(holds=False),
+            isolation=contract_uids,
+        ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+
+    assert refused.value.non_retryable is True
+    assert refused.value.type == SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE
+    assert runtime.requests == []
+    [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
+    assert evidence["rule"] == SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE
 
 
 @pytest.mark.asyncio
@@ -293,9 +391,7 @@ async def test_a_login_left_on_a_shared_runner_is_reported_once_as_a_count(
     tmp_path: Path,
 ) -> None:
     isolation = _isolation(tmp_path)
-    login = isolation.harness_config_dir(CONTRACT_ID, "codex_cli") / "auth.json"
-    login.parent.mkdir(parents=True)
-    login.write_text('{"tokens": {"refresh_token": "never-read"}}')
+    login = _sign_in(isolation)
     client = _Client()
     activities = _activities(
         client,
@@ -319,6 +415,25 @@ async def test_a_login_left_on_a_shared_runner_is_reported_once_as_a_count(
     assert str(tmp_path) not in repr(client.evidence)
     assert "never-read" not in repr(client.evidence)
     assert login.is_file(), "the Runner reports the login; the Contract's wipe removes it"
+
+
+@pytest.mark.asyncio
+async def test_a_login_a_shared_runner_can_run_on_is_not_residue(
+    tmp_path: Path, contract_uids: ContractIsolation
+) -> None:
+    _sign_in(contract_uids)
+    client = _Client()
+
+    await _activities(
+        client,
+        _Codex(),
+        tmp_path=tmp_path,
+        host_party="organisation",
+        proxy=_Proxy(holds=True),
+        isolation=contract_uids,
+    ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+
+    assert client.payloads(HARNESS_LOGIN_RESIDUE_SOURCE) == []
 
 
 class _Registration:
@@ -423,7 +538,7 @@ async def test_a_delivered_key_puts_the_next_shared_directive_on_the_proxy(
         )
         with pytest.raises(ApplicationError) as refused:
             await activities.create_or_update_branch_pr(_branch_pr_input("organisation"))
-        assert refused.value.type == SHARED_RUNNER_SUBSCRIPTION_RULE
+        assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
 
         await stream.exchange([])
         await activities.create_or_update_branch_pr(_branch_pr_input("organisation"))

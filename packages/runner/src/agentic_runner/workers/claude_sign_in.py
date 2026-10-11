@@ -180,6 +180,12 @@ class ClaudeSignIns:
         self._status_argv = list(status_argv)
         self._platform = platform
 
+    def has_harness_root(self, contract_id: str) -> bool:
+        """Whether this Contract already has its Claude Code harness root (and, under
+        Contract uids, its uid) here. Never the one to create either."""
+
+        return self._isolation.existing_sandbox(contract_id, runtime_kind=RUNTIME_KIND) is not None
+
     async def sign_in(
         self, contract_id: str, *, method: str = OAUTH_TOKEN, stdin_fd: int = 0, stdout_fd: int = 1
     ) -> int:
@@ -298,8 +304,7 @@ async def _run_attached(
 
     master_fd, slave_fd = pty.openpty()
     try:
-        rows = os.get_terminal_size(stdout_fd).lines if os.isatty(stdout_fd) else _PTY_ROWS
-        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, _PTY_COLUMNS, 0, 0))
+        _copy_rows(stdout_fd, slave_fd)
         os.set_blocking(master_fd, False)
         try:
             process = await asyncio.create_subprocess_exec(
@@ -338,15 +343,43 @@ async def _run_attached(
         _write_all(stdout_fd, chunk)
         _keep_tail(output, chunk)
 
+    # What the person typed that the pty has not taken yet. A large paste fills its input
+    # queue and the non-blocking master refuses the rest, so stop reading the keyboard until
+    # the CLI has drained it: the paste arrives whole and this buffer stays one read long.
+    pending = bytearray()
+    keyboard_open = True
+
     def from_person() -> None:
+        nonlocal keyboard_open
         typed = os.read(stdin_fd, 1024)
         if not typed:
+            keyboard_open = False
             loop.remove_reader(stdin_fd)
             return
-        os.write(master_fd, typed)
+        pending.extend(typed)
+        to_cli()
 
+    def to_cli() -> None:
+        try:
+            del pending[: os.write(master_fd, pending)]
+        except BlockingIOError:
+            pass
+        except OSError:
+            # EIO: the CLI is gone, and `from_cli` ends the session.
+            pending.clear()
+        if pending:
+            loop.remove_reader(stdin_fd)
+            loop.add_writer(master_fd, to_cli)
+            return
+        loop.remove_writer(master_fd)
+        if keyboard_open:
+            loop.add_reader(stdin_fd, from_person)
+
+    resizes = os.isatty(stdout_fd)
     loop.add_reader(master_fd, from_cli)
     loop.add_reader(stdin_fd, from_person)
+    if resizes:
+        loop.add_signal_handler(signal.SIGWINCH, _copy_rows, stdout_fd, master_fd)
     try:
         with _raw(stdin_fd):
             await exited.wait()
@@ -356,9 +389,21 @@ async def _run_attached(
             os.killpg(process.pid, signal.SIGKILL)
         raise
     finally:
+        if resizes:
+            loop.remove_signal_handler(signal.SIGWINCH)
         loop.remove_reader(master_fd)
+        loop.remove_writer(master_fd)
         loop.remove_reader(stdin_fd)
+        pending.clear()
         os.close(master_fd)
+
+
+def _copy_rows(caller_fd: int, pty_fd: int) -> None:
+    """The caller's row count onto the CLI's pty, at ``_PTY_COLUMNS`` wide. Setting it on
+    a pty that already has one is what sends the CLI its own ``SIGWINCH``."""
+
+    rows = os.get_terminal_size(caller_fd).lines if os.isatty(caller_fd) else _PTY_ROWS
+    fcntl.ioctl(pty_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, _PTY_COLUMNS, 0, 0))
 
 
 @contextlib.contextmanager

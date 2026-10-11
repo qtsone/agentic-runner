@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import logging
 import os
 import resource
+import signal
 import stat
+import struct
 import sys
+import termios
 import textwrap
 from collections.abc import Iterator
 from pathlib import Path
@@ -28,6 +32,9 @@ import pytest
 from pydantic import ValidationError
 
 from agentic_runner import cli, service
+from agentic_runner.auth_mode import SIGN_IN_NEEDS_CONTRACT_UID_RULE
+from agentic_runner.private_state import ensure_private_dir
+from agentic_runner.registration import RunnerState, save_state
 from agentic_runner.workers._runtime_support import run_subprocess_exec
 from agentic_runner.workers.claude_sign_in import (
     OAUTH_TOKEN_FILE,
@@ -84,7 +91,7 @@ _FAKE_CLAUDE = textwrap.dedent(
         if not data:
             break
         chunks.append(data.decode())
-    record(typed="".join(chunks))
+    record(typed="".join(chunks), rows=os.get_terminal_size(0).lines)
     if mode == "fail":
         sys.exit(3)
     if args == ["setup-token"]:
@@ -129,26 +136,42 @@ def fake_claude(tmp_path: Path) -> Path:
 
 
 class _Terminal:
-    """The caller's side: what the person types, and what their screen shows."""
+    """The caller's side: what the person types, and what their screen shows. ``tty`` makes
+    the screen a terminal of its own, which a test can resize."""
 
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, tty: bool = False) -> None:
         self.stdin_fd, self._keyboard = os.pipe()
-        screen = tmp_path / f"screen-{uuid4().hex}"
-        self.stdout_fd = os.open(screen, os.O_WRONLY | os.O_CREAT, 0o600)
-        self._screen = os.open(screen, os.O_RDONLY)
+        if tty:
+            self._screen, self.stdout_fd = os.openpty()
+            os.set_blocking(self._screen, False)
+        else:
+            screen = tmp_path / f"screen-{uuid4().hex}"
+            self.stdout_fd = os.open(screen, os.O_WRONLY | os.O_CREAT, 0o600)
+            self._screen = os.open(screen, os.O_RDONLY)
         self._shown = bytearray()
+        # Rows the person drags their terminal to after the prompt, before typing.
+        self.resize_at_prompt: int | None = None
 
     def screen(self) -> str:
-        while chunk := os.read(self._screen, 65_536):
-            self._shown.extend(chunk)
+        with contextlib.suppress(BlockingIOError):
+            while chunk := os.read(self._screen, 65_536):
+                self._shown.extend(chunk)
         return self._shown.decode(errors="replace")
+
+    def resize(self, rows: int) -> None:
+        fcntl.ioctl(self.stdout_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, 80, 0, 0))
 
     async def type_at_prompt(self, typed: str) -> None:
         # As a person would: after the prompt, once the CLI has put its terminal in raw
-        # mode -- `tty.setraw` flushes whatever was typed before it.
+        # mode -- `tty.setraw` flushes whatever was typed before it. In a thread, as a
+        # paste larger than the pipe would otherwise block the loop relaying it.
         while "Paste code here" not in self.screen():
             await asyncio.sleep(0.02)
-        os.write(self._keyboard, typed.encode())
+        if self.resize_at_prompt is not None:
+            self.resize(self.resize_at_prompt)
+            os.kill(os.getpid(), signal.SIGWINCH)
+            await asyncio.sleep(0.2)
+        await asyncio.to_thread(_write_all, self._keyboard, typed.encode())
         os.close(self._keyboard)
 
     def close(self) -> None:
@@ -174,10 +197,16 @@ def _sign_ins(
 
 
 async def _sign_in(
-    sign_ins: ClaudeSignIns, tmp_path: Path, contract_id: str = CONTRACT_A, **kwargs: Any
+    sign_ins: ClaudeSignIns,
+    tmp_path: Path,
+    contract_id: str = CONTRACT_A,
+    *,
+    typed: str = CODE + "\r",
+    terminal: _Terminal | None = None,
+    **kwargs: Any,
 ) -> tuple[int, str]:
-    terminal = _Terminal(tmp_path)
-    typing = asyncio.ensure_future(terminal.type_at_prompt(CODE + "\r"))
+    terminal = terminal or _Terminal(tmp_path)
+    typing = asyncio.ensure_future(terminal.type_at_prompt(typed))
     try:
         async with asyncio.timeout(20):
             code = await sign_ins.sign_in(
@@ -189,6 +218,12 @@ async def _sign_in(
         with contextlib.suppress(asyncio.CancelledError):
             await typing
         terminal.close()
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
 
 
 def _records(isolation: ContractIsolation, contract_id: str) -> list[dict[str, Any]]:
@@ -250,7 +285,7 @@ async def test_each_method_runs_its_cli_on_a_terminal_in_the_contracts_own_harne
     assert launched["scrub"] == "1"
     assert launched["tty"] is True
     assert launched["columns"] == 1000
-    assert typed == {"typed": CODE + "\r"}
+    assert typed["typed"] == CODE + "\r"
     assert _records(isolation, CONTRACT_B) == []
 
 
@@ -441,6 +476,40 @@ async def test_macos_short_lived_sign_in_gets_a_per_contract_keychain(
     assert unlocks == [(password, f"unlock-keychain {keychain}")] * 2
 
 
+@pytest.mark.asyncio
+async def test_a_paste_larger_than_the_pty_takes_at_once_arrives_whole(
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
+) -> None:
+    """Warden note 3 (QTS-1450): the non-blocking pty master refuses what its full input
+    queue cannot take; the relay holds the rest until the CLI reads, and loses nothing."""
+
+    paste = "p" * 256 * 1024 + "\r"
+
+    code, _ = await _sign_in(_sign_ins(isolation, fake_claude), tmp_path, typed=paste)
+
+    assert code == 0
+    _, typed = _records(isolation, CONTRACT_A)
+    assert typed["typed"] == paste
+
+
+@pytest.mark.asyncio
+async def test_a_resize_of_the_callers_terminal_reaches_the_cli(
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
+) -> None:
+    """Warden note 4 (QTS-1450): the caller's row count follows a ``SIGWINCH``; the
+    columns stay at the width the token is printed on one line in."""
+
+    terminal = _Terminal(tmp_path, tty=True)
+    terminal.resize(24)
+    terminal.resize_at_prompt = 61
+
+    code, _ = await _sign_in(_sign_ins(isolation, fake_claude), tmp_path, terminal=terminal)
+
+    assert code == 0
+    launched, typed = _records(isolation, CONTRACT_A)
+    assert (launched["columns"], typed["rows"]) == (1000, 61)
+
+
 # ------------------------------------------------------------------ nothing is relayed
 
 
@@ -530,6 +599,134 @@ async def test_without_the_runners_environment_the_command_refuses(
 
     assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 2
     assert "--org" in capsys.readouterr().err
+
+
+@pytest.fixture
+def runner_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The Runner's environment, as `kubectl exec` or `--org` gives it; returns its state
+    directory. A Runner that cannot separate uids, so `isolation: none`."""
+
+    state_dir = tmp_path / "runner-state"
+    ensure_private_dir(state_dir)
+    for name, value in {
+        service.ISOLATION_ENV: "none",
+        "AGENTIC_RUNNER_CONFIG": str(tmp_path / "absent.toml"),
+        "AGENTIC_RUNNER_STATE_DIR": str(state_dir),
+        "TEMPORAL_ADDRESS": "127.0.0.1:7233",
+        "INTERNAL_FASTAPI_BASE_URL": "http://agentic-api.internal:8000",
+        "WORKSPACE_ROOT": str(tmp_path / "workspaces"),
+        "WORKER_STATE_DIR": str(tmp_path / "worker-state"),
+        "CODEX_HOME": str(tmp_path / "codex-home"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(service, "can_separate_uids", lambda: False)
+    return state_dir
+
+
+def _registered(state_dir: Path, host_party: str) -> None:
+    save_state(
+        state_dir,
+        RunnerState(
+            runner_id=uuid4(),
+            identity_id="id",
+            private_key_pem="unused",
+            temporal_namespace="org-x",
+            task_queue="runner.x",
+            host_party=host_party,
+        ),
+    )
+
+
+@pytest.fixture
+def signed_in(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    contracts: list[str] = []
+
+    async def sign_in(self: ClaudeSignIns, contract_id: str, *, method: str) -> int:
+        contracts.append(contract_id)
+        return 0
+
+    monkeypatch.setattr(ClaudeSignIns, "sign_in", sign_in)
+    return contracts
+
+
+@pytest.mark.parametrize("host_party", ["organisation", "account", None])
+@pytest.mark.asyncio
+async def test_the_command_refuses_where_no_directive_would_run_on_the_login(
+    runner_env: Path,
+    signed_in: list[str],
+    capsys: pytest.CaptureFixture[str],
+    host_party: str | None,
+) -> None:
+    """Sentinel's residual risk 1 on QTS-1448: a shared Runner that runs no Contract as
+    its own uid, or one never registered, refuses before any harness root is touched."""
+
+    if host_party is not None:
+        _registered(runner_env, host_party)
+
+    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 1
+    assert SIGN_IN_NEEDS_CONTRACT_UID_RULE in capsys.readouterr().err
+    assert signed_in == []
+    assert not (runner_env.parent / "workspaces" / CONTRACT_A).exists()
+
+
+@pytest.mark.asyncio
+async def test_the_command_signs_in_on_a_shared_runner_with_contract_uids(
+    runner_env: Path, signed_in: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _registered(runner_env, "organisation")
+    monkeypatch.setenv(service.ISOLATION_ENV, "contract_uid")
+    monkeypatch.setattr(service, "can_separate_uids", lambda: True)
+    monkeypatch.setattr(ClaudeSignIns, "has_harness_root", lambda _self, _contract: True)
+
+    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 0
+    assert signed_in == [CONTRACT_A]
+
+
+@pytest.mark.asyncio
+async def test_the_command_asks_before_signing_in_a_contract_this_runner_never_served(
+    runner_env: Path,
+    signed_in: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Warden note 2 (QTS-1448): a mistyped id must not quietly get a uid and a signed-in
+    tree of its own; nothing is made for it unless the person says so."""
+
+    _registered(runner_env, "user")
+    prompts: list[str] = []
+    answers = iter(["", "y"])
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", answer)
+
+    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 1
+    assert "not signed in" in capsys.readouterr().err
+    assert signed_in == []
+    assert not (runner_env.parent / "workspaces" / CONTRACT_A).exists()
+
+    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 0
+    assert signed_in == [CONTRACT_A]
+    assert all(CONTRACT_A in prompt for prompt in prompts) and len(prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_command_signs_in_a_contract_it_serves_without_asking(
+    runner_env: Path, signed_in: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _registered(runner_env, "user")
+    root = runner_env.parent / "workspaces" / CONTRACT_A / "harness" / "claude_code"
+    root.mkdir(parents=True)
+    monkeypatch.setattr("builtins.input", _no_prompt)
+
+    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 0
+    assert signed_in == [CONTRACT_A]
+
+
+def _no_prompt(prompt: str) -> str:
+    raise AssertionError(f"asked: {prompt}")
 
 
 async def _unexpected(contract_id: str, *, method: str) -> int:

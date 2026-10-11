@@ -222,7 +222,7 @@ def test_an_unknown_shape_yields_no_windows(parse: Any, output: object) -> None:
 # ------------------------------------------------------------------ the probes
 
 
-def _isolation(tmp_path: Path) -> ContractIsolation:
+def _isolation(tmp_path: Path, *, can_separate_uids: bool = False) -> ContractIsolation:
     return ContractIsolation(
         workspace_root=tmp_path / "workspaces",
         state_dir=tmp_path / "state",
@@ -231,7 +231,7 @@ def _isolation(tmp_path: Path) -> ContractIsolation:
         max_processes=4096,
         # macOS refuses any finite RLIMIT_DATA, so the real spawns below run unbounded.
         memory_limit_bytes=resource.RLIM_INFINITY,
-        can_separate_uids=False,
+        can_separate_uids=can_separate_uids,
     )
 
 
@@ -599,7 +599,7 @@ async def test_the_heartbeat_carries_the_windows_after_a_probe(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_an_organisation_hosted_runner_reports_no_windows(tmp_path: Path) -> None:
+async def test_a_shared_runner_without_contract_uids_reports_no_windows(tmp_path: Path) -> None:
     runtimes: dict[str, AgentRuntime] = {}
     for party in ("organisation", "account", ""):
         assert (
@@ -618,6 +618,23 @@ async def test_an_organisation_hosted_runner_reports_no_windows(tmp_path: Path) 
     body = json.loads(registration.sent[-1].model_dump_json())
     [row] = body["harnesses"]
     assert "usage_windows" not in row
+
+
+@pytest.mark.parametrize("party", ["organisation", "account"])
+def test_a_shared_runner_with_contract_uids_probes_its_harnesses(
+    tmp_path: Path, party: str
+) -> None:
+    """QTS-1450: such a Runner runs a Contract's subscription, so its windows are read."""
+
+    usage = service.build_usage_windows(
+        host_party=party,
+        runtimes={"claude_code": object()},  # type: ignore[dict-item]
+        isolation=_isolation(tmp_path, can_separate_uids=True),
+        in_flight=DirectivesInFlight(),
+    )
+
+    assert usage is not None
+    assert list(usage._probes) == ["claude_code"]
 
 
 def test_a_user_hosted_runner_probes_only_the_harnesses_it_serves(tmp_path: Path) -> None:

@@ -48,6 +48,7 @@ from temporalio.worker import (
 from agentic_runner import __version__ as runner_version
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.attempts import AttemptRecords
+from agentic_runner.auth_mode import SIGN_IN_NEEDS_CONTRACT_UID_RULE, runs_subscriptions
 from agentic_runner.child_watcher import install_stop_tolerant_child_watcher
 from agentic_runner.config import RunnerConfig
 from agentic_runner.config import load as load_config
@@ -997,6 +998,10 @@ async def sign_in_claude(contract_id: str, *, method: str) -> int:
     so the Contract gets the uid and the harness root its Directives already run under.
     Nothing reaches the control plane: the console only reads the outcome back through
     ``claude auth status`` (QTS-1448).
+
+    Refused up front where no Directive could run on the login (``runs_subscriptions``,
+    QTS-1450), and confirmed at a prompt for a Contract this Runner holds no harness root
+    for yet: a mistyped id would otherwise get a uid and a signed-in tree of its own.
     """
 
     mode = isolation_mode()
@@ -1018,12 +1023,35 @@ async def sign_in_claude(contract_id: str, *, method: str) -> int:
             file=sys.stderr,
         )
         return 2
+    state = load_state(load_config().state_dir)
+    host_party = (state.host_party if state is not None else "") or None
+    if not runs_subscriptions(host_party, separates_contract_uids=can):
+        runner = f"hosted by {host_party!r}" if host_party else "not registered"
+        print(
+            f"refusing to sign in ({SIGN_IN_NEEDS_CONTRACT_UID_RULE}): this Runner is {runner} "
+            "and does not run each Contract under its own uid, so no Directive would run on "
+            "the login",
+            file=sys.stderr,
+        )
+        return 1
     sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can))
+    if not sign_ins.has_harness_root(contract_id) and not _confirm_new_contract(contract_id):
+        print("not signed in", file=sys.stderr)
+        return 1
     try:
         return await sign_ins.sign_in(contract_id, method=method)
     except ClaudeSignInError as error:
         print(f"sign-in failed: {error}", file=sys.stderr)
         return 1
+
+
+def _confirm_new_contract(contract_id: str) -> bool:
+    answer = input(
+        f"This Runner holds no Claude Code harness root for Contract {contract_id} yet. Check "
+        "the id against the console: a mistyped one signs in a Contract no Directive runs as. "
+        "Sign it in? [y/N] "
+    )
+    return answer.strip().lower() in {"y", "yes"}
 
 
 async def _serve(
@@ -1349,13 +1377,12 @@ def build_usage_windows(
     isolation: ContractIsolation,
     in_flight: DirectivesInFlight,
 ) -> UsageWindows | None:
-    """A probe per served harness, or None off a user-hosted Runner (local-agents 10).
-
-    Subscriptions follow the person (local-agents 04): only a user-hosted Runner runs one,
-    so only there is a usage window anyone's to read.
+    """A probe per served harness, or None on a Runner that runs no subscription
+    (local-agents 10): only where one can run is there a usage window anyone's to read
+    (``auth_mode.runs_subscriptions``, QTS-1450).
     """
 
-    if host_party != "user":
+    if not runs_subscriptions(host_party, separates_contract_uids=isolation.can_separate_uids):
         return None
     probes: dict[str, UsageWindowProbe] = {
         "codex_cli": CodexRateLimitsProbe(),

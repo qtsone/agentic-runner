@@ -101,7 +101,9 @@ it in your browser.
 agentic-runner sign-in --org acme --contract <contract-id>
 ```
 
-The Contract's page shows its id. The command runs `claude` as the Contract, in the
+The Contract's page shows its id. The first time you sign a Contract in, the command asks
+you to confirm the id, because a mistyped one would get a signed-in directory of its own.
+The command runs `claude` as the Contract, in the
 Contract's directory, and connects it to your terminal. Do what Claude asks: open the link
 and approve in your browser. If the browser shows you a code, paste it into the terminal.
 The code and the login stay on this computer. Nothing goes through the console, which only

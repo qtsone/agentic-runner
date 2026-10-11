@@ -41,13 +41,15 @@ __all__ = [
     "ContractDeviceLoginPromptError",
     "DeviceLoginPrompt",
     "UnknownHarnessError",
+    "holds_login",
     "login_file_counts",
 ]
 
 # The login files each harness's own sign-in writes, relative to its config root
 # (research/29 §1.1, §2.1). Read only with `Path.stat`/`Path.is_file` below, never opened.
 # Claude's `claude_ai` login on macOS is a Keychain item, not a file: its presence is
-# `ClaudeSignIns.status`, and this table serves only the residue count.
+# `ClaudeSignIns.status`. So a shared Runner on macOS runs a Claude subscription on the
+# long-lived token only; a person's own Runner does not consult this table.
 _TOKEN_FILES_BY_RUNTIME: Final[dict[str, tuple[str, ...]]] = {
     "codex_cli": ("auth.json",),
     "claude_code": (".credentials.json", OAUTH_TOKEN_FILE),
@@ -186,12 +188,21 @@ def login_file_counts(isolation: ContractIsolation, contract_id: str | None) -> 
     a login is there, not where or what it is (local-agents 04).
     """
 
-    counts: dict[str, int] = {}
-    for runtime_kind, filenames in _TOKEN_FILES_BY_RUNTIME.items():
-        root = isolation.harness_config_dir(contract_id, runtime_kind)
-        if any((root / filename).is_file() for filename in filenames):
-            counts[runtime_kind] = 1
-    return counts
+    return {
+        runtime_kind: 1
+        for runtime_kind in _TOKEN_FILES_BY_RUNTIME
+        if holds_login(isolation, contract_id, runtime_kind)
+    }
+
+
+def holds_login(isolation: ContractIsolation, contract_id: str | None, runtime_kind: str) -> bool:
+    """Whether this Contract's harness root for ``runtime_kind`` holds a login file, by
+    ``stat`` alone. A kind with no known login file holds none: the shared Runner's
+    subscription check (``auth_mode.choose_auth_mode``) fails closed on it."""
+
+    filenames = _TOKEN_FILES_BY_RUNTIME.get(runtime_kind, ())
+    root = isolation.harness_config_dir(contract_id, runtime_kind)
+    return any((root / filename).is_file() for filename in filenames)
 
 
 def _prompt_has_verification(raw: str) -> bool:

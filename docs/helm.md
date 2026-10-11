@@ -93,11 +93,13 @@ their credentials again, as after a reinstall.
 
 A value delivered under **`OPENAI_API_KEY`** or **`ANTHROPIC_API_KEY`** is also the
 Contract's LLM key. The Runner checks it with one models-list call and, if the provider
-accepts it, spends it on every Codex or Claude Code Directive of that Contract. A Runner
-hosted by an Organisation is shared, and a shared Runner never signs in to a
-subscription, so this key is the only way it runs a Contract's Directives. Without one,
-the Directive is refused `shared_runner_api_key_only`. The heartbeat reports the key as
-`<reference>@v<version>`. To spend it at a gateway rather than at the vendor, set
+accepts it, spends it on every Codex or Claude Code Directive of that Contract. Without a
+key, a Runner hosted by an Organisation or an Account runs the Directive on a subscription
+only if the Runner runs that Contract as its own user (`isolation: contract_uid`, the
+chart's default) and the Contract is signed in on this pod (below). Otherwise the
+Directive is refused, and the refusal names what is missing:
+`subscription_needs_contract_uid` or `subscription_needs_harness_login`. The heartbeat
+reports the key as `<reference>@v<version>`. To spend it at a gateway rather than at the vendor, set
 `AGENTIC_RUNNER_OPENAI_BASE_URL` / `AGENTIC_RUNNER_ANTHROPIC_BASE_URL` in `extraEnv`.
 
 ## Sign in to Claude Code
@@ -116,6 +118,12 @@ shows you into the terminal. Nothing goes through the console, which only shows 
 Contract is signed in. `--method oauth_token` (the default) is a long-lived token, valid
 for a year, that the Runner saves in the harness root, readable by that Contract only.
 `--method claude_ai` is a Claude.ai login that renews itself.
+
+If the pod holds no Claude Code harness root for that Contract yet, the command asks you to
+confirm the id first, so
+a mistyped one does not get a signed-in harness root of its own. On a Runner that does not
+run each Contract as its own user (`isolation: none`), the command refuses
+(`sign_in_needs_contract_uid`), because no Directive there would use the sign-in.
 
 Each replica is its own Runner with its own volume, so sign in on every pod that runs the
 Contract's Directives. Codex signs in from the console, on the Contract's page.
