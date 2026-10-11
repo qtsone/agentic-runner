@@ -63,7 +63,6 @@ from agentic_runner_contracts.sealed_credential import (
     SEAL_DOMAIN,
     OpenedCredential,
     SealedCredential,
-    SealedSignInCode,
     delivery_binding,
     key_fingerprint,
 )
@@ -554,20 +553,10 @@ class SealedCredentialStream:
         if not self._awaiting:
             self._keys.retire_previous()
 
-    def open_sign_in_code(self, sealed: SealedSignInCode) -> str | None:
-        """A relayed sign-in code, or None when it does not open (local-agents 05).
-
-        Opened with the same Recipient Key as a slot, but never held: the caller types it
-        into the waiting CLI and drops it.
-        """
-
-        return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)
-
     def open_oauth_code(self, sealed: SealedOAuthCode) -> str | None:
         """A relayed OAuth code, or None when it does not open (console-v2 issue 30).
 
-        Never held, like a sign-in code: the caller spends it on the token endpoint and
-        drops it.
+        Never held: the caller spends it on the token endpoint and drops it.
         """
 
         return self._open_with(sealed.recipient_key_id, sealed.binding(), sealed.ciphertext)

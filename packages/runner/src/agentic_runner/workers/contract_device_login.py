@@ -54,8 +54,8 @@ _TOKEN_FILES_BY_RUNTIME: Final[dict[str, tuple[str, ...]]] = {
 }
 
 # Codex's non-interactive device-code flow (research/29 §1.5, "Headless login is
-# first-class"). Claude Code's is an interactive paste-code flow on a pseudo-terminal
-# instead: ``claude_sign_in.CLAUDE_SIGN_IN_ARGV`` (local-agents 05).
+# first-class"). Claude Code has none here: the person runs its own flow on the Runner,
+# ``agentic-runner sign-in`` (``claude_sign_in``, QTS-1448), and no console starts it.
 DEVICE_LOGIN_ARGV: Final[dict[str, tuple[str, ...]]] = {
     "codex_cli": ("codex", "login", "--device-auth"),
 }
@@ -97,8 +97,6 @@ class DeviceLoginPrompt:
     verification_uri: str
     user_code: str
     expires_at: datetime
-    # Claude Code's: what a relayed code names (local-agents 05).
-    sign_in_id: str = ""
 
 
 class ContractDeviceLogin:
@@ -119,9 +117,7 @@ class ContractDeviceLogin:
         self._prompt_timeout_seconds = prompt_timeout_seconds
         self._output_limit_bytes = output_limit_bytes
 
-    async def sign_in(
-        self, contract_id: str, *, runtime_kind: str, method: str | None = None
-    ) -> DeviceLoginPrompt:
+    async def sign_in(self, contract_id: str, *, runtime_kind: str) -> DeviceLoginPrompt:
         """Spawn the harness CLI as this Contract's own uid; return once it has printed
         its verification prompt, and leave it running to finish the funder's approval.
 
@@ -130,16 +126,6 @@ class ContractDeviceLogin:
         harness config root no other Contract's uid can read.
         """
 
-        if runtime_kind == "claude_code":
-            claude = await self.claude.start(contract_id, method=method)
-            return DeviceLoginPrompt(
-                contract_id=contract_id,
-                runtime_kind=runtime_kind,
-                verification_uri=claude.verification_uri,
-                user_code="",
-                expires_at=claude.expires_at,
-                sign_in_id=claude.sign_in_id,
-            )
         argv = self._argv_by_runtime.get(runtime_kind)
         if argv is None:
             raise UnknownHarnessError(f"no device-login command for runtime {runtime_kind!r}")

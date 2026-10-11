@@ -14,7 +14,6 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from agentic_runner.auth_mode import SHARED_RUNNER_SIGN_IN_RULE, is_shared_runner
-from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN
 from agentic_runner.workers.contract_device_login import ContractDeviceLogin
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts.activity_io import (
@@ -37,8 +36,9 @@ class ContractDeviceLoginActivities:
         host_party: str | None = None,
     ) -> None:
         self._contract_isolation = contract_isolation
-        # The party this process was registered as hosted by. A shared Runner signs in only
-        # a Claude Code long-lived token (local-agents 04, amended by 21).
+        # The party this process was registered as hosted by. A shared Runner starts no
+        # device login and reports only Claude Code's sign-in (local-agents 04, amended by
+        # 21); a person signs Claude Code in on the Runner itself (QTS-1448).
         self._host_party = host_party
         # Injectable for tests; None falls through to the real vendor CLIs.
         self._device_login = device_login or ContractDeviceLogin(contract_isolation)
@@ -53,12 +53,9 @@ class ContractDeviceLoginActivities:
     async def sign_in_contract_device_login(
         self, request: ContractDeviceLoginInput
     ) -> ContractDeviceLoginResult:
-        long_lived = request.runtime_kind == "claude_code" and (request.method or OAUTH_TOKEN) == (
-            OAUTH_TOKEN
-        )
-        self._refuse_on_shared_runner(allow=long_lived)
+        self._refuse_on_shared_runner()
         prompt = await self._device_login.sign_in(
-            request.contract_id, runtime_kind=request.runtime_kind, method=request.method
+            request.contract_id, runtime_kind=request.runtime_kind
         )
         return ContractDeviceLoginResult(
             contract_id=prompt.contract_id,
@@ -66,7 +63,6 @@ class ContractDeviceLoginActivities:
             verification_uri=prompt.verification_uri,
             user_code=prompt.user_code,
             expires_at=prompt.expires_at.isoformat(),
-            sign_in_id=prompt.sign_in_id,
         )
 
     @activity.defn(name="check_contract_device_login_status")
@@ -107,7 +103,7 @@ class ContractDeviceLoginActivities:
         on here, so the failure the platform's sign-in workflow receives names it.
 
         Only a Runner known to be the person's own signs in, except that a shared Runner
-        may make (``allow``) a Claude Code long-lived token (local-agents 21). One whose
+        may report (``allow``) a Claude Code long-lived token (local-agents 21). One whose
         state names no host party (registered before issue 42) is refused either way, as
         `choose_auth_mode` never runs a subscription on it."""
 

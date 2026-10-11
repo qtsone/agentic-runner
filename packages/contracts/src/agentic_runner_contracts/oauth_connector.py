@@ -42,12 +42,12 @@ __all__ = [
     "oauth_code_binding",
 ]
 
-# Its own prefix, for the reason the sign-in code has one: a sealed OAuth code can never
-# open as a slot value or as a Claude sign-in code, nor either of those as this.
+# Its own prefix: a sealed OAuth code can never open as a slot value, nor a slot value as
+# this.
 OAUTH_CODE_DOMAIN: Final[str] = "agentic-os/oauth-code/v1"
 
-# How long an authorisation waits for its code, the Claude sign-in's window: long enough to
-# read a consent page, short enough that a verifier does not sit in memory for a day.
+# How long an authorisation waits for its code: long enough to read a consent page, short
+# enough that a verifier does not sit in memory for a day.
 OAUTH_WINDOW: Final[timedelta] = timedelta(minutes=10)
 
 
@@ -137,7 +137,7 @@ def oauth_code_binding(
 class SealedOAuthCode(BaseModel):
     """Ack: the provider's code, sealed in the browser to this installation (step 4).
 
-    Relayed once and never a Temporal payload, like a sign-in code. ``state`` travels
+    Relayed once and never a Temporal payload. ``state`` travels
     beside it in the clear: it is the nonce the provider echoed on the callback URL, and the
     Runner compares it with the one it made before it spends the code.
     """

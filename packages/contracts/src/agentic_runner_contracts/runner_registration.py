@@ -53,8 +53,6 @@ from agentic_runner_contracts.oauth_connector import (
 from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
-    SealedSignInCode,
-    SignInCodeRelay,
 )
 from agentic_runner_contracts.user_sources import SourceStatus, UserSourceAssignment
 
@@ -599,8 +597,6 @@ class HeartbeatEnvelope(BaseModel):
     # Console-v2 issue 29: each Runner-hosted Tool Server's latest start, per slug. A
     # server not started since the process began is absent.
     tool_servers: list[ToolServerHealth] = Field(default_factory=list, max_length=64)
-    # Local-agents 05: what became of each sign-in code the last ack relayed.
-    sign_in_codes: list[SignInCodeRelay] = Field(default_factory=list, max_length=16)
     # Console-v2 issue 30: the authorise URL for each start the last ack asked for, the
     # token ciphertext a connect or a refresh sealed to this installation's Recipient Key
     # -- stored in the Contract's slot like any sealed delivery -- and each step's outcome
@@ -618,7 +614,6 @@ class HeartbeatEnvelope(BaseModel):
         if isinstance(body, dict):
             for name in (
                 "tool_servers",
-                "sign_in_codes",
                 "oauth_authorizations",
                 "oauth_tokens",
                 "oauth_outcomes",
@@ -672,12 +667,8 @@ class HeartbeatAck(BaseModel):
     # the control plane hands a request over on exactly one beat -- and answered on the
     # signed stream (`TRANSCRIPT_DELIVERIES_PATH`), never on the ack itself.
     transcript_requests: list[TranscriptRequest] = Field(default_factory=list, max_length=16)
-    # Local-agents 05: one-time browser sign-in codes, sealed to this installation's
-    # Recipient Key. Relayed once each, like `transcript_requests`; the outcome comes back
-    # on the next envelope's `sign_in_codes`.
-    sign_in_codes: list[SealedSignInCode] = Field(default_factory=list, max_length=16)
     # Console-v2 issue 30: start an OAuth authorisation, the code the browser sealed for
-    # one, and Disconnect. Relayed once each, like `sign_in_codes`; what became of each
+    # one, and Disconnect. Relayed once each, like `transcript_requests`; what became of each
     # comes back on the envelope's `oauth_*` fields.
     oauth_starts: list[OAuthStart] = Field(default_factory=list, max_length=16)
     oauth_codes: list[SealedOAuthCode] = Field(default_factory=list, max_length=16)

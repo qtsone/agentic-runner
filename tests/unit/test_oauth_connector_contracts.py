@@ -30,7 +30,6 @@ from agentic_runner_contracts.runner_registration import HeartbeatAck, Heartbeat
 from agentic_runner_contracts.sealed_credential import (
     SealedCredential,
     delivery_binding,
-    sign_in_code_binding,
 )
 
 CONTRACT = uuid4()
@@ -181,7 +180,6 @@ def test_the_code_binding_is_its_own_domain() -> None:
     code = oauth_code_binding(authorization_id=AUTHORIZATION, **triple)
 
     assert code.startswith(oauth_connector.OAUTH_CODE_DOMAIN.encode())
-    assert code != sign_in_code_binding(sign_in_id=AUTHORIZATION, **triple)
     assert code != delivery_binding(slot=AUTHORIZATION, **triple)
 
 

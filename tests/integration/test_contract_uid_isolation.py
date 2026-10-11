@@ -30,12 +30,16 @@ from agentic_runner.integrations.git.workspace import (
 from agentic_runner.workers._runtime_support import run_subprocess_exec
 from agentic_runner.workers.acp_runtime import AcpRuntime
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
-from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN_FILE, ClaudeSignIns, launcher_argv
+from agentic_runner.workers.claude_sign_in import (
+    OAUTH_TOKEN_FILE,
+    ClaudeSignInError,
+    ClaudeSignIns,
+    launcher_argv,
+)
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner.workers.settings import WorkerSettings
 from agentic_runner.workers.skills import SkillDeliveryError, remove_skills, write_skills
 from agentic_runner_contracts.runtime_context import SkillVersionSpec
-from agentic_runner_contracts.sealed_credential import SignInCodeOutcome
 
 CONTRACT_A = "11111111-2222-4333-8444-555555555555"
 CONTRACT_B = "66666666-7777-4888-8999-aaaaaaaaaaaa"
@@ -87,6 +91,12 @@ def _make_traversable(leaf: Path) -> None:
         if parent.stat().st_mode & 0o001 or parent == Path(parent.root):
             break
         parent.chmod(0o755)
+
+
+def _terminal(tmp_path: Path) -> tuple[tuple[int, int], int]:
+    """A keyboard pipe and a screen file standing in for the person's terminal."""
+
+    return os.pipe(), os.open(tmp_path / "screen", os.O_WRONLY | os.O_CREAT, 0o600)
 
 
 async def _spawn(argv: list[str], *, cwd: Path, sandbox: object) -> tuple[int, str, str]:
@@ -479,8 +489,7 @@ _CLAUDE_TOKEN = "sk-ant-oat01-UidTokenUidTokenUidTokenUidToken"
 # A shell script, not Python: the Contract's uid runs it and cannot reach the venv.
 _FAKE_CLAUDE_SETUP_TOKEN = f"""#!/bin/sh
 id -u >"$CLAUDE_CONFIG_DIR/ran-as"
-url='https://claude.com/cai/oauth/authorize?code=true&code_challenge=c&code_challenge_method=S256'
-printf '\\033]8;id=1;%s\\007open\\033]8;;\\007\\r\\nPaste code here if prompted > ' "$url"
+printf 'Paste code here if prompted > '
 read -r code
 printf '\\r\\n%s\\r\\n' '{_CLAUDE_TOKEN}'
 """
@@ -490,8 +499,9 @@ printf '\\r\\n%s\\r\\n' '{_CLAUDE_TOKEN}'
 async def test_a_claude_token_is_its_contracts_own_and_no_other_contract_reads_it(
     tmp_path: Path,
 ) -> None:
-    """Local-agents 05: `setup-token` runs as the Contract's uid, the token lands owned by
-    it, its own launcher hands it to its harness, and Contract B's uid reads none of it."""
+    """QTS-1448: `agentic-runner sign-in` runs `setup-token` as the Contract's uid, the
+    token lands owned by it, its own launcher hands it to its harness, and Contract B's uid
+    reads none of it."""
 
     require_uid_separation()
     isolation = ContractIsolation(
@@ -510,17 +520,16 @@ async def test_a_claude_token_is_its_contracts_own_and_no_other_contract_reads_i
         isolation, argv_by_method={"oauth_token": (str(fake), "setup-token")}, platform="linux"
     )
 
-    prompt = await sign_ins.start(CONTRACT_A, method=None)
-    outcome = await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, "browser-code-0123456789")
+    keyboard, screen = _terminal(tmp_path)
+    os.write(keyboard[1], b"browser-code-0123456789\r")
     async with asyncio.timeout(10):
-        while sign_ins.waiting:
-            await asyncio.sleep(0.05)
+        exit_code = await sign_ins.sign_in(CONTRACT_A, stdin_fd=keyboard[0], stdout_fd=screen)
 
     sandbox_a = isolation.sandbox(CONTRACT_A, runtime_kind="claude_code")
     sandbox_b = isolation.sandbox(CONTRACT_B, runtime_kind="claude_code")
     root_a = sandbox_a.harness_config_dir
     token = root_a / OAUTH_TOKEN_FILE
-    assert outcome is SignInCodeOutcome.WRITTEN
+    assert exit_code == 0
     assert (root_a / "ran-as").read_text().strip() == str(sandbox_a.uid)
     assert token.stat().st_uid == sandbox_a.uid
     assert stat.S_IMODE(token.stat().st_mode) == 0o600
@@ -546,7 +555,7 @@ async def test_a_claude_token_is_its_contracts_own_and_no_other_contract_reads_i
 async def test_a_claude_token_never_lands_through_a_symlink_its_contract_planted(
     tmp_path: Path,
 ) -> None:
-    """Sentinel F1: Contract A owns its harness root, so while its sign-in waits it can swap
+    """Sentinel F1: Contract A owns its harness root, so while its sign-in runs it can swap
     that root for a symlink into Contract B's. The token write runs as A's uid and stops."""
 
     require_uid_separation()
@@ -567,13 +576,19 @@ async def test_a_claude_token_never_lands_through_a_symlink_its_contract_planted
     )
     root_b = isolation.sandbox(CONTRACT_B, runtime_kind="claude_code").harness_config_dir
 
-    prompt = await sign_ins.start(CONTRACT_A, method=None)
+    keyboard, screen = _terminal(tmp_path)
+    signing_in = asyncio.ensure_future(
+        sign_ins.sign_in(CONTRACT_A, stdin_fd=keyboard[0], stdout_fd=screen)
+    )
     root_a = isolation.harness_config_dir(CONTRACT_A, "claude_code")
+    async with asyncio.timeout(10):
+        while not (root_a / "ran-as").exists():
+            await asyncio.sleep(0.05)
     root_a.rename(root_a.with_name("claude_code.moved"))
     root_a.symlink_to(root_b)
-    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, "browser-code-0123456789")
-    async with asyncio.timeout(10):
-        while sign_ins.waiting:
-            await asyncio.sleep(0.05)
+    os.write(keyboard[1], b"browser-code-0123456789\r")
+    with pytest.raises(ClaudeSignInError, match="oauth-token"):
+        async with asyncio.timeout(10):
+            await signing_in
 
     assert list(root_b.iterdir()) == []
