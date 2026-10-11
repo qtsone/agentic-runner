@@ -29,6 +29,7 @@
         "assets": [
           "CHANGELOG.md",
           "packages/runner/src/agentic_runner/__init__.py",
+          "packages/runner/pyproject.toml",
           "packages/contracts/src/agentic_runner_contracts/__init__.py",
           "charts/agentic-runner/Chart.yaml"
         ],
