@@ -100,6 +100,26 @@ the Directive is refused `shared_runner_api_key_only`. The heartbeat reports the
 `<reference>@v<version>`. To spend it at a gateway rather than at the vendor, set
 `AGENTIC_RUNNER_OPENAI_BASE_URL` / `AGENTIC_RUNNER_ANTHROPIC_BASE_URL` in `extraEnv`.
 
+## Sign in to Claude Code
+
+A Contract that runs Claude Code on a subscription signs in on the pod, in your terminal,
+with Anthropic's own sign-in:
+
+```sh
+kubectl -n agentic-runner exec -it runner-agentic-runner-0 -c runner -- \
+  agentic-runner sign-in --contract <contract-id>
+```
+
+It runs `claude` as the Contract's own user, in the Contract's harness root on that pod's
+volume. Open the link it prints, approve in your browser, and paste the code the browser
+shows you into the terminal. Nothing goes through the console, which only shows whether the
+Contract is signed in. `--method oauth_token` (the default) is a long-lived token, valid
+for a year, that the Runner saves in the harness root, readable by that Contract only.
+`--method claude_ai` is a Claude.ai login that renews itself.
+
+Each replica is its own Runner with its own volume, so sign in on every pod that runs the
+Contract's Directives. Codex signs in from the console, on the Contract's page.
+
 ## Check it
 
 ```sh
