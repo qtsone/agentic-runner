@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ VERSIONED_FILES = [
     "packages/runner/src/agentic_runner/__init__.py",
     "packages/contracts/src/agentic_runner_contracts/__init__.py",
     "charts/agentic-runner/Chart.yaml",
+    "packages/runner/pyproject.toml",
 ]
 
 
@@ -49,12 +51,26 @@ def test_one_version_reaches_both_packages_and_the_chart(repo_copy: Path) -> Non
     result = run_set_version(repo_copy, "3.1.4")
 
     assert result.returncode == 0, result.stderr
-    runner_init, contracts_init, chart_yaml = (repo_copy / f for f in VERSIONED_FILES)
+    runner_init, contracts_init, chart_yaml, runner_pyproject = (
+        repo_copy / f for f in VERSIONED_FILES
+    )
     assert dunder_version(runner_init) == "3.1.4"
     assert dunder_version(contracts_init) == "3.1.4"
     chart = yaml.safe_load(chart_yaml.read_text())
     assert chart["version"] == "3.1.4"
     assert chart["appVersion"] == "3.1.4"
+    # An unpinned requirement let an upgraded runner keep an older contracts wheel (QTS-1473).
+    runner_requires = tomllib.loads(runner_pyproject.read_text())["project"]["dependencies"]
+    assert "agentic-runner-contracts==3.1.4" in runner_requires
+
+
+def test_the_runner_requires_the_contracts_of_its_own_release() -> None:
+    runner_requires = tomllib.loads((REPO_ROOT / "packages/runner/pyproject.toml").read_text())[
+        "project"
+    ]["dependencies"]
+    contracts_init = REPO_ROOT / "packages/contracts/src/agentic_runner_contracts/__init__.py"
+
+    assert f"agentic-runner-contracts=={dunder_version(contracts_init)}" in runner_requires
 
 
 def test_only_the_version_lines_change(repo_copy: Path) -> None:

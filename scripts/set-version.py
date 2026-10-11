@@ -4,8 +4,9 @@
 Usage: python scripts/set-version.py <version>
 
 semantic-release's prepare step runs this (`.releaserc`). Both packages release together at
-one version, and the chart's `appVersion` is the image tag it installs by default, so all four
-fields move as one. Standard library only: the release job installs nothing for it.
+one version, the runner requires exactly that contracts version, and the chart's `appVersion`
+is the image tag it installs by default, so all five fields move as one. Standard library
+only: the release job installs nothing for it.
 """
 
 import re
@@ -16,12 +17,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 RUNNER_INIT = REPO_ROOT / "packages/runner/src/agentic_runner/__init__.py"
 CONTRACTS_INIT = REPO_ROOT / "packages/contracts/src/agentic_runner_contracts/__init__.py"
+RUNNER_PYPROJECT = REPO_ROOT / "packages/runner/pyproject.toml"
 CHART = REPO_ROOT / "charts/agentic-runner/Chart.yaml"
 DUNDER_VERSION = r'^__version__ = "[^"]*"$'
 
 TARGETS = [
     (RUNNER_INIT, DUNDER_VERSION, '__version__ = "{v}"'),
     (CONTRACTS_INIT, DUNDER_VERSION, '__version__ = "{v}"'),
+    (
+        RUNNER_PYPROJECT,
+        r'^  "agentic-runner-contracts==[^"]*",$',
+        '  "agentic-runner-contracts=={v}",',
+    ),
     (CHART, r"^version: .*$", "version: {v}"),
     (CHART, r"^appVersion: .*$", 'appVersion: "{v}"'),
 ]
