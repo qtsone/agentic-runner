@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.13.0](https://github.com/qtsone/agentic-runner/compare/v3.12.2...v3.13.0) (2026-10-11)
+
+
+### Features
+
+* **runner:** agentic-runner-setup skill and `skill install|print` (QTS-924) ([#47](https://github.com/qtsone/agentic-runner/issues/47)) ([b3f7662](https://github.com/qtsone/agentic-runner/commit/b3f766238084c920b1b520c49e6b07642638a89c)), closes [qtsone/agentic-os#434](https://github.com/qtsone/agentic-os/issues/434)
+
 ## [3.12.2](https://github.com/qtsone/agentic-runner/compare/v3.12.1...v3.12.2) (2026-10-09)
 
 
