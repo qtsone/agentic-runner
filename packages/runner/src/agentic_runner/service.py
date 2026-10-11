@@ -48,6 +48,7 @@ from temporalio.worker import (
 from agentic_runner import __version__ as runner_version
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.attempts import AttemptRecords
+from agentic_runner.auth_mode import runs_subscriptions
 from agentic_runner.child_watcher import install_stop_tolerant_child_watcher
 from agentic_runner.config import RunnerConfig
 from agentic_runner.config import load as load_config
@@ -1349,13 +1350,12 @@ def build_usage_windows(
     isolation: ContractIsolation,
     in_flight: DirectivesInFlight,
 ) -> UsageWindows | None:
-    """A probe per served harness, or None off a user-hosted Runner (local-agents 10).
-
-    Subscriptions follow the person (local-agents 04): only a user-hosted Runner runs one,
-    so only there is a usage window anyone's to read.
+    """A probe per served harness, or None on a Runner that runs no subscription
+    (local-agents 10): only where one can run is there a usage window anyone's to read
+    (``auth_mode.runs_subscriptions``, QTS-1450).
     """
 
-    if host_party != "user":
+    if not runs_subscriptions(host_party, separates_contract_uids=isolation.can_separate_uids):
         return None
     probes: dict[str, UsageWindowProbe] = {
         "codex_cli": CodexRateLimitsProbe(),

@@ -137,7 +137,7 @@ from agentic_runner.workers.agent_runtime import (
     PermissionFallback,
     ResumableAgentRuntime,
 )
-from agentic_runner.workers.contract_device_login import login_file_counts
+from agentic_runner.workers.contract_device_login import holds_login, login_file_counts
 from agentic_runner.workers.contract_isolation import (
     NO_CONTRACT,
     ContractIsolation,
@@ -2995,20 +2995,29 @@ class RunnerRalphActivities:
         """This Directive's auth mode, or a non-retryable refusal with Evidence naming the
         rule (local-agents 04).
 
-        Decided from the host party this process was registered with and from whether a
-        key is present for the Contract -- never from the payload. A runtime that declares
-        no modes (a test double built before the port grew the field) reads as
-        ``api_key``-only, and a kind this Runner does not serve reads the same way; that
-        Directive fails closed in :meth:`_agent_runtime_for` regardless.
+        Decided from what this process can check -- the host party it was registered with,
+        whether a key is present for the Contract, whether the Contract runs under its own
+        uid here and whether its harness root holds a login (QTS-1450) -- never from the
+        payload. A runtime that declares no modes (a test double built before the port
+        grew the field) reads as ``api_key``-only, and a kind this Runner does not serve
+        reads the same way; that Directive fails closed in :meth:`_agent_runtime_for`
+        regardless.
         """
 
         runtime = self._agent_runtimes.get(state.cli_kind)
         host_party = self._routing_identity.host_party if self._routing_identity else None
+        contract_uid = self._runs_under_contract_uid(state)
         try:
             return choose_auth_mode(
                 host_party=host_party,
                 key_present=self._api_key_present(state, runtime),
                 runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
+                contract_uid=contract_uid,
+                harness_login=(
+                    contract_uid
+                    and self._contract_isolation is not None
+                    and holds_login(self._contract_isolation, state.contract_id, state.cli_kind)
+                ),
             )
         except AuthModeRefusedError as refusal:
             await _raise_recorded(
@@ -3026,6 +3035,16 @@ class RunnerRalphActivities:
                 },
             )
 
+    def _runs_under_contract_uid(self, state: _RuntimeContextState) -> bool:
+        """Whether this Directive spawns as its own Contract's uid. A Work Record with no
+        Contract shares the one no-Contract tree, so it never does."""
+
+        return (
+            self._contract_isolation is not None
+            and self._contract_isolation.can_separate_uids
+            and _optional_uuid(state.contract_id) is not None
+        )
+
     def _api_key_present(self, state: _RuntimeContextState, runtime: AgentRuntime | None) -> bool:
         """A delivered slot for the Contract (or its funder), or the host operator's key."""
 
@@ -3039,18 +3058,21 @@ class RunnerRalphActivities:
         )
 
     async def _report_login_residue(self, work_record_id: str, state: _RuntimeContextState) -> None:
-        """On a shared Runner, say once that a Contract's harness root holds a login.
+        """On a shared Runner that cannot run a subscription, say once that a Contract's
+        harness root holds a login.
 
         A count per harness, never a path or a byte of the file: the Runner does not open
-        it, a shared Runner never runs on it, and ``wipe_contract_residue`` removes it with
-        the Contract. Saying so is what turns a sign-in made before local-agents 03 (or by
-        hand) into something the Organisation can see and act on.
+        it, a shared Runner without Contract uids never runs on it (QTS-1450), and
+        ``wipe_contract_residue`` removes it with the Contract. Saying so is what turns a
+        sign-in made before local-agents 03 (or by hand) into something the Organisation
+        can see and act on.
         """
 
         host_party = self._routing_identity.host_party if self._routing_identity else None
         if (
             self._contract_isolation is None
             or not is_shared_runner(host_party)
+            or self._runs_under_contract_uid(state)
             or state.contract_id in self._residue_checked
         ):
             return

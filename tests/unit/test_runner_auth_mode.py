@@ -1,14 +1,16 @@
-"""A shared Runner runs API keys only; Codex API-key mode (local-agents 04).
+"""Where a subscription runs; Codex API-key mode (local-agents 04, QTS-1450).
 
-The Runner chooses each Directive's auth mode itself, from its registered host party and
-whether a key is present -- never from the payload, never from how it was installed --
-and refuses what a shared Runner must not do. These are the unit-level halves; the
+The Runner chooses each Directive's auth mode itself, from what it can check -- its
+registered host party, whether a key is present, whether the Contract runs under its own
+uid and whether its harness root holds a login -- never from the payload, never from how
+it was installed, and refuses what it cannot verify. These are the unit-level halves; the
 activity-level ones (Evidence, residue, the per-Directive wiring) are in
 ``tests/integration/test_runner_auth_mode_directives.py``.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 from collections.abc import Mapping
@@ -21,9 +23,11 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from agentic_runner.auth_mode import (
+    NO_RUNTIME_SUBSCRIPTION_RULE,
     SETUP_TOKEN_REFUSED_RULE,
-    SHARED_RUNNER_SIGN_IN_RULE,
-    SHARED_RUNNER_SUBSCRIPTION_RULE,
+    SIGN_IN_NEEDS_CONTRACT_UID_RULE,
+    SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
+    SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
     AuthModeRefusedError,
     choose_auth_mode,
 )
@@ -35,6 +39,7 @@ from agentic_runner.sealed_box import (
     seal,
 )
 from agentic_runner.workers._runtime_support import RESERVED_DIRECTIVE_ENV, apply_extra_env
+from agentic_runner.workers.acp_runtime import AcpRuntime
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.claude_sign_in import ClaudeAuthStatus
@@ -52,60 +57,119 @@ from agentic_runner_contracts.sealed_credential import SealedCredential, deliver
 CONTRACT = UUID("11111111-1111-4111-8111-111111111111")
 CODEX_MODES = CodexRuntime.auth_modes
 CLAUDE_MODES = ClaudeRuntime.auth_modes
+ACP_MODES = AcpRuntime.auth_modes
 
 
 # ------------------------------------------------------------------ the mode table
 
-# host party x key present x cli_kind -> the mode, or the rule that refuses it.
-MODE_TABLE: list[tuple[str | None, bool, str, frozenset[AuthMode], AuthMode | str]] = [
-    ("organisation", True, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    ("organisation", True, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
-    ("organisation", False, "codex_cli", CODEX_MODES, SHARED_RUNNER_SUBSCRIPTION_RULE),
-    ("organisation", False, "claude_code", CLAUDE_MODES, SHARED_RUNNER_SUBSCRIPTION_RULE),
-    ("account", True, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    ("account", True, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
-    ("account", False, "codex_cli", CODEX_MODES, SHARED_RUNNER_SUBSCRIPTION_RULE),
-    ("account", False, "claude_code", CLAUDE_MODES, SHARED_RUNNER_SUBSCRIPTION_RULE),
-    ("user", True, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    ("user", True, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
-    ("user", False, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
-    # Claude Code subscription mode is local-agents 07; until then it stays on a key.
-    ("user", False, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
-    # An unregistered process is not the person's own Runner: never a subscription.
-    (None, False, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    (None, True, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+# host party x key present x Contract uid x harness login x runtime -> the mode, or the
+# rule that refuses it.
+UID, NO_UID, LOGIN, NO_LOGIN = True, False, True, False
+MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], AuthMode | str]] = [
+    # A key always wins, wherever the Runner is.
+    ("organisation", True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    ("organisation", True, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    ("account", True, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
+    ("user", True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    ("user", True, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
+    # A shared Runner -- a customer-operated cluster -- runs a subscription only with both
+    # a Contract uid and a login in that Contract's harness root (QTS-1450).
+    ("organisation", False, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
+    ("account", False, UID, LOGIN, "claude_code", ACP_MODES, AuthMode.SUBSCRIPTION),
+    (
+        "organisation",
+        False,
+        NO_UID,
+        LOGIN,
+        "codex_cli",
+        CODEX_MODES,
+        SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
+    ),
+    (
+        "account",
+        False,
+        NO_UID,
+        NO_LOGIN,
+        "claude_code",
+        ACP_MODES,
+        SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
+    ),
+    (
+        "organisation",
+        False,
+        UID,
+        NO_LOGIN,
+        "codex_cli",
+        CODEX_MODES,
+        SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+    ),
+    (
+        "account",
+        False,
+        UID,
+        NO_LOGIN,
+        "claude_code",
+        ACP_MODES,
+        SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+    ),
+    # The non-ACP Claude Code runtime runs on keys only (local-agents 07).
+    ("organisation", False, UID, LOGIN, "claude_code", CLAUDE_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
+    # The person's own Runner: routing tied the Contract to the person, whatever its uids.
+    ("user", False, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
+    ("user", False, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
+    # An unregistered process is nobody's own Runner and makes no routing assertion.
+    (None, False, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    (None, True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
 ]
 
 
 @pytest.mark.parametrize(
-    ("host_party", "key_present", "cli_kind", "modes", "expected"),
+    ("host_party", "key_present", "contract_uid", "harness_login", "cli_kind", "modes", "expected"),
     MODE_TABLE,
-    ids=[f"{row[0]}-{'key' if row[1] else 'nokey'}-{row[2]}" for row in MODE_TABLE],
+    ids=[
+        f"{row[0]}-{'key' if row[1] else 'nokey'}-{'uid' if row[2] else 'nouid'}"
+        f"-{'login' if row[3] else 'nologin'}-{row[4]}-{len(row[5])}modes"
+        for row in MODE_TABLE
+    ],
 )
-def test_the_mode_is_chosen_from_host_party_and_key_presence(
+def test_the_mode_is_chosen_from_what_the_runner_can_verify(
     host_party: str | None,
     key_present: bool,
+    contract_uid: bool,
+    harness_login: bool,
     cli_kind: str,
     modes: frozenset[AuthMode],
     expected: AuthMode | str,
 ) -> None:
-    if isinstance(expected, AuthMode):
-        assert (
-            choose_auth_mode(host_party=host_party, key_present=key_present, runtime_modes=modes)
-            == expected
+    def choose() -> AuthMode:
+        return choose_auth_mode(
+            host_party=host_party,
+            key_present=key_present,
+            runtime_modes=modes,
+            contract_uid=contract_uid,
+            harness_login=harness_login,
         )
+
+    if isinstance(expected, AuthMode):
+        assert choose() == expected
         return
     with pytest.raises(AuthModeRefusedError) as refused:
-        choose_auth_mode(host_party=host_party, key_present=key_present, runtime_modes=modes)
+        choose()
     assert refused.value.rule == expected
 
 
-def test_a_shared_runner_never_chooses_a_subscription() -> None:
+def test_a_shared_runner_never_chooses_a_subscription_it_cannot_verify() -> None:
     for host_party in ("organisation", "account"):
-        for key_present in (True, False):
+        for key_present, contract_uid, harness_login in itertools.product((True, False), repeat=3):
+            if contract_uid and harness_login:
+                continue
             try:
                 mode = choose_auth_mode(
-                    host_party=host_party, key_present=key_present, runtime_modes=CODEX_MODES
+                    host_party=host_party,
+                    key_present=key_present,
+                    runtime_modes=CODEX_MODES,
+                    contract_uid=contract_uid,
+                    harness_login=harness_login,
                 )
             except AuthModeRefusedError:
                 continue
@@ -348,7 +412,7 @@ class _FakeDeviceLogin:
 
 
 def _device_login_activities(
-    tmp_path: Path, host_party: str | None
+    tmp_path: Path, host_party: str | None, *, can_separate_uids: bool = False
 ) -> tuple[ContractDeviceLoginActivities, _FakeDeviceLogin]:
     login = _FakeDeviceLogin()
     isolation = ContractIsolation(
@@ -358,7 +422,7 @@ def _device_login_activities(
         uid_max=20_100,
         max_processes=64,
         memory_limit_bytes=1 << 30,
-        can_separate_uids=False,
+        can_separate_uids=can_separate_uids,
     )
     return (
         ContractDeviceLoginActivities(
@@ -370,26 +434,46 @@ def _device_login_activities(
     )
 
 
-@pytest.mark.parametrize("host_party", ["organisation", "account", None])
-@pytest.mark.asyncio
-async def test_a_shared_runner_refuses_sign_in_and_its_status_check(
-    tmp_path: Path, host_party: str | None
-) -> None:
-    activities, login = _device_login_activities(tmp_path, host_party)
-
-    for call in (
+def _sign_in_calls(activities: ContractDeviceLoginActivities) -> list[Any]:
+    return [
         activities.sign_in_contract_device_login(
             ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
         ),
         activities.check_contract_device_login_status(
             ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
         ),
-    ):
+        activities.check_contract_device_login_status(
+            ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
+        ),
+    ]
+
+
+@pytest.mark.parametrize("host_party", ["organisation", "account", None])
+@pytest.mark.asyncio
+async def test_a_runner_no_subscription_runs_on_refuses_sign_in_and_its_status(
+    tmp_path: Path, host_party: str | None
+) -> None:
+    activities, login = _device_login_activities(tmp_path, host_party)
+
+    for call in _sign_in_calls(activities):
         with pytest.raises(ApplicationError) as refused:
             await call
-        assert refused.value.type == SHARED_RUNNER_SIGN_IN_RULE
+        assert refused.value.type == SIGN_IN_NEEDS_CONTRACT_UID_RULE
         assert refused.value.non_retryable is True
-    assert login.calls == 0, "the harness root is never touched on a shared Runner"
+    assert login.calls == 0, "the harness root is never touched where no subscription runs"
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_runner_refuses_sign_in_even_with_contract_uids(
+    tmp_path: Path,
+) -> None:
+    activities, login = _device_login_activities(tmp_path, None, can_separate_uids=True)
+
+    for call in _sign_in_calls(activities):
+        with pytest.raises(ApplicationError) as refused:
+            await call
+        assert refused.value.type == SIGN_IN_NEEDS_CONTRACT_UID_RULE
+    assert login.calls == 0
 
 
 @pytest.mark.asyncio
@@ -406,39 +490,28 @@ async def test_the_persons_own_runner_still_signs_in(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("host_party", ["organisation", "account"])
 @pytest.mark.asyncio
-async def test_a_shared_runner_reads_a_claude_long_lived_tokens_status(
+async def test_a_shared_runner_with_contract_uids_signs_in_and_reads_status(
     tmp_path: Path, host_party: str
 ) -> None:
-    """Local-agents 21: a shared Runner may run a Claude subscription on the long-lived
-    token, so it reads that sign-in's status. The person made it on the Runner itself."""
+    """QTS-1450: a customer-operated cluster Runner runs each Contract as its own uid, so a
+    subscription can run there, and its sign-in and status are served."""
 
-    activities, _ = _device_login_activities(tmp_path, host_party)
+    activities, login = _device_login_activities(tmp_path, host_party, can_separate_uids=True)
 
-    status = await activities.check_contract_device_login_status(
+    started = await activities.sign_in_contract_device_login(
+        ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
+    )
+    claude = await activities.check_contract_device_login_status(
         ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
     )
 
-    assert (status.token_present, status.auth_method, status.subscription_type) == (
+    assert started.user_code == "ABCD-1234"
+    assert (claude.token_present, claude.auth_method, claude.subscription_type) == (
         True,
         "oauth_token",
         "max",
     )
-
-
-@pytest.mark.parametrize("host_party", ["organisation", "account", None])
-@pytest.mark.asyncio
-async def test_a_shared_runner_starts_no_claude_sign_in(
-    tmp_path: Path, host_party: str | None
-) -> None:
-    activities, login = _device_login_activities(tmp_path, host_party)
-
-    with pytest.raises(ApplicationError) as refused:
-        await activities.sign_in_contract_device_login(
-            ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
-        )
-
-    assert refused.value.type == SHARED_RUNNER_SIGN_IN_RULE
-    assert login.calls == 0
+    assert login.calls == 2
 
 
 def _sealed(store: RecipientKeyStore, value: str, *, slot: str = "llm_key") -> SealedCredential:

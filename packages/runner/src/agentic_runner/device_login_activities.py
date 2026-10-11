@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from agentic_runner.auth_mode import SHARED_RUNNER_SIGN_IN_RULE, is_shared_runner
+from agentic_runner.auth_mode import SIGN_IN_NEEDS_CONTRACT_UID_RULE, runs_subscriptions
 from agentic_runner.workers.contract_device_login import ContractDeviceLogin
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts.activity_io import (
@@ -36,9 +36,9 @@ class ContractDeviceLoginActivities:
         host_party: str | None = None,
     ) -> None:
         self._contract_isolation = contract_isolation
-        # The party this process was registered as hosted by. A shared Runner starts no
-        # device login and reports only Claude Code's sign-in (local-agents 04, amended by
-        # 21); a person signs Claude Code in on the Runner itself (QTS-1448).
+        # The party this process was registered as hosted by. A shared Runner signs in only
+        # where its Directives run as each Contract's own uid (QTS-1450); a person signs
+        # Claude Code in on the Runner itself (QTS-1448).
         self._host_party = host_party
         # Injectable for tests; None falls through to the real vendor CLIs.
         self._device_login = device_login or ContractDeviceLogin(contract_isolation)
@@ -53,7 +53,7 @@ class ContractDeviceLoginActivities:
     async def sign_in_contract_device_login(
         self, request: ContractDeviceLoginInput
     ) -> ContractDeviceLoginResult:
-        self._refuse_on_shared_runner()
+        self._refuse_where_no_subscription_runs()
         prompt = await self._device_login.sign_in(
             request.contract_id, runtime_kind=request.runtime_kind
         )
@@ -70,7 +70,7 @@ class ContractDeviceLoginActivities:
         self, request: ContractDeviceLoginStatusInput
     ) -> ContractDeviceLoginStatusResult:
         if request.runtime_kind == "claude_code":
-            self._refuse_on_shared_runner(allow=True)
+            self._refuse_where_no_subscription_runs()
             status = await self._device_login.claude.status(request.contract_id)
             return ContractDeviceLoginStatusResult(
                 contract_id=request.contract_id,
@@ -80,7 +80,7 @@ class ContractDeviceLoginActivities:
                 auth_method=status.auth_method,
                 subscription_type=status.subscription_type,
             )
-        self._refuse_on_shared_runner()
+        self._refuse_where_no_subscription_runs()
         present = self._device_login.token_present(
             request.contract_id, runtime_kind=request.runtime_kind
         )
@@ -98,20 +98,22 @@ class ContractDeviceLoginActivities:
             delivered_at=delivered_at,
         )
 
-    def _refuse_on_shared_runner(self, *, allow: bool = False) -> None:
+    def _refuse_where_no_subscription_runs(self) -> None:
         """Non-retryable, and typed by the rule: there is no Work Record to write Evidence
         on here, so the failure the platform's sign-in workflow receives names it.
 
-        Only a Runner known to be the person's own signs in, except that a shared Runner
-        may report (``allow``) a Claude Code long-lived token (local-agents 21). One whose
-        state names no host party (registered before issue 42) is refused either way, as
-        `choose_auth_mode` never runs a subscription on it."""
+        A sign-in, or a read of one, only where a Directive could run on it
+        (``auth_mode.runs_subscriptions``): the person's own Runner, or a shared one that
+        runs each Contract as its own uid. One whose state names no host party (registered
+        before issue 42) is refused, as `choose_auth_mode` never runs a subscription on it.
+        """
 
-        if self._host_party != "user" and not (allow and is_shared_runner(self._host_party)):
+        if not runs_subscriptions(
+            self._host_party, separates_contract_uids=self._contract_isolation.can_separate_uids
+        ):
             raise ApplicationError(
-                f"this Runner is hosted by {self._host_party!r}; only a person's own Runner "
-                "signs in, a shared Runner runs API keys and Claude Code long-lived tokens "
-                "only",
-                type=SHARED_RUNNER_SIGN_IN_RULE,
+                f"this Runner is hosted by {self._host_party!r} and does not run each Contract "
+                "under its own uid, so no subscription runs on it and it signs nothing in",
+                type=SIGN_IN_NEEDS_CONTRACT_UID_RULE,
                 non_retryable=True,
             )
