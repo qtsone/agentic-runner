@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.15.1](https://github.com/qtsone/agentic-runner/compare/v3.15.0...v3.15.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **runner:** require the contracts of the runner's own release (QTS-1473) ([#51](https://github.com/qtsone/agentic-runner/issues/51)) ([869fc32](https://github.com/qtsone/agentic-runner/commit/869fc32279aabc97da3cbea35f0c01d9d5183736))
+
 # [3.15.0](https://github.com/qtsone/agentic-runner/compare/v3.14.0...v3.15.0) (2026-10-11)
 
 
