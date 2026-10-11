@@ -15,6 +15,9 @@ the Organisation's cap.
 Runner (PRD issue 47, ``workstation.py``): one login agent per Organisation, managed by
 the user who hosts it, with no ``sudo`` anywhere.
 
+``skill install | print`` hands the setup skill to the person's own Claude Code or Codex
+(``skill.py``, console-v2 issue 21).
+
 The remaining subcommands are what a Directive calls back with, over its own attempt
 socket (``callback.py``): ``annotate``, ``artifact upload``, ``verb`` and ``message send |
 list`` (the Channel seam, PRD issue 52) and ``ask`` (a Question, issue 60). They read the
@@ -35,7 +38,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from agentic_runner import __version__ as runner_version
-from agentic_runner import service, workstation
+from agentic_runner import service, skill, workstation
 from agentic_runner.callback import (
     CALLBACK_SOCKET_ENV,
     CALLBACK_TOKEN_ENV,
@@ -250,6 +253,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--base", default="", help="`branch` only: the base branch; default the repository's"
     )
 
+    skill_parser = subcommands.add_parser(
+        "skill", help="the setup skill for your own Claude Code or Codex (console-v2 issue 21)"
+    )
+    skill_parser.add_argument("action", choices=("install", "print"))
+    only = skill_parser.add_mutually_exclusive_group()
+    only.add_argument(
+        "--claude", dest="targets", action="store_const", const=("claude",), help="Claude only"
+    )
+    only.add_argument(
+        "--codex", dest="targets", action="store_const", const=("codex",), help="Codex only"
+    )
+
     subcommands.add_parser("config", help="print the resolved configuration (flag > env > file)")
 
     arguments = parser.parse_args(argv)
@@ -287,6 +302,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         lines = workstation.status_lines(_org_paths(arguments)) if arguments.org else status_lines()
         for line in lines:
             print(line)
+        return 0
+    if arguments.command == "skill":
+        if arguments.action == "print":
+            sys.stdout.write(skill.text())
+            return 0
+        for path in skill.install(arguments.targets or skill.TARGETS):
+            print(f"installed {path}")
         return 0
     if arguments.command == "config":
         config = load_config(config_file=arguments.config, hooks_path=arguments.hooks_path)
