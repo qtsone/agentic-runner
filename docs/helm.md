@@ -119,6 +119,12 @@ Contract is signed in. `--method oauth_token` (the default) is a long-lived toke
 for a year, that the Runner saves in the harness root, readable by that Contract only.
 `--method claude_ai` is a Claude.ai login that renews itself.
 
+If the pod holds no Claude Code harness root for that Contract yet, the command asks you to
+confirm the id first, so
+a mistyped one does not get a signed-in harness root of its own. On a Runner that does not
+run each Contract as its own user (`isolation: none`), the command refuses
+(`sign_in_needs_contract_uid`), because no Directive there would use the sign-in.
+
 Each replica is its own Runner with its own volume, so sign in on every pod that runs the
 Contract's Directives. Codex signs in from the console, on the Contract's page.
 
