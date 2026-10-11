@@ -1257,10 +1257,6 @@ class ContractDeviceLoginInput:
     # The Runner whose disk holds that harness root, and so whose queue the activity is
     # dispatched on (PRD issue 37). Optional only for a start that predates the split.
     runner_id: str | None = None
-    # Claude Code only (local-agents 05): `oauth_token` (`claude setup-token`, the
-    # long-lived token) or `claude_ai` (`claude auth login --claudeai`). None means
-    # `oauth_token`, and the only one a shared Runner accepts.
-    method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1278,11 +1274,8 @@ class ContractDeviceLoginResult:
     contract_id: str
     runtime_kind: str
     verification_uri: str
-    # Empty for Claude Code, whose flow has no device code: the browser shows the person a
-    # code to paste back instead, sealed and relayed against `sign_in_id`.
     user_code: str
     expires_at: str
-    sign_in_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -1307,7 +1300,7 @@ class ContractDeviceLoginStatusResult:
     token_present: bool
     delivered_at: str | None
     # Claude Code only, from `claude auth status --json` (local-agents 05): which login
-    # the CLI found (`oauth_token`, `claude.ai`) and the plan it reports.
+    # `agentic-runner sign-in` left (`oauth_token`, `claude.ai`) and the plan it reports.
     auth_method: str | None = None
     subscription_type: str | None = None
 

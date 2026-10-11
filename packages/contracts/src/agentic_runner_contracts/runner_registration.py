@@ -39,6 +39,7 @@ from pydantic import (
     SerializerFunctionWrapHandler,
     StringConstraints,
     model_serializer,
+    model_validator,
 )
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
@@ -53,8 +54,6 @@ from agentic_runner_contracts.oauth_connector import (
 from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
-    SealedSignInCode,
-    SignInCodeRelay,
 )
 from agentic_runner_contracts.user_sources import SourceStatus, UserSourceAssignment
 
@@ -599,8 +598,6 @@ class HeartbeatEnvelope(BaseModel):
     # Console-v2 issue 29: each Runner-hosted Tool Server's latest start, per slug. A
     # server not started since the process began is absent.
     tool_servers: list[ToolServerHealth] = Field(default_factory=list, max_length=64)
-    # Local-agents 05: what became of each sign-in code the last ack relayed.
-    sign_in_codes: list[SignInCodeRelay] = Field(default_factory=list, max_length=16)
     # Console-v2 issue 30: the authorise URL for each start the last ack asked for, the
     # token ciphertext a connect or a refresh sealed to this installation's Recipient Key
     # -- stored in the Contract's slot like any sealed delivery -- and each step's outcome
@@ -618,7 +615,6 @@ class HeartbeatEnvelope(BaseModel):
         if isinstance(body, dict):
             for name in (
                 "tool_servers",
-                "sign_in_codes",
                 "oauth_authorizations",
                 "oauth_tokens",
                 "oauth_outcomes",
@@ -632,6 +628,17 @@ class HeartbeatAck(BaseModel):
     """What the control plane says back: a refreshed token, the floor, and any hold."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_empty_sign_in_codes(cls, data: Any) -> Any:
+        # A control plane on contracts 3.13 sends `"sign_in_codes": []` on every ack. Empty,
+        # it says nothing, so a Runner on 3.14 drops it rather than refuse every beat; a
+        # code in it is still an extra key, and refused (QTS-1448). Remove once the
+        # control plane is on 3.14.
+        if isinstance(data, dict) and data.get("sign_in_codes") == []:
+            return {key: value for key, value in data.items() if key != "sign_in_codes"}
+        return data
 
     runner_id: UUID
     # Null while the Runner is held (ADR-0013 §7, issue 39's own refusal): it keeps the
@@ -672,12 +679,8 @@ class HeartbeatAck(BaseModel):
     # the control plane hands a request over on exactly one beat -- and answered on the
     # signed stream (`TRANSCRIPT_DELIVERIES_PATH`), never on the ack itself.
     transcript_requests: list[TranscriptRequest] = Field(default_factory=list, max_length=16)
-    # Local-agents 05: one-time browser sign-in codes, sealed to this installation's
-    # Recipient Key. Relayed once each, like `transcript_requests`; the outcome comes back
-    # on the next envelope's `sign_in_codes`.
-    sign_in_codes: list[SealedSignInCode] = Field(default_factory=list, max_length=16)
     # Console-v2 issue 30: start an OAuth authorisation, the code the browser sealed for
-    # one, and Disconnect. Relayed once each, like `sign_in_codes`; what became of each
+    # one, and Disconnect. Relayed once each, like `transcript_requests`; what became of each
     # comes back on the envelope's `oauth_*` fields.
     oauth_starts: list[OAuthStart] = Field(default_factory=list, max_length=16)
     oauth_codes: list[SealedOAuthCode] = Field(default_factory=list, max_length=16)

@@ -63,6 +63,16 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # omits the key while it is absent, so a control plane on 3.11 parses an attestation
 # unchanged until a Runner serves a kind through its pinned ACP bridge (`ACP_CLI_KINDS`) --
 # upgrade the control plane before the Runner.
+# 3.14.0 (QTS-1448): the sign-in-code relay is gone -- `HeartbeatAck.sign_in_codes`,
+# `HeartbeatEnvelope.sign_in_codes`, `SealedSignInCode`, `SignInCodeRelay`,
+# `SignInCodeOutcome`, `sign_in_code_binding`, `ContractDeviceLoginInput.method` and
+# `ContractDeviceLoginResult.sign_in_id` (Temporal drops a key a dataclass lacks). A
+# removal, and a minor on purpose: a major would refuse every 3.x Runner at bootstrap, and
+# the wire stays compatible both ways once the control plane relays no code (QTS-1350). A
+# Runner on 3.13 parses an ack without the key, and sends none while no code reaches it. A
+# Runner on 3.14 drops the empty `"sign_in_codes": []` a control plane on 3.13 still
+# sends, and refuses an ack that carries a code. A Claude Code sign-in is now
+# `agentic-runner sign-in`, on the Runner.
 __version__ = "3.13.0"
 
 __all__ = ["__version__"]

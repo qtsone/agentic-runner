@@ -325,16 +325,12 @@ class _FakeClaudeSignIns:
 class _FakeDeviceLogin:
     def __init__(self) -> None:
         self.calls = 0
-        self.methods: list[str | None] = []
         self.claude = _FakeClaudeSignIns(self)
 
-    async def sign_in(
-        self, contract_id: str, *, runtime_kind: str, method: str | None = None
-    ) -> DeviceLoginPrompt:
+    async def sign_in(self, contract_id: str, *, runtime_kind: str) -> DeviceLoginPrompt:
         from datetime import UTC, datetime
 
         self.calls += 1
-        self.methods.append(method)
         return DeviceLoginPrompt(
             contract_id=contract_id,
             runtime_kind=runtime_kind,
@@ -409,26 +405,19 @@ async def test_the_persons_own_runner_still_signs_in(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("host_party", ["organisation", "account"])
-@pytest.mark.parametrize("method", [None, "oauth_token"])
 @pytest.mark.asyncio
-async def test_a_shared_runner_makes_a_claude_long_lived_token(
-    tmp_path: Path, host_party: str, method: str | None
+async def test_a_shared_runner_reads_a_claude_long_lived_tokens_status(
+    tmp_path: Path, host_party: str
 ) -> None:
     """Local-agents 21: a shared Runner may run a Claude subscription on the long-lived
-    token, so it starts that sign-in -- the default method -- and reads its status."""
+    token, so it reads that sign-in's status. The person made it on the Runner itself."""
 
-    activities, login = _device_login_activities(tmp_path, host_party)
+    activities, _ = _device_login_activities(tmp_path, host_party)
 
-    await activities.sign_in_contract_device_login(
-        ContractDeviceLoginInput(
-            contract_id=str(CONTRACT), runtime_kind="claude_code", method=method
-        )
-    )
     status = await activities.check_contract_device_login_status(
         ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
     )
 
-    assert login.methods == [method]
     assert (status.token_present, status.auth_method, status.subscription_type) == (
         True,
         "oauth_token",
@@ -438,30 +427,17 @@ async def test_a_shared_runner_makes_a_claude_long_lived_token(
 
 @pytest.mark.parametrize("host_party", ["organisation", "account", None])
 @pytest.mark.asyncio
-async def test_a_shared_runner_refuses_the_short_lived_claude_sign_in(
+async def test_a_shared_runner_starts_no_claude_sign_in(
     tmp_path: Path, host_party: str | None
 ) -> None:
     activities, login = _device_login_activities(tmp_path, host_party)
 
     with pytest.raises(ApplicationError) as refused:
         await activities.sign_in_contract_device_login(
-            ContractDeviceLoginInput(
-                contract_id=str(CONTRACT), runtime_kind="claude_code", method="claude_ai"
-            )
+            ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
         )
 
     assert refused.value.type == SHARED_RUNNER_SIGN_IN_RULE
-    assert login.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_an_unregistered_runner_refuses_even_the_long_lived_token(tmp_path: Path) -> None:
-    activities, login = _device_login_activities(tmp_path, None)
-
-    with pytest.raises(ApplicationError):
-        await activities.sign_in_contract_device_login(
-            ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
-        )
     assert login.calls == 0
 
 

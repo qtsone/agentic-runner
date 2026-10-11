@@ -15,6 +15,10 @@ the Organisation's cap.
 Runner (PRD issue 47, ``workstation.py``): one login agent per Organisation, managed by
 the user who hosts it, with no ``sudo`` anywhere.
 
+``sign-in --contract <id>`` signs one Contract's Claude Code in with Anthropic's own flow,
+in this terminal, as that Contract's uid in its harness root (QTS-1448). No code or token
+passes through the control plane.
+
 ``skill install | print`` hands the setup skill to the person's own Claude Code or Codex
 (``skill.py``, console-v2 issue 21).
 
@@ -36,6 +40,7 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from uuid import UUID
 
 from agentic_runner import __version__ as runner_version
 from agentic_runner import service, skill, workstation
@@ -59,6 +64,7 @@ from agentic_runner.service import (
     TAGS_ENV,
     parse_tags,
 )
+from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN, SIGN_IN_METHODS
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
     HostAttestation,
@@ -198,6 +204,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     status.add_argument("org", nargs="?", help="a workstation Organisation (issue 47)")
     status.add_argument("--root", default=None, type=Path)
 
+    sign_in = subcommands.add_parser(
+        "sign-in",
+        help="sign a Contract's Claude Code in with Anthropic's own flow, in this terminal",
+    )
+    sign_in.add_argument("--contract", required=True, help="the Contract's id")
+    sign_in.add_argument(
+        "--method",
+        default=OAUTH_TOKEN,
+        choices=SIGN_IN_METHODS,
+        help="oauth_token: a long-lived token (claude setup-token); claude_ai: a Claude.ai "
+        "login (claude auth login --claudeai)",
+    )
+    sign_in.add_argument("--org", default=None, help="a workstation Organisation (issue 47)")
+    sign_in.add_argument("--root", default=None, type=Path, help=argparse.SUPPRESS)
+
     annotate = subcommands.add_parser("annotate", help="attach an annotation to this Work Record")
     annotate.add_argument("--context", default="default")
     annotate.add_argument(
@@ -303,6 +324,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in lines:
             print(line)
         return 0
+    if arguments.command == "sign-in":
+        return _sign_in(arguments)
     if arguments.command == "skill":
         if arguments.action == "print":
             sys.stdout.write(skill.text())
@@ -364,6 +387,26 @@ def _image_attestation() -> HostAttestation:
         store=StoreKind.FILE if load_config().credential_store is not None else StoreKind.NONE,
         path=os.environ.get("PATH", ""),
     )
+
+
+def _sign_in(arguments: argparse.Namespace) -> int:
+    try:
+        contract_id = str(UUID(arguments.contract))
+    except ValueError:
+        print(f"--contract expects a Contract id, got {arguments.contract!r}", file=sys.stderr)
+        return 2
+    if not (os.isatty(0) and os.isatty(1)):
+        print(
+            "sign-in is interactive: run it in a terminal (`kubectl exec -it`, `docker exec -it`)",
+            file=sys.stderr,
+        )
+        return 2
+    if arguments.org:
+        paths = _org_paths(arguments)
+        os.environ.update(
+            workstation.run_environment(paths, workstation.WorkstationSettings.load(paths))
+        )
+    return asyncio.run(service.sign_in_claude(contract_id, method=arguments.method))
 
 
 def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:

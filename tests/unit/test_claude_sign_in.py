@@ -1,15 +1,17 @@
-"""Claude Code's in-place sign-in for one Contract (local-agents 05).
+"""Claude Code's sign-in for one Contract, run by the person on the Runner (QTS-1448).
 
 A fake ``claude`` (a Python script standing in for ``setup-token``, ``auth login
 --claudeai`` and ``auth status --json``) runs through the real seam: the launcher, a real
-pseudo-terminal and ``ContractIsolation.sandbox``. Like ``test_contract_device_login.py``
-this runs with ``can_separate_uids=False``; the uid line itself is
-``tests/integration/test_contract_uid_isolation.py``'s.
+pseudo-terminal relayed to the caller's descriptors, and ``ContractIsolation.sandbox``.
+The caller's terminal is a pipe the test types into and a file it reads back. Like
+``test_contract_device_login.py`` this runs with ``can_separate_uids=False``; the uid line
+itself is ``tests/integration/test_contract_uid_isolation.py``'s.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -18,20 +20,14 @@ import stat
 import sys
 import textwrap
 from collections.abc import Iterator
-from dataclasses import asdict
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
-from agentic_runner import service
-from agentic_runner.credentials import CredentialResolver, EmptyCredentialStore
-from agentic_runner.device_login_activities import ContractDeviceLoginActivities
-from agentic_runner.llm_proxy import CeilingStore, LlmProxy, SlotStore, UsageOutbox
-from agentic_runner.registration import RunnerState
-from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialStream, seal
+from agentic_runner import cli, service
 from agentic_runner.workers._runtime_support import run_subprocess_exec
 from agentic_runner.workers.claude_sign_in import (
     OAUTH_TOKEN_FILE,
@@ -39,24 +35,10 @@ from agentic_runner.workers.claude_sign_in import (
     ClaudeSignIns,
     launcher_argv,
 )
-from agentic_runner.workers.contract_device_login import ContractDeviceLogin
+from agentic_runner.workers.contract_device_login import ContractDeviceLogin, UnknownHarnessError
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts import __version__ as contracts_version
-from agentic_runner_contracts.activity_io import (
-    ContractDeviceLoginInput,
-    ContractDeviceLoginStatusInput,
-)
-from agentic_runner_contracts.runner_registration import (
-    FloorState,
-    HeartbeatAck,
-    HeartbeatEnvelope,
-)
-from agentic_runner_contracts.sealed_credential import (
-    SealedSignInCode,
-    SignInCodeOutcome,
-    SignInCodeRelay,
-    sign_in_code_binding,
-)
+from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
 
 CONTRACT_A = "11111111-2222-4333-8444-555555555555"
 CONTRACT_B = "66666666-7777-4888-8999-aaaaaaaaaaaa"
@@ -65,7 +47,7 @@ TOKEN = "sk-ant-oat01-" + "Tk" * 30
 
 _FAKE_CLAUDE = textwrap.dedent(
     """\
-    import json, os, sys, time, tty
+    import json, os, sys, tty
 
     args = sys.argv[1:]
     mode = args.pop(0)[len("--mode="):] if args and args[0].startswith("--mode=") else "ok"
@@ -89,24 +71,22 @@ _FAKE_CLAUDE = textwrap.dedent(
         sys.exit(0 if method != "none" else 1)
 
     record(
-        argv=args, pid=os.getpid(), pgid=os.getpgid(0), uid=os.getuid(), config_dir=root,
-        home=os.environ["HOME"], scrub=os.environ.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"),
+        argv=args, uid=os.getuid(), config_dir=root, home=os.environ["HOME"],
+        scrub=os.environ.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"), tty=os.isatty(0),
+        columns=os.get_terminal_size(0).columns,
     )
     tty.setraw(0)
-    pkce = "" if mode == "no-pkce" else "&code_challenge=c&code_challenge_method=S256"
-    url = "https://claude.com/cai/oauth/authorize?code=true" + pkce + "&state=s"
-    sys.stdout.write("\\x1b]8;id=1;" + url + "\\x07Browser didn't open?\\x1b]8;;\\x07\\r\\n")
     sys.stdout.write("Paste code here if prompted > ")
     sys.stdout.flush()
-    if mode == "hang":
-        time.sleep(60)
     chunks = []
     while not chunks or "\\r" not in chunks[-1]:
         data = os.read(0, 1024)
         if not data:
             break
         chunks.append(data.decode())
-    record(chunks=chunks)
+    record(typed="".join(chunks))
+    if mode == "fail":
+        sys.exit(3)
     if args == ["setup-token"]:
         if mode == "long-output":
             sys.stdout.write("x" * 70000 + "\\r\\n")
@@ -148,8 +128,38 @@ def fake_claude(tmp_path: Path) -> Path:
     return script
 
 
+class _Terminal:
+    """The caller's side: what the person types, and what their screen shows."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.stdin_fd, self._keyboard = os.pipe()
+        screen = tmp_path / f"screen-{uuid4().hex}"
+        self.stdout_fd = os.open(screen, os.O_WRONLY | os.O_CREAT, 0o600)
+        self._screen = os.open(screen, os.O_RDONLY)
+        self._shown = bytearray()
+
+    def screen(self) -> str:
+        while chunk := os.read(self._screen, 65_536):
+            self._shown.extend(chunk)
+        return self._shown.decode(errors="replace")
+
+    async def type_at_prompt(self, typed: str) -> None:
+        # As a person would: after the prompt, once the CLI has put its terminal in raw
+        # mode -- `tty.setraw` flushes whatever was typed before it.
+        while "Paste code here" not in self.screen():
+            await asyncio.sleep(0.02)
+        os.write(self._keyboard, typed.encode())
+        os.close(self._keyboard)
+
+    def close(self) -> None:
+        for fd in (self.stdin_fd, self.stdout_fd, self._screen):
+            os.close(fd)
+        with contextlib.suppress(OSError):
+            os.close(self._keyboard)
+
+
 def _sign_ins(
-    isolation: ContractIsolation, fake_claude: Path, *, mode: str = "ok", **kwargs: Any
+    isolation: ContractIsolation, fake_claude: Path, *, mode: str = "ok", platform: str = "linux"
 ) -> ClaudeSignIns:
     fake = (sys.executable, str(fake_claude), f"--mode={mode}")
     return ClaudeSignIns(
@@ -159,10 +169,26 @@ def _sign_ins(
             "claude_ai": (*fake, "auth", "login", "--claudeai"),
         },
         status_argv=(sys.executable, str(fake_claude), "auth", "status", "--json"),
-        prompt_timeout_seconds=10,
-        platform="linux",
-        **kwargs,
+        platform=platform,
     )
+
+
+async def _sign_in(
+    sign_ins: ClaudeSignIns, tmp_path: Path, contract_id: str = CONTRACT_A, **kwargs: Any
+) -> tuple[int, str]:
+    terminal = _Terminal(tmp_path)
+    typing = asyncio.ensure_future(terminal.type_at_prompt(CODE + "\r"))
+    try:
+        async with asyncio.timeout(20):
+            code = await sign_ins.sign_in(
+                contract_id, stdin_fd=terminal.stdin_fd, stdout_fd=terminal.stdout_fd, **kwargs
+            )
+        return code, terminal.screen()
+    finally:
+        typing.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typing
+        terminal.close()
 
 
 def _records(isolation: ContractIsolation, contract_id: str) -> list[dict[str, Any]]:
@@ -170,12 +196,6 @@ def _records(isolation: ContractIsolation, contract_id: str) -> list[dict[str, A
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines()]
-
-
-async def _until(predicate: Any, *, timeout: float = 5.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.02)
 
 
 @pytest.fixture
@@ -202,145 +222,43 @@ def opened_paths(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
 @pytest.mark.parametrize(
     ("method", "argv"),
     [
-        (None, ["setup-token"]),
-        ("oauth_token", ["setup-token"]),
-        ("claude_ai", ["auth", "login", "--claudeai"]),
+        ({}, ["setup-token"]),
+        ({"method": "oauth_token"}, ["setup-token"]),
+        ({"method": "claude_ai"}, ["auth", "login", "--claudeai"]),
     ],
 )
 @pytest.mark.asyncio
-async def test_each_method_runs_its_cli_in_the_contracts_own_harness_root(
-    isolation: ContractIsolation, fake_claude: Path, method: str | None, argv: list[str]
+async def test_each_method_runs_its_cli_on_a_terminal_in_the_contracts_own_harness_root(
+    tmp_path: Path,
+    isolation: ContractIsolation,
+    fake_claude: Path,
+    method: dict[str, str],
+    argv: list[str],
 ) -> None:
-    """``oauth_token`` is the default; either CLI gets this Contract's CLAUDE_CONFIG_DIR."""
+    """``oauth_token`` is the default; the person's keys reach the CLI and its prompt
+    reaches the person, and the CLI runs with this Contract's CLAUDE_CONFIG_DIR."""
 
-    sign_ins = _sign_ins(isolation, fake_claude)
+    code, screen = await _sign_in(_sign_ins(isolation, fake_claude), tmp_path, **method)
 
-    prompt = await sign_ins.start(CONTRACT_A, method=method)
-
-    assert prompt.verification_uri.startswith("https://claude.com/cai/oauth/authorize?")
-    assert "code_challenge_method=S256" in prompt.verification_uri
-    assert prompt.sign_in_id.startswith("si_")
-    [launched] = _records(isolation, CONTRACT_A)
+    assert code == 0
+    assert "Paste code here if prompted > " in screen
+    launched, typed = _records(isolation, CONTRACT_A)
     assert launched["argv"] == argv
     assert launched["config_dir"] == str(isolation.harness_config_dir(CONTRACT_A, "claude_code"))
     assert launched["home"] == str(isolation.contract_dir(CONTRACT_A))
     assert launched["uid"] == os.getuid()
     assert launched["scrub"] == "1"
+    assert launched["tty"] is True
+    assert launched["columns"] == 1000
+    assert typed == {"typed": CODE + "\r"}
     assert _records(isolation, CONTRACT_B) == []
-    await sign_ins.close()
-
-
-@pytest.mark.asyncio
-async def test_the_process_group_is_gone_after_the_window(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude, mode="hang", window=timedelta(seconds=0.5))
-
-    await sign_ins.start(CONTRACT_A, method="oauth_token")
-    [launched] = _records(isolation, CONTRACT_A)
-    os.killpg(launched["pgid"], 0)
-
-    await _until(lambda: sign_ins.waiting == 0)
-    with pytest.raises(ProcessLookupError):
-        os.killpg(launched["pgid"], 0)
-
-
-@pytest.mark.asyncio
-async def test_a_url_without_pkce_is_refused_before_any_code_could_be_relayed(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude, mode="no-pkce")
-
-    with pytest.raises(ClaudeSignInError, match="S256"):
-        await sign_ins.start(CONTRACT_A, method="oauth_token")
-    assert sign_ins.waiting == 0
-
-
-@pytest.mark.asyncio
-async def test_a_cli_that_exits_before_its_url_is_an_error(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = ClaudeSignIns(
-        isolation, argv_by_method={"oauth_token": (sys.executable, "-c", "raise SystemExit(4)")}
-    )
-
-    with pytest.raises(ClaudeSignInError, match="code 4"):
-        await sign_ins.start(CONTRACT_A, method="oauth_token")
-
-
-@pytest.mark.asyncio
-async def test_the_relayed_code_reaches_the_pty_then_a_separate_enter(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude)
-    prompt = await sign_ins.start(CONTRACT_A, method="claude_ai")
-
-    outcome = await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-
-    assert outcome is SignInCodeOutcome.WRITTEN
-    await _until(lambda: len(_records(isolation, CONTRACT_A)) == 2)
-    assert _records(isolation, CONTRACT_A)[1]["chunks"] == [CODE, "\r"]
-
-
-@pytest.mark.asyncio
-async def test_a_code_for_a_sign_in_the_runner_did_not_start_is_refused(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude)
-    prompt = await sign_ins.start(CONTRACT_A, method="oauth_token")
-
-    unknown = await sign_ins.relay(CONTRACT_A, "si_" + "0" * 32, CODE)
-    other_contract = await sign_ins.relay(CONTRACT_B, prompt.sign_in_id, CODE)
-    keystrokes = await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, "abcdefgh\rexit\r")
-
-    assert unknown is SignInCodeOutcome.UNKNOWN
-    assert other_contract is SignInCodeOutcome.UNKNOWN
-    assert keystrokes is SignInCodeOutcome.UNOPENABLE
-    await sign_ins.close()
-    assert [r for r in _records(isolation, CONTRACT_A) if "chunks" in r] == []
-
-
-@pytest.mark.asyncio
-async def test_a_code_after_ten_minutes_is_refused_and_never_written(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    now = [0.0]
-    sign_ins = _sign_ins(isolation, fake_claude, clock=lambda: now[0])
-    prompt = await sign_ins.start(CONTRACT_A, method="oauth_token")
-
-    now[0] = 600.0
-    outcome = await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-
-    assert outcome is SignInCodeOutcome.EXPIRED
-    await asyncio.sleep(0.3)
-    await sign_ins.close()
-    assert [r for r in _records(isolation, CONTRACT_A) if "chunks" in r] == []
-
-
-@pytest.mark.asyncio
-async def test_a_code_after_the_cli_exited_is_refused(
-    isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude)
-    prompt = await sign_ins.start(CONTRACT_A, method="claude_ai")
-    assert await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE) is SignInCodeOutcome.WRITTEN
-    await _until(lambda: sign_ins.waiting == 0)
-
-    again = await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-
-    # Forgotten once it ended: a finished sign-in is as unknown as one never started.
-    assert again is SignInCodeOutcome.UNKNOWN
 
 
 @pytest.mark.asyncio
 async def test_the_long_lived_token_lands_in_the_harness_root_0600(
-    isolation: ContractIsolation, fake_claude: Path
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
 ) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude)
-    prompt = await sign_ins.start(CONTRACT_A, method=None)
-
-    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-    await _until(lambda: sign_ins.waiting == 0)
+    await _sign_in(_sign_ins(isolation, fake_claude), tmp_path)
 
     token_file = isolation.harness_config_dir(CONTRACT_A, "claude_code") / OAUTH_TOKEN_FILE
     status = token_file.stat()
@@ -352,14 +270,11 @@ async def test_the_long_lived_token_lands_in_the_harness_root_0600(
 
 @pytest.mark.asyncio
 async def test_a_token_after_more_output_than_the_cap_still_lands(
-    isolation: ContractIsolation, fake_claude: Path
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
 ) -> None:
     """The cap keeps the tail: `setup-token` prints the token last."""
 
-    sign_ins = _sign_ins(isolation, fake_claude, mode="long-output")
-    prompt = await sign_ins.start(CONTRACT_A, method=None)
-    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-    await _until(lambda: sign_ins.waiting == 0)
+    await _sign_in(_sign_ins(isolation, fake_claude, mode="long-output"), tmp_path)
 
     token_file = isolation.harness_config_dir(CONTRACT_A, "claude_code") / OAUTH_TOKEN_FILE
     assert token_file.read_text() == TOKEN
@@ -367,28 +282,54 @@ async def test_a_token_after_more_output_than_the_cap_still_lands(
 
 @pytest.mark.asyncio
 async def test_a_setup_token_that_prints_no_token_is_an_error_not_silence(
-    isolation: ContractIsolation, fake_claude: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
 ) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude, mode="no-token")
-    prompt = await sign_ins.start(CONTRACT_A, method=None)
-    with caplog.at_level(logging.ERROR):
-        await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-        await _until(lambda: sign_ins.waiting == 0)
+    with pytest.raises(ClaudeSignInError, match="printed no token"):
+        await _sign_in(_sign_ins(isolation, fake_claude, mode="no-token"), tmp_path)
 
     token_file = isolation.harness_config_dir(CONTRACT_A, "claude_code") / OAUTH_TOKEN_FILE
     assert not token_file.exists()
-    assert f"{prompt.sign_in_id} did not complete" in caplog.text
-    assert "printed no token" in caplog.text
+
+
+@pytest.mark.parametrize("method", ["oauth_token", "claude_ai"])
+@pytest.mark.asyncio
+async def test_a_failed_sign_in_returns_its_exit_code_and_keeps_the_previous_login(
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path, method: str
+) -> None:
+    await _sign_in(_sign_ins(isolation, fake_claude), tmp_path)
+
+    code, _ = await _sign_in(
+        _sign_ins(isolation, fake_claude, mode="fail"), tmp_path, method=method
+    )
+
+    assert code == 3
+    token_file = isolation.harness_config_dir(CONTRACT_A, "claude_code") / OAUTH_TOKEN_FILE
+    assert token_file.read_text() == TOKEN
+
+
+@pytest.mark.asyncio
+async def test_the_token_reaches_the_persons_terminal_and_no_log(
+    tmp_path: Path,
+    isolation: ContractIsolation,
+    fake_claude: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The person sees what `claude setup-token` shows them; nothing else does."""
+
+    caplog.set_level(logging.DEBUG)
+
+    _, screen = await _sign_in(_sign_ins(isolation, fake_claude), tmp_path)
+
+    assert TOKEN in screen
+    assert TOKEN not in caplog.text
+    assert TOKEN[len("sk-ant-oat01-") :] not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_a_harness_launch_sees_the_token_without_the_runner_opening_it(
-    isolation: ContractIsolation, fake_claude: Path, opened_paths: list[str]
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path, opened_paths: list[str]
 ) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude)
-    prompt = await sign_ins.start(CONTRACT_A, method="oauth_token")
-    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-    await _until(lambda: sign_ins.waiting == 0)
+    await _sign_in(_sign_ins(isolation, fake_claude), tmp_path)
     sandbox = isolation.sandbox(CONTRACT_A, runtime_kind="claude_code")
     opened_paths.clear()
 
@@ -417,23 +358,19 @@ async def test_a_harness_launch_sees_the_token_without_the_runner_opening_it(
 
 @pytest.mark.asyncio
 async def test_presence_comes_from_auth_status_for_both_methods(
-    isolation: ContractIsolation, fake_claude: Path, opened_paths: list[str]
+    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path, opened_paths: list[str]
 ) -> None:
     sign_ins = _sign_ins(isolation, fake_claude)
     harness_root = str(isolation.harness_config_dir(CONTRACT_A, "claude_code"))
 
     before = await sign_ins.status(CONTRACT_A)
 
-    prompt = await sign_ins.start(CONTRACT_A, method="oauth_token")
-    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-    await _until(lambda: sign_ins.waiting == 0)
+    await _sign_in(sign_ins, tmp_path, method="oauth_token")
     opened_paths.clear()
     long_lived = await sign_ins.status(CONTRACT_A)
     assert not any(path.startswith(harness_root) for path in opened_paths)
 
-    prompt = await sign_ins.start(CONTRACT_A, method="claude_ai")
-    await sign_ins.relay(CONTRACT_A, prompt.sign_in_id, CODE)
-    await _until(lambda: sign_ins.waiting == 0)
+    await _sign_in(sign_ins, tmp_path, method="claude_ai")
     opened_paths.clear()
     short_lived = await sign_ins.status(CONTRACT_A)
     assert not any(path.startswith(harness_root) for path in opened_paths)
@@ -447,135 +384,6 @@ async def test_presence_comes_from_auth_status_for_both_methods(
     # A finished `claude_ai` sign-in replaced the token the launcher would have preferred.
     assert (short_lived.logged_in, short_lived.auth_method) == (True, "claude.ai")
     assert not (Path(harness_root) / OAUTH_TOKEN_FILE).exists()
-
-
-# ------------------------------------------------------------------ the relay, end to end
-
-
-class _Registration:
-    server_date = None
-
-    def __init__(self) -> None:
-        self.sent: list[HeartbeatEnvelope] = []
-        self.acks: list[HeartbeatAck] = []
-        self.relay: list[SealedSignInCode] = []
-
-    async def heartbeat(self, state: Any, envelope: HeartbeatEnvelope) -> HeartbeatAck:
-        self.sent.append(envelope)
-        ack = HeartbeatAck(
-            runner_id=uuid4(),
-            floor_state=FloorState.OK,
-            contracts_floor=contracts_version,
-            tag_set_version=1,
-            accepts_new_directives=True,
-            sign_in_codes=self.relay,
-        )
-        self.relay = []
-        self.acks.append(ack)
-        return ack
-
-
-def _stream(tmp_path: Path, sign_ins: ClaudeSignIns) -> tuple[Any, _Registration]:
-    registration = _Registration()
-    runner_id = uuid4()
-    stream = service.ControlPlaneStream(
-        client=registration,  # type: ignore[arg-type]
-        state=RunnerState(
-            runner_id=runner_id,
-            identity_id="id",
-            private_key_pem="unused",
-            temporal_namespace="org-x",
-            task_queue=f"runner.{runner_id}",
-        ),
-        isolation=service.IsolationMode.NONE,
-        proxy=LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox()),
-        sealed=SealedCredentialStream(RecipientKeyStore(tmp_path / "keys")),
-        credentials=CredentialResolver(store=EmptyCredentialStore()),
-        load=service._LoadInterceptor(),
-        sign_ins=sign_ins,
-    )
-    return stream, registration
-
-
-def _sealed_code(stream: Any, sign_in_id: str, *, bound_to: str | None = None) -> SealedSignInCode:
-    key = stream.sealed._keys.current()
-    return SealedSignInCode(
-        contract_id=UUID(CONTRACT_A),
-        sign_in_id=sign_in_id,
-        recipient_key_id=key.key_id,
-        ciphertext=seal(
-            public_key=key.public_key,
-            binding=sign_in_code_binding(
-                contract_id=CONTRACT_A,
-                sign_in_id=bound_to or sign_in_id,
-                recipient_key_id=key.key_id,
-            ),
-            plaintext=CODE,
-        ),
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_code_sealed_for_another_sign_in_does_not_open(
-    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
-) -> None:
-    sign_ins = _sign_ins(isolation, fake_claude)
-    stream, registration = _stream(tmp_path, sign_ins)
-    prompt = await sign_ins.start(CONTRACT_A, method="oauth_token")
-
-    registration.relay = [_sealed_code(stream, prompt.sign_in_id, bound_to="si_" + "1" * 32)]
-    await stream.exchange([])
-    await stream.exchange([])
-
-    assert registration.sent[-1].sign_in_codes == [
-        SignInCodeRelay(sign_in_id=prompt.sign_in_id, outcome=SignInCodeOutcome.UNOPENABLE)
-    ]
-    await sign_ins.close()
-
-
-@pytest.mark.asyncio
-async def test_neither_the_code_nor_the_token_reaches_a_log_or_a_payload(
-    tmp_path: Path,
-    isolation: ContractIsolation,
-    fake_claude: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Every log record, both activities' inputs and outputs, and every envelope and ack
-    of one whole sign-in -- the code and the token appear in none of them."""
-
-    caplog.set_level(logging.DEBUG)
-    sign_ins = _sign_ins(isolation, fake_claude)
-    stream, registration = _stream(tmp_path, sign_ins)
-    activities = ContractDeviceLoginActivities(
-        contract_isolation=isolation,
-        device_login=ContractDeviceLogin(isolation, claude=sign_ins),
-        host_party="user",
-    )
-    start = ContractDeviceLoginInput(contract_id=CONTRACT_A, runtime_kind="claude_code")
-    started = await activities.sign_in_contract_device_login(start)
-
-    registration.relay = [_sealed_code(stream, started.sign_in_id)]
-    await stream.exchange([])
-    await _until(lambda: sign_ins.waiting == 0)
-    await stream.exchange([])
-    check = ContractDeviceLoginStatusInput(contract_id=CONTRACT_A, runtime_kind="claude_code")
-    status = await activities.check_contract_device_login_status(check)
-
-    assert status.token_present is True
-    assert status.auth_method == "oauth_token"
-    assert registration.sent[-1].sign_in_codes == [
-        SignInCodeRelay(sign_in_id=started.sign_in_id, outcome=SignInCodeOutcome.WRITTEN)
-    ]
-    observed = [
-        caplog.text,
-        *(json.dumps(asdict(io)) for io in (start, started, check, status)),
-        *(envelope.model_dump_json() for envelope in registration.sent),
-        *(ack.model_dump_json() for ack in registration.acks),
-    ]
-    for text in observed:
-        assert CODE not in text
-        assert TOKEN not in text
-        assert TOKEN[len("sk-ant-oat01-") :] not in text
 
 
 _FAKE_SECURITY = textwrap.dedent(
@@ -608,16 +416,14 @@ async def test_macos_short_lived_sign_in_gets_a_per_contract_keychain(
     (bin_dir / "security").write_text(_FAKE_SECURITY.replace("$SECURITY_LOG", str(log)))
     (bin_dir / "security").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    sign_ins = _sign_ins(isolation, fake_claude)
-    sign_ins._platform = "darwin"
+    sign_ins = _sign_ins(isolation, fake_claude, platform="darwin")
     root = isolation.harness_config_dir(CONTRACT_A, "claude_code")
     home = str(isolation.contract_dir(CONTRACT_A))
 
-    await sign_ins.start(CONTRACT_A, method="oauth_token")
+    await _sign_in(sign_ins, tmp_path, method="oauth_token")
     assert not log.exists(), "the long-lived token needs no keychain"
-    await sign_ins.start(CONTRACT_A, method="claude_ai")
-    await sign_ins.start(CONTRACT_A, method="claude_ai")
-    await sign_ins.close()
+    await _sign_in(sign_ins, tmp_path, method="claude_ai")
+    await _sign_in(sign_ins, tmp_path, method="claude_ai")
 
     password = (root / "keychain-password").read_text()
     assert stat.S_IMODE((root / "keychain-password").stat().st_mode) == 0o600
@@ -635,15 +441,96 @@ async def test_macos_short_lived_sign_in_gets_a_per_contract_keychain(
     assert unlocks == [(password, f"unlock-keychain {keychain}")] * 2
 
 
+# ------------------------------------------------------------------ nothing is relayed
+
+
 @pytest.mark.asyncio
-async def test_a_beat_with_no_relay_outcome_omits_the_key(
-    tmp_path: Path, isolation: ContractIsolation, fake_claude: Path
+async def test_no_console_starts_a_claude_sign_in(isolation: ContractIsolation) -> None:
+    """The device-login activity has no Claude Code command left to start (QTS-1448)."""
+
+    with pytest.raises(UnknownHarnessError):
+        await ContractDeviceLogin(isolation).sign_in(CONTRACT_A, runtime_kind="claude_code")
+
+
+def test_the_ack_carries_no_sign_in_code() -> None:
+    """Contracts 3.14: the field is gone. A 3.13 control plane's empty one still parses, so
+    either side may upgrade first; an ack that carries a code is refused."""
+
+    ack = {
+        "runner_id": str(uuid4()),
+        "floor_state": FloorState.OK,
+        "contracts_floor": contracts_version,
+        "tag_set_version": 1,
+        "accepts_new_directives": True,
+    }
+    code = {
+        "contract_id": CONTRACT_A,
+        "sign_in_id": "si_" + "0" * 32,
+        "recipient_key_id": "rk_" + "0" * 32,
+        "ciphertext": "c2VhbGVk",
+    }
+
+    assert HeartbeatAck.model_validate({**ack, "sign_in_codes": []}) == (
+        HeartbeatAck.model_validate(ack)
+    )
+    assert "sign_in_codes" not in HeartbeatAck.model_validate(ack).model_dump()
+    with pytest.raises(ValidationError):
+        HeartbeatAck.model_validate({**ack, "sign_in_codes": [code]})
+
+
+# ------------------------------------------------------------------ the command
+
+
+def test_the_command_refuses_a_contract_id_that_is_not_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A control plane on contracts 3.5 forbids extra keys, so an ordinary beat must still
-    be the body it parses."""
+    monkeypatch.setattr(service, "sign_in_claude", _unexpected)
 
-    stream, registration = _stream(tmp_path, _sign_ins(isolation, fake_claude))
+    assert cli.main(["sign-in", "--contract", "../other"]) == 2
+    assert "expects a Contract id" in capsys.readouterr().err
 
-    await stream.exchange([])
 
-    assert "sign_in_codes" not in json.loads(registration.sent[0].model_dump_json())
+def test_the_command_needs_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(service, "sign_in_claude", _unexpected)
+    monkeypatch.setattr(os, "isatty", lambda _fd: False)
+
+    assert cli.main(["sign-in", "--contract", CONTRACT_A]) == 2
+    assert "kubectl exec -it" in capsys.readouterr().err
+
+
+def test_the_command_signs_in_the_named_contract_with_the_named_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def sign_in_claude(contract_id: str, *, method: str) -> int:
+        calls.append((contract_id, method))
+        return 0
+
+    monkeypatch.setattr(service, "sign_in_claude", sign_in_claude)
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+
+    assert cli.main(["sign-in", "--contract", CONTRACT_A.upper()]) == 0
+    assert cli.main(["sign-in", "--contract", CONTRACT_A, "--method", "claude_ai"]) == 0
+    assert calls == [(CONTRACT_A, "oauth_token"), (CONTRACT_A, "claude_ai")]
+
+
+@pytest.mark.asyncio
+async def test_without_the_runners_environment_the_command_refuses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The uid map and the harness roots are the Runner's: guessing them would sign in
+    a directory no Directive reads."""
+
+    monkeypatch.setenv(service.ISOLATION_ENV, "none")
+    for name in ("TEMPORAL_ADDRESS", "INTERNAL_FASTAPI_BASE_URL", service.CONTROL_PLANE_ENV):
+        monkeypatch.delenv(name, raising=False)
+
+    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 2
+    assert "--org" in capsys.readouterr().err
+
+
+async def _unexpected(contract_id: str, *, method: str) -> int:
+    raise AssertionError("refused before any sign-in")

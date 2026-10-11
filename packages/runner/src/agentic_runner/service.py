@@ -24,6 +24,7 @@ import logging
 import os
 import shutil
 import signal
+import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -34,6 +35,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 import httpx
+from pydantic import ValidationError
 from temporalio import activity
 from temporalio.client import Client
 from temporalio.worker import (
@@ -110,7 +112,7 @@ from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_executables
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
-from agentic_runner.workers.claude_sign_in import ClaudeSignIns
+from agentic_runner.workers.claude_sign_in import ClaudeSignInError, ClaudeSignIns
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.contract_device_login import ContractDeviceLogin
 from agentic_runner.workers.contract_isolation import UID_MAP_FILENAME, ContractIsolation
@@ -135,11 +137,7 @@ from agentic_runner_contracts.runner_registration import (
     ResourcePressure,
 )
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContextResolver
-from agentic_runner_contracts.sealed_credential import (
-    SignInCodeOutcome,
-    SignInCodeRelay,
-    key_fingerprint,
-)
+from agentic_runner_contracts.sealed_credential import key_fingerprint
 
 __all__ = [
     "AGENT_TOKEN_ENV",
@@ -166,6 +164,7 @@ __all__ = [
     "run",
     "run_runner_lifecycle_hook",
     "run_worker_until_terminated",
+    "sign_in_claude",
     "with_profile_acp_cli_kinds",
 ]
 
@@ -657,13 +656,8 @@ class ControlPlaneStream:
     usage_windows: UsageWindows | None = None
     # Local-agents 04b: which delivered references fill the LLM proxy's slot, and where.
     llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
-    # Local-agents 05: the Claude Code sign-ins a relayed code is typed into.
-    sign_ins: ClaudeSignIns | None = None
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
-    # Reported once, on the beat after the relay: a lost beat loses the outcome, and the
-    # console's own wait on the sign-in is what tells the person.
-    _sign_in_outcomes: list[SignInCodeRelay] = field(default_factory=list)
     _delivered: set[tuple[str, str]] = field(default_factory=set)
     _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
     _last_seen: tuple[float, datetime] | None = None
@@ -773,17 +767,14 @@ class ControlPlaneStream:
             clock_skew_seconds=self._clock_skew(now),
             source_status=self.sources.statuses() if self.sources is not None else [],
             tool_servers=self.tool_servers.latest() if self.tool_servers is not None else [],
-            sign_in_codes=self._sign_in_outcomes,
             oauth_authorizations=self.oauth.take_authorizations() if self.oauth else [],
             oauth_tokens=self.oauth.uploads() if self.oauth else [],
             oauth_outcomes=self.oauth.take_outcomes() if self.oauth else [],
         )
-        self._sign_in_outcomes = []
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
             self.sources.assign(ack.user_sources)
         await self._deliver_transcripts(ack)
-        await self._relay_sign_in_codes(ack)
         if self.oauth is not None:
             # Before the sealed values are applied: a Disconnect revokes with the tokens
             # this Runner holds, and the same ack may already have withdrawn their ciphertext.
@@ -835,28 +826,6 @@ class ControlPlaneStream:
                 _logger.warning(
                     "transcript %s could not be delivered: %s", request.request_id, error
                 )
-
-    async def _relay_sign_in_codes(self, ack: HeartbeatAck) -> None:
-        """Type each relayed code into the sign-in it names (local-agents 05).
-
-        The code is opened, written to that sign-in's PTY and dropped here; nothing logs
-        it and only its outcome travels back.
-        """
-
-        for sealed in ack.sign_in_codes:
-            code = self.sealed.open_sign_in_code(sealed)
-            if code is None:
-                outcome = SignInCodeOutcome.UNOPENABLE
-            elif self.sign_ins is None:
-                outcome = SignInCodeOutcome.UNKNOWN
-            else:
-                outcome = await self.sign_ins.relay(
-                    str(sealed.contract_id), sealed.sign_in_id, code
-                )
-            del code
-            self._sign_in_outcomes.append(
-                SignInCodeRelay(sign_in_id=sealed.sign_in_id, outcome=outcome)
-            )
 
     def _sync_delivered(self) -> None:
         """The resolver holds exactly what the last ack let this installation open."""
@@ -1021,6 +990,42 @@ async def run(
         await readiness.close()
 
 
+async def sign_in_claude(contract_id: str, *, method: str) -> int:
+    """``agentic-runner sign-in``: Claude Code's own flow for one Contract, in this terminal.
+
+    Runs with the Runner's environment (``kubectl exec``, or ``--org`` on a workstation),
+    so the Contract gets the uid and the harness root its Directives already run under.
+    Nothing reaches the control plane: the console only reads the outcome back through
+    ``claude auth status`` (QTS-1448).
+    """
+
+    mode = isolation_mode()
+    can = can_separate_uids()
+    try:
+        require_isolation_supported(mode, can_separate_uids=can)
+    except RunnerRegistrationError as error:
+        print(f"refusing to sign in ({error.reason}): {error}", file=sys.stderr)
+        return 1
+    control_plane = os.environ.get(CONTROL_PLANE_ENV, "").strip()
+    if control_plane:
+        os.environ.setdefault("INTERNAL_FASTAPI_BASE_URL", control_plane)
+    try:
+        settings = get_worker_settings()
+    except ValidationError:
+        print(
+            "refusing to sign in: run this with the Runner's environment "
+            "(`--org <org>` on a workstation, `kubectl exec` into the Runner's pod)",
+            file=sys.stderr,
+        )
+        return 2
+    sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can))
+    try:
+        return await sign_ins.sign_in(contract_id, method=method)
+    except ClaudeSignInError as error:
+        print(f"sign-in failed: {error}", file=sys.stderr)
+        return 1
+
+
 async def _serve(
     *,
     config: RunnerConfig,
@@ -1157,7 +1162,6 @@ async def _serve_registered(
     messages = MessageStore(state_dir / MESSAGES_DIR)
     stream.messages = messages
     sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can_change_uid))
-    stream.sign_ins = sign_ins
     stream.oauth = OAuthConnectors(
         sealed=stream.sealed, provider=HttpOAuthProvider(), credentials=credentials
     )
@@ -1243,7 +1247,6 @@ async def _serve_registered(
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-            await sign_ins.close()
             await run_runner_lifecycle_hook(hooks, HookName.RUNNER_SHUTDOWN)
             await _report_stop(link, lifecycle)
     return 1 if revoked.is_set() else 0

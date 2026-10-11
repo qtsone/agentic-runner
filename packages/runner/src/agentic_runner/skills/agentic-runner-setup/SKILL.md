@@ -120,11 +120,14 @@ whose LLM key or subscription the Agents spend. Ask which of the two the Contrac
   For Docker and Kubernetes the value is delivered from the console, sealed to the Runner:
   https://github.com/qtsone/agentic-runner/blob/main/docs/helm.md#the-recipient-key.
 - **A Codex or Claude Code subscription.** This works only on a Runner the person hosts
-  themselves. Send them to the Contract's page in the console and its **Connect** button:
-  the console opens the vendor's sign-in in their browser and the Runner finishes it. See
+  themselves. For Codex, send them to the Contract's page in the console and its
+  **Connect** button. For Claude Code, ask the person to run, in their own terminal, the
+  sign-in line for their way of installing: `agentic-runner sign-in --org <org> --contract
+  <contract-id>` on this machine, or the `docker exec -it` / `kubectl exec -it` line in
+  docker.md or helm.md. See
   https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#sign-in-to-codex-and-claude-code.
-  You have no sign-in of your own to run, and you do not run `codex login` or
-  `claude auth login`.
+  The sign-in is the person's own, with their own Anthropic account: you never run it, and
+  you do not run `codex login` or `claude auth login`.
 
 ### 5. Wait for the Runner to come online
 
