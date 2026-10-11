@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.15.0](https://github.com/qtsone/agentic-runner/compare/v3.14.0...v3.15.0) (2026-10-11)
+
+
+### Features
+
+* **runner:** subscription backstop keyed on Contract uid and harness login, not host party (QTS-1450) ([#49](https://github.com/qtsone/agentic-runner/issues/49)) ([3a7c19f](https://github.com/qtsone/agentic-runner/commit/3a7c19f647675acf01f54ad8eaa7bd8239ff007b))
+
 # [3.14.0](https://github.com/qtsone/agentic-runner/compare/v3.13.0...v3.14.0) (2026-10-11)
 
 
