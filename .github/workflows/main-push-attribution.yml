@@ -1,0 +1,48 @@
+# The pre-merge `pr-attribution` workflow cannot see the squash message, which
+# GitHub composes at merge time and appends its own co-author line to. This job is
+# the only check on the message that actually landed on main (QTS-675, cloud-1
+# ADR-0017).
+#
+# Its own file rather than a job in `main-push-audit.yml`, which must stay
+# byte-identical across every gate repo (QTS-603), while this runs only in the repos
+# whose every commit carries an agent trailer. A failure here opens no
+# `security-alert` issue — wrong attribution is a quality failure, not a security
+# event.
+name: main-push-attribution
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    # semantic-release's own commit is skipped: `qtsone/actions/release` authors it
+    # as `github.actor`, i.e. whoever merged, so `exempt-authors` cannot carve it out
+    # without exempting the owner and Warden too, and it carries no agent trailer.
+    # Without this every release reddens main (QTS-675).
+    if: >-
+      !startsWith(github.event.head_commit.message, 'chore(release): version ')
+    runs-on: ${{ vars.GHA_RUNNER_OVERRIDE || (github.event.repository.custom_properties.GHA_RUNNER_TYPE == 'PRIVATE' && format('arc-{0}', github.event.repository.custom_properties.GHA_RUNNER_SIZE) || 'ubuntu-latest') }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: qtsone/actions/git/attribution@main
+        with:
+          base-sha: ${{ github.event.before }}
+          head-sha: ${{ github.event.after }}
+          # No pull request here, so nothing to check beyond the commits.
+          pr-body: ""
+          # `warn`, not `fail`: GitHub appends `Co-authored-by: <branch commit author>`
+          # to a squash commit whenever that author differs from the merger, which is
+          # the normal case here — agents author, the reviewer identity merges. The
+          # owner merges in the browser, which has no `--body` to drop it (QTS-1084).
+          # That line is in no agents list, so `fail` would redden every correct merge.
+          # Measured on forge 6f03ae44. Revisit when the owner sets a global git
+          # identity on the workstation (QTS-654).
+          extra-coauthor-policy: warn
