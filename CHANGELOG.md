@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.16.0](https://github.com/qtsone/agentic-runner/compare/v3.15.1...v3.16.0) (2026-10-12)
+
+
+### Features
+
+* **runner:** the Agent's model runs; registration takes a Runner Registration Token (QTS-1494) ([#52](https://github.com/qtsone/agentic-runner/issues/52)) ([9c2633e](https://github.com/qtsone/agentic-runner/commit/9c2633e02e758eadb183a1d752f022b75648109d))
+
 ## [3.15.1](https://github.com/qtsone/agentic-runner/compare/v3.15.0...v3.15.1) (2026-10-11)
 
 
