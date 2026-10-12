@@ -160,7 +160,7 @@ async def test_execute_directive_invokes_codex_exec_in_workspace_without_shell(
         "network=disabled; policy-hook=configured"
     )
     # No model on the Agent: Codex runs its own config's, which the Runner cannot name.
-    assert "--model" not in call.argv
+    assert not any(argument.startswith("--model") for argument in call.argv)
     assert result.model == ""
 
 
@@ -187,8 +187,9 @@ async def test_execute_directive_overrides_codex_config_with_the_agents_model(
     )
 
     (call,) = runner.calls
-    model_at = call.argv.index("--model")
-    assert call.argv[model_at + 1] == "gpt-5-codex"
+    # One element (QTS-1505): the value is never an argv entry a parser could take as a flag.
+    model_at = call.argv.index("--model=gpt-5-codex")
+    assert "gpt-5-codex" not in call.argv
     # An `exec` option, so it precedes the `resume` subcommand and the stdin `-`.
     assert model_at < call.argv.index("resume") < call.argv.index("-")
     assert result.model == "gpt-5-codex"

@@ -117,7 +117,7 @@ async def test_execute_directive_invokes_claude_print_bare_in_workspace(tmp_path
     assert call.argv[:2] == ["claude", "--print"]
     assert "--bare" in call.argv
     assert call.argv[call.argv.index("--output-format") + 1] == "json"
-    assert call.argv[call.argv.index("--model") + 1] == "claude-opus-4-8"
+    assert "--model=claude-opus-4-8" in call.argv
     assert "--dangerously-skip-permissions" in call.argv
     assert all("Apply the fix" not in argument for argument in call.argv)
     assert call.cwd == workspace
@@ -148,8 +148,10 @@ async def test_execute_directive_runs_the_agents_model_over_the_runner_default(
     )
 
     (call,) = runner.calls
-    assert call.argv[call.argv.index("--model") + 1] == "claude-sonnet-5-5"
-    assert "claude-opus-4-8" not in call.argv
+    # One element (QTS-1505): the value is never an argv entry a parser could take as a flag.
+    assert "--model=claude-sonnet-5-5" in call.argv
+    assert "--model" not in call.argv
+    assert all("claude-opus-4-8" not in argument for argument in call.argv)
     assert result.model == "claude-sonnet-5-5"
 
 

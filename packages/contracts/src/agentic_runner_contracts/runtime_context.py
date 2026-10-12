@@ -51,6 +51,11 @@ class ProductVerifierCommandSource(BaseModel):
 # granted Streamable HTTP MCP server -- and the LLM proxy is on loopback.
 EGRESS_ALLOW_LIST_KEY = "egress"
 
+# A model name reaches the harness argv, so the Runner holds its shape here instead of
+# trusting each CLI's parser or the platform's allowlist (QTS-1505): it cannot start with
+# `-` and carries no space. Whether the model exists stays the harness's call.
+ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$")]
+
 
 class McpServerSpec(BaseModel):
     """One registered MCP server bound to the Work Record's Product (PRD issue 58).
@@ -126,12 +131,12 @@ class WorkerRuntimeContext(BaseModel):
     # The Contract the Agent works under, for Usage Record attribution (map ticket 12 B2).
     # None wherever `agent_id` is.
     contract_id: str | None = None
-    # The model to run; blank means the Runner's default for this `cli_kind` (ADR-0021).
+    # The model to run; None means the Runner's default for this `cli_kind` (ADR-0021).
     # It is the Agent's own, resolved per Agent like `cli_kind`, so every Directive
     # already carries it and no activity input names one. A Runner before 3.16 read it
     # only to price a harness usage event (PRD issue 31) and ran its own default, which is
     # why the platform routes model-bearing work only to a Runner on 3.16 or newer.
-    model: str | None = None
+    model: ModelName | None = None
     # The Work Record's Budget, written by console intake (PRD issue 17) and left null by
     # Slack intake. Null per dimension means the worker's own env default applies.
     budget_max_directives: int | None = None
