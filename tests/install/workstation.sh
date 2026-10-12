@@ -33,7 +33,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== uv tool install, from the wheels alone"
-uv tool install --python 3.12 --find-links "${dist}" agentic-runner
+# --no-cache: a branch builds the same version as main until release, and a cached wheel of
+# that version would install main's code instead of this build.
+uv tool install --no-cache --python 3.12 --find-links "${dist}" agentic-runner
 export PATH="${UV_TOOL_BIN_DIR}:${PATH}"
 agentic-runner --version
 
