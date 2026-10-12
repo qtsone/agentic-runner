@@ -29,7 +29,7 @@ It also holds the image ([`Dockerfile.runner`](Dockerfile.runner)) and the Helm 
 
 ## Three ways to run
 
-Each needs an Agent Token, which your Organisation's Admin issues in the Organisation Console.
+Each needs a Runner Registration Token, which your Organisation's Admin issues in the Organisation Console.
 
 1. **Helm, on any Kubernetes cluster** — `charts/agentic-runner`; N replicas are N Runners.
    Guide: [docs/helm.md](docs/helm.md).

@@ -73,6 +73,13 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # Runner on 3.14 drops the empty `"sign_in_codes": []` a control plane on 3.13 still
 # sends, and refuses an ack that carries a code. A Claude Code sign-in is now
 # `agentic-runner sign-in`, on the Runner.
+# 3.16.0 (QTS-1494, ADR-0021): the first version that runs the Agent's model. The runtime
+# context's `model` is now the model to run, blank for the Runner's default for its
+# `cli_kind`; the field's shape is unchanged, so only routing tells the versions apart, and
+# the platform sends a Work Record whose Agent names a model to no Runner below 3.16.
+# `BootstrapRequest.registration_token` beside `agent_token`, exactly one of them, and
+# `BootstrapRequest.token`. A Runner on 3.16 sends `registration_token`, which a control
+# plane on 3.15 refuses -- upgrade the control plane before the Runner.
 __version__ = "3.15.1"
 
 __all__ = ["__version__"]

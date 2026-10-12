@@ -156,7 +156,7 @@ async def test_two_organisations_run_as_two_processes_and_stopping_one_leaves_th
                     path=path,
                     install_channel=InstallChannel.MANUAL,
                 ),
-                agent_token=f"agent-token-issued-to-me-for-{org}",
+                registration_token=f"registration-token-issued-to-me-for-{org}",
                 home=tmp_path / "home",
                 start_service=False,
             )

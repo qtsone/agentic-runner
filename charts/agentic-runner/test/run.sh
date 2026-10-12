@@ -24,7 +24,7 @@ helm upgrade --install "${release}" "${chart}" -n "${ns}" \
   --set replicas=2 \
   --set controlPlane.url=http://fake-control-plane:8000 \
   --set temporal.address=temporal:7233 \
-  --set agentToken.value=chart-test-agent-token-0123456789 \
+  --set registrationToken.value=chart-test-registration-token-0123 \
   --set tags.region=kind \
   --set storage.size=1Gi \
   -f "${here}/values-directive.yaml" \

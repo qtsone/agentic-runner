@@ -56,7 +56,7 @@ MCP_PATH: Final[str] = "/mcp"
 
 # What a Runner-hosted server inherits from the Runner besides its credential. A
 # credential-bearing child must not also inherit the Runner's own environment (its
-# Agent Token, a git token): only what a program needs to start.
+# Runner Registration Token, a git token): only what a program needs to start.
 _HOSTED_ENV_ALLOWLIST: Final[tuple[str, ...]] = ("PATH", "HOME", "LANG", "TZ")
 _DEFAULT_CALL_TIMEOUT_SECONDS: Final[float] = 300.0
 # The heartbeat's own bound on `tool_servers`.

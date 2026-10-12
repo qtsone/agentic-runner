@@ -7,7 +7,8 @@ replicas against a fake control plane (`charts/agentic-runner/test/run.sh`).
 
 ## Before you start
 
-- An **Agent Token** from the Organisation Console's **Runners** page. It is shown once.
+- A **Runner Registration Token** from the Organisation Console's **Runners** page. It is
+  shown once.
 - The control plane's Runner edge, `https://api.agentic.<zone>`, and the Temporal address,
   `temporal-grpc.<zone>:443` over TLS. Both are on the same page.
 - A namespace whose Pod Security level allows a root container with five capabilities,
@@ -17,26 +18,28 @@ replicas against a fake control plane (`charts/agentic-runner/test/run.sh`).
 
 ## Install
 
-Keep the Agent Token out of your shell history and out of Helm's release record: put it in
+Keep the Runner Registration Token out of your shell history and out of Helm's release record: put it in
 a Secret first.
 
 ```sh
 kubectl create namespace agentic-runner
-read -rs AGENT_TOKEN   # paste the token, then Enter
-printf %s "$AGENT_TOKEN" | kubectl -n agentic-runner create secret generic agentic-runner-token \
+read -rs REGISTRATION_TOKEN   # paste the token, then Enter
+printf %s "$REGISTRATION_TOKEN" | kubectl -n agentic-runner create secret generic agentic-runner-token \
   --from-file=token=/dev/stdin
-unset AGENT_TOKEN
+unset REGISTRATION_TOKEN
 
 helm upgrade --install runner oci://ghcr.io/qtsone/charts/agentic-runner \
   --version <version> -n agentic-runner \
   --set controlPlane.url=https://api.agentic.<zone> \
   --set temporal.address=temporal-grpc.<zone>:443 --set temporal.tls=true \
-  --set agentToken.existingSecret=agentic-runner-token \
+  --set registrationToken.existingSecret=agentic-runner-token \
   --set replicas=2 \
   --set tags.region=eu-west-1
 ```
 
-`agentToken.value=<token>` also works and renders the Secret for you.
+`registrationToken.value=<token>` also works and renders the Secret for you. A release
+installed with `agentToken` before 3.16 upgrades unchanged: the chart reads `agentToken`
+whenever `registrationToken` is empty.
 
 Verify the release before you install it, if you like:
 
@@ -142,7 +145,7 @@ Runners page within one heartbeat (30 seconds).
 | --- | --- |
 | NotReady, `refusing to start (isolation_unavailable)` | The namespace cannot grant `CAP_SETUID`. Set `isolation: none`. |
 | NotReady, `refusing to start (unsafe_state_dir)` | The state directory or a file in it is a symlink, belongs to another uid, or is open to group or others. A volume made by an earlier release holds a `state` directory kubelet created with the volume's mode: `chown` it to the Runner's uid, `chmod 700` it and `chmod 600` its files. |
-| NotReady, `registration refused (…)` | The Agent Token is revoked or expired, the Account is on hold, or the Organisation has reached its Runner limit. |
+| NotReady, `registration refused (…)` | The Runner Registration Token is unknown, revoked or expired, the Account is on hold, or the Organisation has reached its Runner limit. |
 | `heartbeat failed before start` | The control plane URL is wrong or unreachable. The Runner retries every 30 seconds. |
 | Ready, but no Directives arrive | The tags do not match the Product's selector, or an `isolation: none` Runner already holds another Contract's work. |
 | A hook does nothing | It was mounted without the executable bit and exits `126`. |

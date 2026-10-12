@@ -97,10 +97,10 @@ spec:
             - name: INTERNAL_FASTAPI_BASE_URL
               value: {{ .Values.controlPlane.internalUrl | quote }}
             {{- end }}
-            - name: AGENTIC_AGENT_TOKEN
+            - name: AGENTIC_RUNNER_REGISTRATION_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "agentic-runner.agentTokenSecret" . }}
+                  name: {{ include "agentic-runner.registrationTokenSecret" . }}
                   key: token
             - name: TEMPORAL_ADDRESS
               value: {{ .Values.temporal.address | quote }}

@@ -34,8 +34,22 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default .Chart.AppVersion .Values.image.tag -}}
 {{- end -}}
 
-{{- define "agentic-runner.agentTokenSecret" -}}
-{{- default (printf "%s-agent-token" (include "agentic-runner.fullname" .)) .Values.agentToken.existingSecret -}}
+{{/*
+`registrationToken` when either of its keys is set, else the deprecated `agentToken`, so a
+release installed before ADR-0021 upgrades without an edit to its values.
+*/}}
+{{- define "agentic-runner.registrationToken" -}}
+{{- $new := .Values.registrationToken | default dict -}}
+{{- if or $new.value $new.existingSecret -}}
+{{- toYaml $new -}}
+{{- else -}}
+{{- toYaml (.Values.agentToken | default dict) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "agentic-runner.registrationTokenSecret" -}}
+{{- $token := include "agentic-runner.registrationToken" . | fromYaml -}}
+{{- default (printf "%s-registration-token" (include "agentic-runner.fullname" .)) $token.existingSecret -}}
 {{- end -}}
 
 {{- define "agentic-runner.recipientKeySecret" -}}

@@ -68,7 +68,7 @@ async def _register(
 ) -> RunnerState:
     key = key or generate_recipient_key()
     state, _ = await RunnerRegistrationClient(base_url=base_url, client=http).bootstrap(
-        agent_token="agent-token-of-sixteen-plus-chars",
+        registration_token="registration-token-of-sixteen-plus",
         tags={},
         isolation_mode=IsolationMode.NONE,
         recipient_key=RecipientKey(key_id=key.key_id, public_key=key.public_key),

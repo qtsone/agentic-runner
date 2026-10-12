@@ -87,14 +87,16 @@ def test_the_skill_names_no_control_plane_address_and_calls_none() -> None:
     assert "controlPlane.url" in text
 
 
-def test_the_skill_never_takes_the_agent_token_into_the_conversation() -> None:
-    """The Agent Token is reusable: in the CLI's context it reaches the model vendor and the
-    CLI's transcript, so the person types it into the Runner's own prompt (QTS-924 review)."""
+def test_the_skill_never_takes_the_registration_token_into_the_conversation() -> None:
+    """The Runner Registration Token is reusable: in the CLI's context it reaches the model
+    vendor and the CLI's transcript, so the person types it into the Runner's own prompt
+    (QTS-924 review)."""
 
     text = skill.text()
     assert "AGENTIC_AGENT_TOKEN" not in text
     assert "<agent-token>" not in text
-    assert "Never ask for the Agent Token" in text
+    assert "AGENTIC_RUNNER_REGISTRATION_TOKEN" not in text
+    assert "Never ask for the Runner Registration Token" in text
 
 
 def test_every_doc_link_names_a_section_the_docs_have() -> None:

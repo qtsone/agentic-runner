@@ -19,8 +19,8 @@ Three rules the shapes here carry:
   "which Runners can see this Contract's workspace" a pattern-matching question, and an
   operator-typed pattern is exactly the free text ADR-0010 §6 keeps out of routing.
 * **Host party is a routing rule, never a tag** (17 A3). It is fixed at registration from
-  the Agent Token used, so it cannot be declared in config next to the tags; keeping it a
-  separate field is what stops a contractor's laptop tagging itself into another
+  the Runner Registration Token used, so it cannot be declared in config next to the tags;
+  keeping it a separate field is what stops a contractor's laptop tagging itself into another
   contractor's work.
 * **No credential is ever in here.** The Directive's own control-plane token is pulled by
   id over the heartbeat stream (25 §11), so nothing credential-shaped enters Temporal

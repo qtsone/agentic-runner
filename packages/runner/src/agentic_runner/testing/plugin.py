@@ -33,7 +33,7 @@ from agentic_runner.testing.control_plane import DEFAULT_NAMESPACE, FakeControlP
 
 # A conformance Runner never runs a Directive that needs isolation or a credential, so it
 # runs `none`, unprivileged, with every path under the test's own directory.
-AGENT_TOKEN = "conformance-agent-token-0123456789"
+REGISTRATION_TOKEN = "conformance-registration-token-0123"
 _RUN = "import sys; from agentic_runner.cli import main; sys.exit(main(['run']))"
 
 
@@ -90,7 +90,7 @@ class RunnerLauncher:
         environment = {
             **os.environ,
             "AGENTIC_CONTROL_PLANE_URL": control_plane_url,
-            "AGENTIC_AGENT_TOKEN": AGENT_TOKEN,
+            "AGENTIC_RUNNER_REGISTRATION_TOKEN": REGISTRATION_TOKEN,
             "AGENTIC_RUNNER_ISOLATION": "none",
             "AGENTIC_RUNNER_STATE_DIR": str(state),
             "AGENTIC_RUNNER_WORKSPACE_ROOT": str(self.root / "workspaces"),

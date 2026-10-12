@@ -57,7 +57,7 @@ export PATH="${work}/bin:${PATH}"
 echo "== agentic-runner install ${org} (${mode})"
 start_flag=()
 [ "${mode}" = process ] && start_flag=(--no-start)
-AGENTIC_AGENT_TOKEN=workstation-test-agent-token-0123 agentic-runner install "${org}" \
+AGENTIC_RUNNER_REGISTRATION_TOKEN=workstation-test-registration-token agentic-runner install "${org}" \
   --control-plane http://127.0.0.1:8000 \
   --temporal-address 127.0.0.1:7233 --temporal-plaintext \
   --root "${root}" ${start_flag[@]+"${start_flag[@]}"}

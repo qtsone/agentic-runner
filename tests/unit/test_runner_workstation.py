@@ -174,7 +174,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
         lines = await workstation.install(
             paths,
             _settings(paths, str(bin_dir)),
-            agent_token="agent-token-of-sixteen-plus",
+            registration_token="registration-token-of-sixteen-plus",
             platform="darwin",
             home=home,
             run=commands,
@@ -230,7 +230,7 @@ async def test_reinstalling_over_a_registered_state_dir_says_the_token_was_not_u
             return await workstation.install(
                 paths,
                 _settings(paths, str(bin_dir)),
-                agent_token=token,
+                registration_token=token,
                 platform="darwin",
                 home=tmp_path / "home",
                 run=Commands(),
@@ -423,7 +423,7 @@ async def test_the_runner_never_opens_a_file_under_any_harness_root(
         await workstation.install(
             paths,
             _settings(paths, str(bin_dir)),
-            agent_token="agent-token-of-sixteen-plus",
+            registration_token="registration-token-of-sixteen-plus",
             platform="linux",
             home=home,
             run=Commands(),

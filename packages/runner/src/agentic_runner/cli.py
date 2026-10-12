@@ -5,8 +5,8 @@ contracts version is the compatibility floor the control plane checks before it 
 Directive token (ADR-0013 §7). An operator debugging "why did this Runner stop getting
 Directives" needs both numbers from one command.
 
-``register`` is first boot (PRD issue 41): it presents the Agent Token from the
-environment, persists the durable identity the exchange hands back, and prints the
+``register`` is first boot (PRD issue 41): it presents the Runner Registration Token from
+the environment, persists the durable identity the exchange hands back, and prints the
 namespace and queue this process was assigned. It is idempotent by state file -- a
 restart re-reads what is already there rather than registering a second Runner against
 the Organisation's cap.
@@ -61,8 +61,10 @@ from agentic_runner.service import (
     ISOLATION_ENV,
     RECIPIENT_KEY_ID_ENV,
     RECIPIENT_PUBLIC_KEY_ENV,
+    REGISTRATION_TOKEN_ENV,
     TAGS_ENV,
     parse_tags,
+    registration_token_from_env,
 )
 from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN, SIGN_IN_METHODS
 from agentic_runner_contracts import __version__ as contracts_version
@@ -80,6 +82,7 @@ __all__ = [
     "ISOLATION_ENV",
     "RECIPIENT_KEY_ID_ENV",
     "RECIPIENT_PUBLIC_KEY_ENV",
+    "REGISTRATION_TOKEN_ENV",
     "STATE_DIR_ENV",
     "TAGS_ENV",
     "main",
@@ -144,7 +147,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     subcommands = parser.add_subparsers(dest="command")
 
     subcommands.add_parser(
-        "register", help="exchange the Agent Token for this process's durable identity"
+        "register",
+        help="exchange the Runner Registration Token for this process's durable identity",
     )
 
     run = subcommands.add_parser("run", help="register if needed, then heartbeat and poll for work")
@@ -419,9 +423,9 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
         print(str(error), file=sys.stderr)
         return 2
     # Pasted, never a flag: a flag is in the process table for every uid on the box.
-    token = os.environ.get(AGENT_TOKEN_ENV, "").strip() or getpass.getpass(
-        "Agent Token (yours from /me/runners, or the Organisation Admin's for an "
-        "Organisation Runner): "
+    token = registration_token_from_env() or getpass.getpass(
+        "Runner Registration Token (yours from /me/runners, or the Organisation Admin's for "
+        "an Organisation Runner): "
     )
     settings = workstation.WorkstationSettings(
         org=paths.org,
@@ -435,7 +439,7 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
     try:
         lines = asyncio.run(
             workstation.install(
-                paths, settings, agent_token=token, start_service=not arguments.no_start
+                paths, settings, registration_token=token, start_service=not arguments.no_start
             )
         )
     except (workstation.CliMissingError, RunnerRegistrationError, RuntimeError) as error:

@@ -139,7 +139,7 @@ jobs:
           helm lint charts/agentic-runner \
             --set controlPlane.url=https://api.example.test \
             --set temporal.address=temporal-grpc.example.test:443 \
-            --set agentToken.value=agent-token-of-sixteen-plus-chars
+            --set registrationToken.value=registration-token-of-sixteen-plus
 
       - name: Create a kind cluster
         uses: helm/kind-action@v1

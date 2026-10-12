@@ -24,7 +24,7 @@ The prompt they pasted from the console holds these. Ask for any that is missing
   pass to the Runner. Never call it or any other control plane address yourself.
 - **Temporal address**: `host:port`, from the same page.
 
-The **Agent Token** is not one of them. It is the reusable credential a Runner registers
+The **Runner Registration Token** is not one of them. It is the reusable credential a Runner registers
 with, and the person types it only where the Runner reads it, never into this
 conversation.
 
@@ -34,10 +34,10 @@ conversation.
   it does, in one line.
 - **Stop on the first failure.** Show the exact error, link the doc section below that
   covers it, and stop. Do not retry with other flags, do not work around it.
-- **Never ask for the Agent Token or any credential value in this conversation.** Anything
-  said here reaches the model vendor and stays in this CLI's history. Every command that
-  reads a credential is one the person runs in their own terminal, and the person types the
-  value there. If the person pastes a token or a key here anyway, do not use it: tell them
+- **Never ask for the Runner Registration Token or any credential value in this
+  conversation.** Anything said here reaches the model vendor and stays in this CLI's
+  history. Every command that reads a credential is one the person runs in their own
+  terminal, and the person types the value there. If the person pastes a token or a key here anyway, do not use it: tell them
   to revoke it in the console and mint or create a new one.
 - You use only the `agentic-runner` command, the standard tools named in the docs (`uv`,
   `docker`, `kubectl`, `helm`) and read-only checks such as `command -v`.
@@ -77,7 +77,7 @@ missing.
 **This machine.** Follow
 https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#install. Install the
 Runner, then show the person the command that registers it for the Organisation and ask
-them to run it in their own terminal. The Runner asks them for the Agent Token there,
+them to run it in their own terminal. The Runner asks them for the Runner Registration Token there,
 without showing it:
 
 ```sh

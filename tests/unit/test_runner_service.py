@@ -40,7 +40,11 @@ from agentic_runner.registration import (
 from agentic_runner.sealed_box import RecipientKeyStore, generate_recipient_key
 from agentic_runner.testing import FakeControlPlane
 from agentic_runner_contracts import __version__ as contracts_version
-from agentic_runner_contracts.runner_registration import IsolationMode, RecipientKey
+from agentic_runner_contracts.runner_registration import (
+    BootstrapRequest,
+    IsolationMode,
+    RecipientKey,
+)
 
 CONTROL_PLANE = "http://control-plane.test"
 
@@ -90,7 +94,7 @@ class Harness:
 
 def _environment(monkeypatch: pytest.MonkeyPatch, state_dir: Path, *, isolation: str) -> None:
     monkeypatch.setenv("AGENTIC_CONTROL_PLANE_URL", CONTROL_PLANE)
-    monkeypatch.setenv("AGENTIC_AGENT_TOKEN", "agent-token-of-sixteen-plus-chars")
+    monkeypatch.setenv("AGENTIC_RUNNER_REGISTRATION_TOKEN", "registration-token-of-sixteen-plus")
     monkeypatch.setenv("AGENTIC_RUNNER_STATE_DIR", str(state_dir))
     monkeypatch.setenv("AGENTIC_RUNNER_ISOLATION", isolation)
     monkeypatch.setenv("AGENTIC_RUNNER_TAGS", "region=eu-west-1")
@@ -305,7 +309,7 @@ async def test_a_control_plane_older_than_the_runner_is_named_not_dumped_as_a_42
         registration = RunnerRegistrationClient(base_url="https://cp.test", client=client)
         with pytest.raises(RunnerRegistrationError) as refused:
             await registration.bootstrap(
-                agent_token="agent-token-from-the-admin",
+                registration_token="registration-token-from-the-admin",
                 tags={},
                 isolation_mode=IsolationMode.NONE,
                 recipient_key=RecipientKey(key_id=key.key_id, public_key=key.public_key),
@@ -319,3 +323,101 @@ async def test_a_control_plane_older_than_the_runner_is_named_not_dumped_as_a_42
     assert f"agentic-runner-contracts {contracts_version}" in message
     assert "build_id" in message
     assert "extra_forbidden" not in message
+
+
+def _bootstrap_request(**token: str) -> BootstrapRequest:
+    key = generate_recipient_key()
+    return BootstrapRequest(
+        **token,
+        isolation_mode=IsolationMode.NONE,
+        contracts_version=contracts_version,
+        runner_version=runner_version,
+        recipient_key=RecipientKey(key_id=key.key_id, public_key=key.public_key),
+    )
+
+
+def test_bootstrap_takes_the_registration_token_under_either_name_but_never_both() -> None:
+    new = _bootstrap_request(registration_token="registration-token-of-sixteen-plus")
+    old = _bootstrap_request(agent_token="agent-token-of-sixteen-plus-chars")
+
+    assert new.token == "registration-token-of-sixteen-plus"
+    assert old.token == "agent-token-of-sixteen-plus-chars"
+    # A control plane below 3.16 forbids a key it does not know, so the absent one is
+    # never sent, not even as null.
+    assert "agent_token" not in json.loads(new.model_dump_json())
+    assert "registration_token" not in json.loads(old.model_dump_json())
+    with pytest.raises(ValueError, match="exactly one"):
+        _bootstrap_request(
+            registration_token="registration-token-of-sixteen-plus",
+            agent_token="agent-token-of-sixteen-plus-chars",
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        _bootstrap_request()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("environment", "presented", "warned"),
+    [
+        ({"AGENTIC_RUNNER_REGISTRATION_TOKEN": "new-name-of-sixteen-plus"}, "new-name", False),
+        ({"AGENTIC_AGENT_TOKEN": "old-name-of-sixteen-plus-chars"}, "old-name", True),
+        (
+            {
+                "AGENTIC_RUNNER_REGISTRATION_TOKEN": "new-name-of-sixteen-plus",
+                "AGENTIC_AGENT_TOKEN": "old-name-of-sixteen-plus-chars",
+            },
+            "new-name",
+            False,
+        ),
+    ],
+)
+async def test_the_runner_registers_with_the_new_variable_and_still_the_deprecated_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    environment: dict[str, str],
+    presented: str,
+    warned: bool,
+) -> None:
+    _environment(monkeypatch, tmp_path, isolation="none")
+    monkeypatch.delenv("AGENTIC_RUNNER_REGISTRATION_TOKEN")
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    plane = FakeControlPlane()
+
+    async with httpx.AsyncClient(transport=plane.transport()) as http:
+        await service.register(state_dir=tmp_path, can_separate_uids=False, client=http)
+
+    (bootstrap,) = plane.bootstraps
+    # Sent under the new name whichever variable held it.
+    assert bootstrap.registration_token is not None
+    assert bootstrap.registration_token.startswith(presented)
+    assert bootstrap.agent_token is None
+    assert ("AGENTIC_AGENT_TOKEN is deprecated" in capsys.readouterr().err) is warned
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["registration_token_unknown", "agent_token_unknown", "agent_token_revoked"]
+)
+async def test_a_refused_registration_token_is_named_under_its_old_or_new_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    reason: str,
+) -> None:
+    _environment(monkeypatch, tmp_path, isolation="none")
+
+    def refusing_control_plane(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": {"reason": reason, "detail": "refused"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(refusing_control_plane)) as http:
+        exit_code = await service.run(
+            http_client=http,
+            connect=Harness(FakeControlPlane()).connect,
+            can_change_uid=False,
+            stop=asyncio.Event(),
+        )
+
+    assert exit_code == 1
+    assert "Runner Registration Token is unknown, revoked or expired" in capsys.readouterr().out
