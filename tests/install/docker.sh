@@ -50,7 +50,7 @@ cp "${repo}"/examples/compose.yaml "${repo}"/examples/compose.isolation-none.yam
 sed -e 's|^AGENTIC_CONTROL_PLANE_URL=.*|AGENTIC_CONTROL_PLANE_URL=http://fake-control-plane:8000|' \
   -e 's|^TEMPORAL_ADDRESS=.*|TEMPORAL_ADDRESS=temporal:7233|' \
   -e 's|^AGENTIC_TEMPORAL_TLS=.*|AGENTIC_TEMPORAL_TLS=false|' \
-  -e 's|^AGENTIC_AGENT_TOKEN=.*|AGENTIC_AGENT_TOKEN=docker-test-agent-token-0123456789|' \
+  -e 's|^AGENTIC_RUNNER_REGISTRATION_TOKEN=.*|AGENTIC_RUNNER_REGISTRATION_TOKEN=docker-test-registration-token-0123|' \
   "${repo}/examples/runner.env.example" > "${work}/runner.env"
 # The published image, swapped for the one under test, and the test network beside the
 # project's own.

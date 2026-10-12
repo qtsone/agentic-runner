@@ -28,7 +28,7 @@ REQUIRED = [
     "--set",
     "temporal.address=temporal-grpc.example.test:443",
     "--set",
-    "agentToken.value=agent-token-of-sixteen-plus-chars",
+    "registrationToken.value=registration-token-of-sixteen-plus-chars",
 ]
 
 pytestmark = pytest.mark.skipif(
@@ -98,9 +98,10 @@ def test_the_documented_values_render_and_the_security_context_is_exactly_the_fi
     env = _env(container)
     assert spec["terminationGracePeriodSeconds"] == 2100
     assert container["lifecycle"]["preStop"]["exec"]["command"] == ["/bin/sh", "-c", "kill -TERM 1"]
-    assert env["AGENTIC_AGENT_TOKEN"] == {
-        "secretKeyRef": {"name": "rel-agentic-runner-agent-token", "key": "token"}
+    assert env["AGENTIC_RUNNER_REGISTRATION_TOKEN"] == {
+        "secretKeyRef": {"name": "rel-agentic-runner-registration-token", "key": "token"}
     }
+    assert "AGENTIC_AGENT_TOKEN" not in env
     assert env["AGENTIC_RUNNER_TAGS"] == "gpu=none,region=eu-west-1"
     assert env["AGENTIC_RUNNER_ISOLATION"] == "contract_uid"
     assert env["AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES"] == "3"
@@ -205,7 +206,46 @@ def test_an_unknown_isolation_mode_and_a_missing_token_are_refused() -> None:
             capture_output=True,
             text=True,
         )
-    assert "agentToken.value or agentToken.existingSecret is required" in missing.value.stderr
+    assert (
+        "registrationToken.value or registrationToken.existingSecret is required"
+        in missing.value.stderr
+    )
+
+
+def test_a_release_still_on_the_deprecated_agent_token_value_upgrades_unchanged() -> None:
+    """`agentToken` is `registrationToken`'s name before ADR-0021: honoured when the new
+    value is empty, ignored once it is set."""
+
+    def rendered(*values: str) -> dict[tuple[str, str], dict[str, Any]]:
+        out = subprocess.run(
+            ["helm", "template", "rel", str(CHART), *REQUIRED[:4], *values],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        objects = [doc for doc in yaml.safe_load_all(out) if doc]
+        return {(doc["kind"], doc["metadata"]["name"]): doc for doc in objects}
+
+    old = rendered("--set", "agentToken.value=agent-token-of-sixteen-plus-chars")
+    secret = old[("Secret", "rel-agentic-runner-registration-token")]
+    assert secret["stringData"] == {"token": "agent-token-of-sixteen-plus-chars"}
+
+    old_secret = rendered("--set", "agentToken.existingSecret=installed-before-adr-0021")
+    container = _runner(old_secret)["spec"]["template"]["spec"]["containers"][0]
+    assert _env(container)["AGENTIC_RUNNER_REGISTRATION_TOKEN"] == {
+        "secretKeyRef": {"name": "installed-before-adr-0021", "key": "token"}
+    }
+
+    both = rendered(
+        "--set",
+        "agentToken.existingSecret=installed-before-adr-0021",
+        "--set",
+        "registrationToken.existingSecret=minted-after-adr-0021",
+    )
+    container = _runner(both)["spec"]["template"]["spec"]["containers"][0]
+    assert _env(container)["AGENTIC_RUNNER_REGISTRATION_TOKEN"] == {
+        "secretKeyRef": {"name": "minted-after-adr-0021", "key": "token"}
+    }
 
 
 def test_the_chart_test_fixtures_are_in_step_with_the_chart() -> None:

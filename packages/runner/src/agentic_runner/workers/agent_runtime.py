@@ -106,6 +106,9 @@ class DirectiveRequest:
     # The Profile-named ACP command (local-agents 18). Read only by the ACP runtime, and
     # only for a `cli_kind` it pins no bridge for.
     acp_command: tuple[str, ...] = ()
+    # The Agent's model, from its runtime context (ADR-0021). Blank runs the Runner's
+    # default for this `cli_kind`: `CLAUDE_MODEL` for Claude Code, Codex's own config.
+    model: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +141,9 @@ class DirectiveResult:
     # The subscription usage windows the harness's own stream last reported, where it
     # carries them (claude-agent-acp's rate-limit events, local-agents 10).
     usage_windows: tuple[UsageWindow, ...] = ()
+    # The model the harness was told to run, for Evidence and usage. Blank when the
+    # harness chose its own: Codex on its config's default, a Profile-named ACP harness.
+    model: str = ""
 
 
 # The permission mode of a runtime whose guard configuration is incomplete: it refuses

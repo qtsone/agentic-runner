@@ -649,3 +649,42 @@ def _next_chicago_2331() -> str:
     if reset <= chicago:
         reset += timedelta(days=1)
     return reset.astimezone(UTC).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_the_agents_model_runs_and_its_evidence_and_usage_name_it(tmp_path: Path) -> None:
+    """ADR-0021: the runtime context's model reaches the Agent Runtime, and what the
+    runtime says ran is what the Evidence and the harness Usage Record carry."""
+
+    class _ModelClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.usage: list[dict[str, Any]] = []
+
+        async def get_runtime_context(self, work_record_id: str) -> dict[str, Any]:
+            return {**await super().get_runtime_context(work_record_id), "model": "gpt-5-codex"}
+
+        async def report_harness_usage(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+            self.usage.append(dict(payload))
+            return []
+
+    @dataclass
+    class _RunsTheModel(_Codex):
+        async def execute_directive(self, request: DirectiveRequest) -> DirectiveResult:
+            result = await super().execute_directive(request)
+            usage = '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":1}}'
+            return replace(result, stdout=usage, model=request.model)
+
+    client = _ModelClient()
+    runtime = _RunsTheModel()
+
+    await _activities(
+        client, runtime, tmp_path=tmp_path, host_party="user"
+    ).create_or_update_branch_pr(_branch_pr_input("user"))
+
+    [request] = runtime.requests
+    assert request.model == "gpt-5-codex"
+    [evidence] = client.payloads("ralph.codex_run")
+    assert evidence["model"] == "gpt-5-codex"
+    [usage] = client.usage
+    assert usage["model_name"] == "gpt-5-codex"

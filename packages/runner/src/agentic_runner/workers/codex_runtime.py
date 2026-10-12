@@ -142,7 +142,7 @@ class CodexRuntime(ResumableAgentRuntime):
                 evidence_limit_bytes=self._settings.CODEX_CLI_OUTPUT_LIMIT_BYTES,
             )
 
-        argv = _codex_argv(self._settings, allowlisted=allowlisted)
+        argv = _codex_argv(self._settings, allowlisted=allowlisted, model=request.model)
         # Locked with no server bound too: otherwise a `[mcp_servers.*]` table in the
         # Workspace or harness-root config.toml starts a process before any model turn (LA-19b).
         argv[-1:-1] = codex_mcp_argv(request.mcp_servers or (), workspace_path)
@@ -267,6 +267,7 @@ class CodexRuntime(ResumableAgentRuntime):
             error=redacted_error,
             command_hash=command_hash,
             evidence=evidence,
+            model=request.model,
         )
 
     def has_session(self, session_id: str, sandbox: DirectiveSandbox | None) -> bool:
@@ -320,7 +321,9 @@ def _guard_mode(settings: WorkerSettings, *, allowlisted: bool = False) -> str |
     return None
 
 
-def _codex_argv(settings: WorkerSettings, *, allowlisted: bool = False) -> list[str]:
+def _codex_argv(
+    settings: WorkerSettings, *, allowlisted: bool = False, model: str = ""
+) -> list[str]:
     argv = [
         "codex",
         "exec",
@@ -340,6 +343,10 @@ def _codex_argv(settings: WorkerSettings, *, allowlisted: bool = False) -> list[
     if settings.CODEX_SANDBOX_MODE == "workspace-write":
         network_access = "true" if allowlisted else "false"
         argv += ["--config", f"sandbox_workspace_write.network_access={network_access}"]
+    if model:
+        # Outranks the harness root's `config.toml`; without it Codex runs that file's
+        # model, which is the Runner's default for `codex_cli`.
+        argv += ["--model", model]
     argv.append("-")
     return argv
 

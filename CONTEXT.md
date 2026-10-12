@@ -48,13 +48,13 @@ _Avoid_: Edge, Data plane, Worker (that is the Temporal-level term inside a Runn
 The platform-hosted Temporal worker that runs the Ralph Loop's deterministic code and the control plane's own activities for every Organisation's namespace. It holds no org credential and performs no privileged verb; those belong to the Runner.
 _Avoid_: Loop host, Conductor, Control-plane worker
 
-**Agent Token**:
-The reusable, per-Organisation credential an operator gives a new Runner process so it can register; each process exchanges it once for its own durable Runner identity. Revocable, optionally expiring; never used after registration.
-_Avoid_: Bootstrap token, Registration key, API key
+**Runner Registration Token**:
+The reusable, per-Organisation credential an operator gives a new Runner process so it can register; each process exchanges it once for its own durable Runner identity. Revocable, optionally expiring; never used after registration. A Runner reads it from `AGENTIC_RUNNER_REGISTRATION_TOKEN` (the chart's `registrationToken`); `AGENTIC_AGENT_TOKEN` and `agentToken` are its names before ADR-0021, still honoured until a contracts major.
+_Avoid_: Agent Token (it registers a Runner, not an Agent), Bootstrap token, Registration key, API key
 
 **Runner Token**:
 The short-lived credential a Runner presents to the Temporal server so that it reaches its own Organisation's namespace and no other: an RS256 JWT the control plane signs and Temporal verifies against the platform's published JWKS, granting `write` on that one namespace and expiring within the hour. Minted at registration and again on every heartbeat, and passed as the connection's API key, rotated in place without reconnecting. Revoking a Runner stops the next refresh; rolling the signing key ends every outstanding token at once.
-_Avoid_: Namespace token, Temporal API key, Worker token (the `worker` role is deliberately not what it claims), Directive token (that is the per-Directive control-plane credential), Agent Token (that is the reusable registration credential it is exchanged for)
+_Avoid_: Namespace token, Temporal API key, Worker token (the `worker` role is deliberately not what it claims), Directive token (that is the per-Directive control-plane credential), Runner Registration Token (that is the reusable registration credential it is exchanged for)
 
 **Runner Tag**:
 A free-form key–value pair declared by a Runner at registration and stored on its record, by which the control plane chooses which Runner receives a Directive. Tags describe the Runner (environment, region, what it can run), never the work; they never appear in a queue name, a Search Attribute or the heartbeat.

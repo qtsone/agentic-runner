@@ -158,7 +158,7 @@ def test_a_write_replaces_a_planted_symlink_rather_than_following_it(tmp_path: P
 
 def _environment(monkeypatch: pytest.MonkeyPatch, state_dir: Path) -> None:
     monkeypatch.setenv("AGENTIC_CONTROL_PLANE_URL", "https://control-plane.test")
-    monkeypatch.setenv("AGENTIC_AGENT_TOKEN", "agent-token-of-sixteen-plus-chars")
+    monkeypatch.setenv("AGENTIC_RUNNER_REGISTRATION_TOKEN", "registration-token-of-sixteen-plus")
     monkeypatch.setenv("AGENTIC_RUNNER_STATE_DIR", str(state_dir))
     monkeypatch.setenv("AGENTIC_RUNNER_ISOLATION", "none")
     monkeypatch.setenv("TEMPORAL_ADDRESS", "temporal.test:7233")

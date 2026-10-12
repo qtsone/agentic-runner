@@ -10,7 +10,7 @@ One container is one Runner, on any Docker host, from the published image
 You need three values from your Organisation's Admin, all on the Organisation Console's
 **Runners** page:
 
-- the **Agent Token**, shown once when it is minted;
+- the **Runner Registration Token**, shown once when it is minted;
 - the control plane's Runner edge, `https://api.agentic.<zone>`;
 - the Temporal address, `temporal-grpc.<zone>:443`.
 
@@ -20,16 +20,19 @@ and pin it. `latest` moves.
 ## The env file
 
 Copy [`examples/runner.env.example`](../examples/runner.env.example) to `runner.env`, fill in
-the control plane URL, the Temporal address and the Agent Token, and keep it private:
+the control plane URL, the Temporal address and the Runner Registration Token, and keep it
+private:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/qtsone/agentic-runner/main/examples/runner.env.example
 cp runner.env.example runner.env && chmod 600 runner.env
 ```
 
-The Agent Token is read once. On its first start the Runner exchanges it for its own
-identity, which it keeps on the state volume. Once the Runner shows on the Runners page,
-delete the `AGENTIC_AGENT_TOKEN` line.
+The Runner Registration Token is read once. On its first start the Runner exchanges it for
+its own identity, which it keeps on the state volume. Once the Runner shows on the Runners
+page, delete the `AGENTIC_RUNNER_REGISTRATION_TOKEN` line. An env file from an earlier
+release that sets `AGENTIC_AGENT_TOKEN` still works; the Runner logs that the name is
+deprecated.
 
 ## `docker run`
 
@@ -133,7 +136,7 @@ The Runner appears on the Runners page within one heartbeat (30 seconds).
 | --- | --- |
 | `refusing to start (isolation_unavailable)` | `contract_uid` without the five capabilities. Add them, or use `isolation: none`. |
 | `refusing to start (unsafe_state_dir)` | The state directory or a file in it is a symlink, belongs to another uid, or is open to group or others. A volume made by an earlier release holds a `state` directory the image created `0755` as uid 65532: `chmod 700` it and `chmod 600` its files, keeping the uid the Runner runs as (root for `contract_uid`). |
-| `registration refused (…)` | The Agent Token is revoked or expired, the Account is on hold, or the Organisation has reached its Runner limit. |
+| `registration refused (…)` | The Runner Registration Token is unknown, revoked or expired, the Account is on hold, or the Organisation has reached its Runner limit. |
 | `heartbeat failed before start` | The control plane URL is wrong or unreachable. The Runner retries every 30 seconds. |
 
 ## More configuration

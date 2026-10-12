@@ -1,8 +1,8 @@
 """The bootstrap and heartbeat wire between a Runner and the control plane (PRD issue 41).
 
-ADR-0013 §8 and map ticket 06 §2/§4: a Runner presents an **Agent Token** once, receives a
-durable identity, its namespace and its first Runner Token, and from then on says what it
-is every 30 s over the same outbound-only stream. Nothing here ever travels inbound into
+ADR-0013 §8 and map ticket 06 §2/§4: a Runner presents a **Runner Registration Token** once,
+receives a durable identity, its namespace and its first Runner Token, and from then on says
+what it is every 30 s over the same outbound-only stream. Nothing here ever travels inbound into
 the org's network -- the Runner dials out, always.
 
 It lives in the *contracts* distribution because this envelope **is** what the Runner
@@ -20,8 +20,8 @@ Three rules are enforced by the schema itself rather than by a reviewer:
   outcome carries a status, an error code, an exception *type* and redacted frames --
   never a payload, a message or a repository path. The patterns below are what "scrubbed"
   means operationally.
-* **Host party is never here** (17 A3). It is fixed at registration from the Agent Token
-  used and is a routing rule the control plane owns; a Runner cannot assert it.
+* **Host party is never here** (17 A3). It is fixed at registration from the Runner
+  Registration Token used and is a routing rule the control plane owns; a Runner cannot assert it.
 """
 
 from __future__ import annotations
@@ -96,6 +96,7 @@ Version = Annotated[str, StringConstraints(pattern=r"^\d+\.\d+\.\d+$")]
 # A build is 64 hex since runner-repo 06; 12 is still accepted because a Runner released
 # before it reports the first 16.
 BuildId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{12,64}$")]
+RegistrationToken = Annotated[str, StringConstraints(min_length=16, max_length=256)]
 
 
 class IsolationMode(StrEnum):
@@ -175,11 +176,16 @@ class BootstrapRequest(BaseModel):
     ``build_id`` is the same digest the heartbeat's attestation carries, here so a
     platform that admits only published builds can refuse before it issues an identity
     (runner-repo 06). Optional because a Runner older than this field sends none.
+
+    The Runner Registration Token travels as ``registration_token``; ``agent_token`` is
+    its name before ADR-0021, still accepted so a Runner below 3.16 keeps registering.
+    Exactly one of the two, and :attr:`token` is the value whichever it was.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    agent_token: Annotated[str, StringConstraints(min_length=16, max_length=256)]
+    registration_token: RegistrationToken | None = None
+    agent_token: RegistrationToken | None = None
     tags: dict[TagKey, Annotated[str, StringConstraints(max_length=256)]] = Field(
         default_factory=dict, max_length=32
     )
@@ -190,6 +196,32 @@ class BootstrapRequest(BaseModel):
     max_concurrent_directives: int = Field(default=1, ge=1, le=64)
     build_id: BuildId | None = None
 
+    @model_validator(mode="after")
+    def _exactly_one_token(self) -> BootstrapRequest:
+        if (self.registration_token is None) == (self.agent_token is None):
+            raise ValueError("send exactly one of registration_token and agent_token")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_the_absent_token(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A control plane below 3.16 forbids extra keys and requires `agent_token`, so a
+        # body that names the field it does not know is refused whatever its value --
+        # upgrade the control plane before the Runner.
+        body = handler(self)
+        if isinstance(body, dict):
+            for name in ("registration_token", "agent_token"):
+                if body.get(name) is None:
+                    body.pop(name, None)
+        return body
+
+    @property
+    def token(self) -> str:
+        """The Runner Registration Token, under whichever name the Runner sent it."""
+
+        token = self.registration_token or self.agent_token
+        assert token is not None  # _exactly_one_token
+        return token
+
 
 class RunnerIdentityMaterial(BaseModel):
     """The durable identity, handed back exactly once (06 §2).
@@ -198,7 +230,7 @@ class RunnerIdentityMaterial(BaseModel):
     only the public half -- so a Runner that loses its state dir re-bootstraps rather than
     recovering it. It persists to its own Secret/PVC and signs every later heartbeat with
     it, which is what makes the heartbeat unforgeable by anyone holding only the reusable
-    Agent Token.
+    Runner Registration Token.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -224,10 +256,10 @@ class BootstrapResponse(BaseModel):
     floor_state: FloorState
     contracts_floor: Version
     # Who the control plane registered this process as being hosted by, fixed from the
-    # Agent Token presented (17 A3). Told to the Runner, never declared by it: it is what
-    # the Runner asserts a Directive's routing against (PRD issue 42), and a Runner that
-    # could set it could reach another contractor's work. Defaulted so a Runner on this
-    # wire still parses a response from a control plane that predates issue 42 -- it then
+    # Runner Registration Token presented (17 A3). Told to the Runner, never declared by it:
+    # it is what the Runner asserts a Directive's routing against (PRD issue 42), and a
+    # Runner that could set it could reach another contractor's work. Defaulted so a Runner
+    # on this wire still parses a response from a control plane that predates issue 42 -- it then
     # has nothing to assert with and simply performs no routing assertion.
     host_party: str = ""
     heartbeat_interval_seconds: int = int(HEARTBEAT_INTERVAL.total_seconds())

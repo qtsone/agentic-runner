@@ -14,9 +14,10 @@ no intake. That inertness, not obfuscation, is the boundary (ADR-0013 §5).
 
 ## Running it
 
-`agentic-runner run` is the process: it exchanges the Agent Token in
-`AGENTIC_AGENT_TOKEN` for a durable identity at `AGENTIC_CONTROL_PLANE_URL` (once,
-persisted under `AGENTIC_RUNNER_STATE_DIR`), heartbeats every 30 s, connects to the
+`agentic-runner run` is the process: it exchanges the Runner Registration Token in
+`AGENTIC_RUNNER_REGISTRATION_TOKEN` (or, deprecated, `AGENTIC_AGENT_TOKEN`) for a durable
+identity at `AGENTIC_CONTROL_PLANE_URL` (once, persisted under `AGENTIC_RUNNER_STATE_DIR`),
+heartbeats every 30 s, connects to the
 namespace it was handed with the Runner Token the heartbeat refreshes, and polls its own
 `runner.{runner_id}` queue. `AGENTIC_RUNNER_ISOLATION` is `contract_uid` (default: every
 Contract its own uid, needs `CAP_SETUID` — refused otherwise) or `none`. Readiness is

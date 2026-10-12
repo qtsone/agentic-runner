@@ -103,7 +103,8 @@ class ClaudeRuntime(ResumableAgentRuntime):
                 evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
             )
 
-        argv = _claude_argv(self._settings)
+        model = request.model or self._settings.CLAUDE_MODEL
+        argv = _claude_argv(model)
         if request.mcp_servers is not None:
             # Only what the Grant let through: `--strict-mcp-config` ignores every other
             # MCP source, so nothing in the harness root can add an ungranted server.
@@ -193,6 +194,7 @@ class ClaudeRuntime(ResumableAgentRuntime):
             error=redacted_error,
             command_hash=command_hash,
             evidence=evidence,
+            model=model,
         )
 
     def has_session(self, session_id: str, sandbox: DirectiveSandbox | None) -> bool:
@@ -210,7 +212,7 @@ def _guard_mode(settings: WorkerSettings) -> str | None:
     return None
 
 
-def _claude_argv(settings: WorkerSettings) -> list[str]:
+def _claude_argv(model: str) -> list[str]:
     return [
         "claude",
         "--print",
@@ -218,7 +220,7 @@ def _claude_argv(settings: WorkerSettings) -> list[str]:
         "--output-format",
         "json",
         "--model",
-        settings.CLAUDE_MODEL,
+        model,
         "--dangerously-skip-permissions",
     ]
 

@@ -159,6 +159,39 @@ async def test_execute_directive_invokes_codex_exec_in_workspace_without_shell(
         "sandbox=workspace-write; approval=never; strict-config; "
         "network=disabled; policy-hook=configured"
     )
+    # No model on the Agent: Codex runs its own config's, which the Runner cannot name.
+    assert "--model" not in call.argv
+    assert result.model == ""
+
+
+@pytest.mark.asyncio
+async def test_execute_directive_overrides_codex_config_with_the_agents_model(
+    tmp_path: Path,
+) -> None:
+    settings = _enabled_settings(tmp_path)
+    workspace = settings.WORKSPACE_ROOT / "task-23" / "repo"
+    workspace.mkdir(parents=True)
+    runner = FakeRunner(SubprocessResult(exit_code=0, stdout="ok", stderr=""))
+    runtime = CodexRuntime(settings=settings, runner=runner)
+
+    result = await runtime.execute_directive(
+        DirectiveRequest(
+            auth_mode=AuthMode.SUBSCRIPTION,
+            workspace_path=workspace,
+            prompt="Update the worker runtime safely",
+            base_branch="main",
+            work_branch="task-23/codex-runtime",
+            resume_session_id="019a0f00-0000-7000-8000-000000000001",
+            model="gpt-5-codex",
+        )
+    )
+
+    (call,) = runner.calls
+    model_at = call.argv.index("--model")
+    assert call.argv[model_at + 1] == "gpt-5-codex"
+    # An `exec` option, so it precedes the `resume` subcommand and the stdin `-`.
+    assert model_at < call.argv.index("resume") < call.argv.index("-")
+    assert result.model == "gpt-5-codex"
 
 
 @pytest.mark.asyncio

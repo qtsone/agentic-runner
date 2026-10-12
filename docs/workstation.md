@@ -33,7 +33,7 @@ macOS (`tests/install/workstation.sh`).
    name only an executable you trust to run on your machine. It runs under the
    same Contract uid, sandbox, MCP servers, egress proxy and permission checks as a
    pinned bridge, and the Runner reports the kind so Work Records for it are routed here.
-2. **An Agent Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in
+2. **A Runner Registration Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in
    the console, labelled after the machine (`alice-laptop`). It is shown once and installs
    for 7 days. Your Organisation's Admin can also mint one on the Organisation Console's
    **Runners** page with **Hosted by** set to you, and send it over a channel you both
@@ -62,7 +62,7 @@ lowercase letters, digits and `-`.
 agentic-runner install acme \
   --control-plane <control-plane URL from the Runners page> \
   --temporal-address <Temporal address from the Runners page>
-# Agent Token (yours from /me/runners, or the Organisation Admin's for an Organisation Runner): ********
+# Runner Registration Token (yours from /me/runners, or the Organisation Admin's for an Organisation Runner): ********
 ```
 
 You paste the token at the prompt. It is never a flag, because every user on the machine

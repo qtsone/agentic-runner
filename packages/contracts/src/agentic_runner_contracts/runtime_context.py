@@ -126,9 +126,11 @@ class WorkerRuntimeContext(BaseModel):
     # The Contract the Agent works under, for Usage Record attribution (map ticket 12 B2).
     # None wherever `agent_id` is.
     contract_id: str | None = None
-    # PRD issue 31: what the Agent is configured to run, for pricing a harness usage
-    # event that carries no model of its own (Codex `turn.completed.usage`). Defaulted
-    # for the same version-skew reason as the fields above.
+    # The model to run; blank means the Runner's default for this `cli_kind` (ADR-0021).
+    # It is the Agent's own, resolved per Agent like `cli_kind`, so every Directive
+    # already carries it and no activity input names one. A Runner before 3.16 read it
+    # only to price a harness usage event (PRD issue 31) and ran its own default, which is
+    # why the platform routes model-bearing work only to a Runner on 3.16 or newer.
     model: str | None = None
     # The Work Record's Budget, written by console intake (PRD issue 17) and left null by
     # Slack intake. Null per dimension means the worker's own env default applies.

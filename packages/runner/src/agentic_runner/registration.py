@@ -1,8 +1,8 @@
 """The Runner's half of registration and heartbeat (PRD issue 41, ADR-0013 §8).
 
-Outbound-only: this process dials the control plane, presents its Agent Token once, keeps
-what comes back in its own state directory, and then says what it is every 30 s. Nothing
-listens on a port here, which is also why revocation is entirely the control plane's --
+Outbound-only: this process dials the control plane, presents its Runner Registration Token
+once, keeps what comes back in its own state directory, and then says what it is every 30 s.
+Nothing listens on a port here, which is also why revocation is entirely the control plane's --
 the lever it pulls is the refused heartbeat.
 
 Two things fail closed on this side, and both fail *before* anything registers:
@@ -70,6 +70,13 @@ INTAKE_IGNORED_PATH = "/api/runner/v1/runners/intake/ignored"
 # heartbeat). The one reason this process stops on rather than retries.
 RUNNER_REVOKED_REASON = "runner_revoked"
 CONTROL_PLANE_OLDER_REASON = "control_plane_older"
+# The bootstrap refusals that mean "this Runner Registration Token will never work": unknown,
+# revoked, expired. A control plane before ADR-0021 names them `agent_token_*`.
+_REGISTRATION_TOKEN_REASON_PREFIXES = ("registration_token_", "agent_token_")
+REGISTRATION_TOKEN_REFUSED_HINT = (
+    "the Runner Registration Token is unknown, revoked or expired: mint a new one on the "
+    "Runners page and register with that"
+)
 
 # What the state directory holds after a successful bootstrap. One file, mode 0600: the
 # private key is in it, and a Runner that loses it re-bootstraps rather than recovering.
@@ -82,6 +89,12 @@ class RunnerRegistrationError(RuntimeError):
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+    @property
+    def refuses_registration_token(self) -> bool:
+        """Whether retrying with the same Runner Registration Token can never succeed."""
+
+        return self.reason.startswith(_REGISTRATION_TOKEN_REASON_PREFIXES)
 
 
 class RunnerState(BaseModel):
@@ -236,18 +249,18 @@ class RunnerRegistrationClient:
     async def bootstrap(
         self,
         *,
-        agent_token: str,
+        registration_token: str,
         tags: dict[str, str],
         isolation_mode: IsolationMode,
         recipient_key: RecipientKey,
         max_concurrent_directives: int = 1,
         can_separate_uids: bool,
     ) -> tuple[RunnerState, BootstrapResponse]:
-        """Exchange the Agent Token for this process's durable identity."""
+        """Exchange the Runner Registration Token for this process's durable identity."""
 
         require_isolation_supported(isolation_mode, can_separate_uids=can_separate_uids)
         request = BootstrapRequest(
-            agent_token=agent_token,
+            registration_token=registration_token,
             tags=tags,
             isolation_mode=isolation_mode,
             contracts_version=contracts_version,

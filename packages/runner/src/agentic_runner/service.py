@@ -85,6 +85,7 @@ from agentic_runner.private_state import (
     require_private_files,
 )
 from agentic_runner.registration import (
+    REGISTRATION_TOKEN_REFUSED_HINT,
     RUNNER_REVOKED_REASON,
     STATE_FILENAME,
     RunnerRegistrationClient,
@@ -148,6 +149,7 @@ __all__ = [
     "READINESS_PORT_ENV",
     "RECIPIENT_KEY_ID_ENV",
     "RECIPIENT_PUBLIC_KEY_ENV",
+    "REGISTRATION_TOKEN_ENV",
     "TAGS_ENV",
     "TEMPORAL_TLS_ENV",
     "ControlPlaneStream",
@@ -172,8 +174,10 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 # The Helm values and the workstation installer both land here as environment (ADR-0013
-# §8). The Agent Token is read from the environment and never from a flag: a flag would
-# put it in the process table for every other uid on the host to read.
+# §8). The Runner Registration Token is read from the environment and never from a flag: a
+# flag would put it in the process table for every other uid on the host to read.
+REGISTRATION_TOKEN_ENV = "AGENTIC_RUNNER_REGISTRATION_TOKEN"
+# Its name before ADR-0021, still read so an installed Runner upgrades without an edit.
 AGENT_TOKEN_ENV = "AGENTIC_AGENT_TOKEN"
 CONTROL_PLANE_ENV = "AGENTIC_CONTROL_PLANE_URL"
 TAGS_ENV = "AGENTIC_RUNNER_TAGS"
@@ -272,6 +276,24 @@ def _require_env(name: str) -> str:
     return value
 
 
+def registration_token_from_env() -> str:
+    """``AGENTIC_RUNNER_REGISTRATION_TOKEN``, else the deprecated ``AGENTIC_AGENT_TOKEN``.
+
+    An empty string when neither is set, so a caller that can ask for it still asks.
+    """
+
+    if token := os.environ.get(REGISTRATION_TOKEN_ENV, "").strip():
+        return token
+    if token := os.environ.get(AGENT_TOKEN_ENV, "").strip():
+        print(
+            f"warning: {AGENT_TOKEN_ENV} is deprecated; set {REGISTRATION_TOKEN_ENV} instead",
+            file=sys.stderr,
+            flush=True,
+        )
+        return token
+    return ""
+
+
 def _max_concurrent_directives() -> int:
     return int(os.environ.get(MAX_CONCURRENT_DIRECTIVES_ENV, "").strip() or 1)
 
@@ -282,15 +304,16 @@ async def register(
     can_separate_uids: bool,
     client: httpx.AsyncClient | None = None,
     control_plane: str | None = None,
-    agent_token: str | None = None,
+    registration_token: str | None = None,
     isolation: IsolationMode | None = None,
 ) -> tuple[RunnerState, str]:
-    """First boot (PRD issue 41): exchange the Agent Token for this process's identity.
+    """First boot (PRD issue 41): exchange the Runner Registration Token for this
+    process's identity.
 
     Idempotent by state file -- a restart re-reads what is already there rather than
     registering a second Runner against the Organisation's cap (21 A7). The keyword
-    overrides are the workstation ``install`` (issue 47), which takes the Agent Token
-    pasted at a prompt rather than from a Helm-set environment.
+    overrides are the workstation ``install`` (issue 47), which takes the Runner
+    Registration Token pasted at a prompt rather than from a Helm-set environment.
     """
 
     existing = load_state(state_dir)
@@ -300,8 +323,13 @@ async def register(
     registration = RunnerRegistrationClient(
         base_url=control_plane or _require_env(CONTROL_PLANE_ENV), client=client
     )
+    token = registration_token or registration_token_from_env()
+    if not token:
+        raise RunnerRegistrationError(
+            "configuration_missing", f"{REGISTRATION_TOKEN_ENV} is not set"
+        )
     state, response = await registration.bootstrap(
-        agent_token=agent_token or _require_env(AGENT_TOKEN_ENV),
+        registration_token=token,
         tags=parse_tags(os.environ.get(TAGS_ENV, "")),
         isolation_mode=isolation or isolation_mode(),
         recipient_key=recipient,
@@ -1077,6 +1105,8 @@ async def _serve(
         )
     except RunnerRegistrationError as error:
         print(f"registration refused ({error.reason}): {error}", flush=True)
+        if error.refuses_registration_token:
+            print(REGISTRATION_TOKEN_REFUSED_HINT, flush=True)
         return 1
     except UnsafeStateError as error:
         print(f"refusing to start ({error.reason}): {error}", flush=True)

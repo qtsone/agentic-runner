@@ -624,7 +624,7 @@ async def install(
     paths: OrgPaths,
     settings: WorkstationSettings,
     *,
-    agent_token: str,
+    registration_token: str,
     platform: str = sys.platform,
     home: Path | None = None,
     start_service: bool = True,
@@ -633,11 +633,11 @@ async def install(
 ) -> list[str]:
     """Register this Organisation's process and install its login agent.
 
-    Registration happens here, once, with the Agent Token this user minted on /me/runners
-    or the Organisation's Admin issued them (12 A6, QTS-1304) -- pasted at the prompt,
-    never stored: the identity bootstrap hands back is what every later start uses, and a
-    lost state directory means a reinstall and a re-delivery of any sealed value (22 A4),
-    by design.
+    Registration happens here, once, with the Runner Registration Token this user minted
+    on /me/runners or the Organisation's Admin issued them (12 A6, QTS-1304) -- pasted at the
+    prompt, never stored: the identity bootstrap hands back is what every later start uses,
+    and a lost state directory means a reinstall and a re-delivery of any sealed value
+    (22 A4), by design.
     """
 
     require_any_cli(settings.path)
@@ -649,7 +649,7 @@ async def install(
         can_separate_uids=False,
         client=http_client,
         control_plane=settings.control_plane_url,
-        agent_token=agent_token,
+        registration_token=registration_token,
         isolation=IsolationMode.NONE,
     )
     LifecycleOutbox(paths.state_dir).add(LifecycleKind.INSTALL, datetime.now(UTC))

@@ -25,9 +25,13 @@ controlPlane:
   # `url` only behind a proxy of the Organisation's own.
   internalUrl: ""
 
-# The reusable, per-Organisation Agent Token (PRD issue 41), shown once on the Runners
-# page. Either paste it here (rendered into a Secret) or name a Secret holding it under
-# the key `token`.
+# The reusable Runner Registration Token (PRD issue 41), shown once on the Runners page.
+# Either paste it here (rendered into a Secret) or name a Secret holding it under the key
+# `token`.
+registrationToken:
+  value: ""
+  existingSecret: ""
+# Deprecated: `registrationToken`'s name before ADR-0021, read only when that is empty.
 agentToken:
   value: ""
   existingSecret: ""

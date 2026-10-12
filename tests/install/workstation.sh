@@ -33,7 +33,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== uv tool install, from the wheels alone"
-uv tool install --python 3.12 --find-links "${dist}" agentic-runner
+# --no-cache: a branch builds the same version as main until release, and a cached wheel of
+# that version would install main's code instead of this build.
+uv tool install --no-cache --python 3.12 --find-links "${dist}" agentic-runner
 export PATH="${UV_TOOL_BIN_DIR}:${PATH}"
 agentic-runner --version
 
@@ -57,7 +59,7 @@ export PATH="${work}/bin:${PATH}"
 echo "== agentic-runner install ${org} (${mode})"
 start_flag=()
 [ "${mode}" = process ] && start_flag=(--no-start)
-AGENTIC_AGENT_TOKEN=workstation-test-agent-token-0123 agentic-runner install "${org}" \
+AGENTIC_RUNNER_REGISTRATION_TOKEN=workstation-test-registration-token agentic-runner install "${org}" \
   --control-plane http://127.0.0.1:8000 \
   --temporal-address 127.0.0.1:7233 --temporal-plaintext \
   --root "${root}" ${start_flag[@]+"${start_flag[@]}"}
