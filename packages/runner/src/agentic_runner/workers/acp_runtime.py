@@ -65,6 +65,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -113,6 +114,8 @@ from agentic_runner_contracts.redaction import redact_secret_like_text
 from agentic_runner_contracts.runner_registration import UsageWindow
 
 __all__ = ["ACP_BRIDGES", "AcpBridge", "AcpRuntime", "profile_acp_executables"]
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +323,7 @@ class AcpRuntime:
         # Tests drive a fake ACP agent through this; production runs the pinned bridge.
         self._bridge_argv = list(bridge_argv) if bridge_argv is not None else None
         self._ask = ask
+        self._logged_model_ignored = False
 
     @property
     def _is_codex(self) -> bool:
@@ -328,6 +332,15 @@ class AcpRuntime:
     @property
     def _is_claude(self) -> bool:
         return self._cli_kind == "claude_code"
+
+    def _model(self, request: DirectiveRequest) -> str:
+        """The model this turn runs, blank where the harness chooses its own."""
+
+        if self._is_claude:
+            return request.model or self._settings.CLAUDE_MODEL
+        if self._is_codex:
+            return request.model
+        return ""
 
     @property
     def _executable(self) -> str:
@@ -450,6 +463,17 @@ class AcpRuntime:
         turn = _Turn()
         if self._bridge is None:
             turn.notes.append(f"profile ACP command: {redact_secret_like_text(shlex.join(argv))}")
+            if request.model:
+                # The Runner knows no way to name a model to a harness it does not know,
+                # so the turn runs on that harness's own choice rather than not at all.
+                turn.notes.append(f"model ignored: {self._cli_kind} takes no model from the Runner")
+                if not self._logged_model_ignored:
+                    self._logged_model_ignored = True
+                    _logger.warning(
+                        "%s takes no model from the Runner; its Directives run the harness's "
+                        "own model",
+                        self._cli_kind,
+                    )
         timed_out = False
         async with contextlib.AsyncExitStack() as stack:
             env = self._env(request, harness_root)
@@ -621,11 +645,18 @@ class AcpRuntime:
             if self._is_claude:
                 session_params["_meta"] = {
                     "claudeCode": {
-                        "options": {**_CLAUDE_SESSION_OPTIONS, "model": self._settings.CLAUDE_MODEL}
+                        "options": {**_CLAUDE_SESSION_OPTIONS, "model": self._model(request)}
                     }
                 }
             session = await connection.request("session/new", session_params)
             session_id = turn.session_id = str(session.get("sessionId") or "")
+            if self._is_codex and request.model:
+                # codex-acp starts a session on the harness root's model; this outranks it
+                # for the turn, and an unknown model is an ACP error that fails the turn.
+                await connection.request(
+                    "session/set_config_option",
+                    {"sessionId": session_id, "configId": "model", "value": request.model},
+                )
             if self._is_claude and _offers_mode(session, _CLAUDE_MODE):
                 await connection.request(
                     "session/set_mode", {"sessionId": session_id, "modeId": _CLAUDE_MODE}
@@ -746,6 +777,7 @@ class AcpRuntime:
             ),
             model_usage=model_usage,
             usage_windows=turn.usage_windows,
+            model=self._model(request),
         )
 
     def _evidence(

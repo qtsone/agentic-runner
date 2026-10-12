@@ -604,8 +604,8 @@ class _RuntimeContextState:
     # Which harness this Work Record runs, and so which per-Contract config root
     # (`{contract_id}/harness/{cli_kind}`) its Directives read (ADR-0015 §4).
     cli_kind: str = _DEFAULT_CLI_KIND
-    # PRD issue 31: what the Agent is configured to run, for pricing a Codex harness
-    # usage event that carries no model of its own.
+    # The Agent's model, which every Directive runs (ADR-0021); None for the Runner's
+    # default for `cli_kind`.
     model: str | None = None
     # The Agent Runtime Profile's per-process memory ceiling (map ticket 17 A7), carried
     # on the Profile's `command_policy` blob — the sandbox floor already lives there, and
@@ -1516,6 +1516,8 @@ def _codex_evidence_payload(
             codex_result.error, _RUNTIME_EVIDENCE_STREAM_LIMIT_BYTES, notes, "error"
         ),
         "command_hash": codex_result.command_hash,
+        # What ran, which the Agent's configuration alone does not prove (ADR-0021).
+        "model": codex_result.model or None,
         "workspace": asdict(codex_result.evidence),
         "persona_slug": persona_slug,
         "persona_instructions_hash": _persona_instructions_hash(persona_instructions),
@@ -2121,6 +2123,7 @@ class RunnerRalphActivities:
                     auth_mode=attempt.auth_mode,
                     permission_fallback=runtime_state.permission_fallback,
                     acp_command=runtime_state.acp_command,
+                    model=runtime_state.model or "",
                     prompt=attempt.skills_preamble
                     + _directive_prompt(
                         completion_criteria=runtime_state.completion_criteria,
@@ -5067,6 +5070,7 @@ class RunnerRalphActivities:
                     auth_mode=attempt.auth_mode,
                     permission_fallback=state.permission_fallback,
                     acp_command=state.acp_command,
+                    model=state.model or "",
                     prompt=attempt.skills_preamble
                     + _learning_prompt(
                         request,
@@ -5333,6 +5337,7 @@ class RunnerRalphActivities:
                     auth_mode=attempt.auth_mode,
                     permission_fallback=state.permission_fallback,
                     acp_command=state.acp_command,
+                    model=state.model or "",
                     prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
                     base_branch=request.base_ref,
                     work_branch=state.work_branch,
@@ -5602,16 +5607,17 @@ class RunnerRalphActivities:
             reports = [(usage_event, None)] if usage_event else []
         else:
             usage_event = extract_codex_turn_usage(result.stdout)
-            reports = [(usage_event, runtime_state.model or None)] if usage_event else []
+            reports = [(usage_event, result.model or None)] if usage_event else []
         for usage_event, model_name in reports:
             if runtime_state.cli_kind != "claude_code" and model_name is None:
                 # The backend 422s a Codex harness report with no model
                 # (`report_harness_usage` requires one to price it), and the `suppress`
-                # below swallows that -- an Agent with no model configured would otherwise
-                # lose this Usage Record with no trace.
+                # below swallows that -- a Directive that ran Codex's own default model,
+                # which its JSON stream never names, would otherwise lose this Usage
+                # Record with no trace.
                 activity.logger.warning(
-                    "harness usage unreported: Agent %s has no model configured for a Codex "
-                    "harness Directive (work record %s)",
+                    "harness usage unreported: Agent %s names no model, so its Codex "
+                    "harness Directive ran one the Runner cannot name (work record %s)",
                     runtime_state.agent_id,
                     work_record_id,
                 )

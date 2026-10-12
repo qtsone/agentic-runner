@@ -1192,3 +1192,83 @@ def test_an_unpinned_kind_reports_a_permission_mode_the_heartbeat_admits(tmp_pat
 
     assert re.fullmatch(r"[a-z][a-z0-9_=;.-]{0,95}", capabilities.permission_mode)
     assert capabilities.permission_mode != REFUSED_PERMISSION_MODE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("model", "runs"), [("claude-sonnet-5-5", "claude-sonnet-5-5"), ("", "")])
+async def test_a_claude_session_runs_the_agents_model_else_the_runner_default(
+    tmp_path: Path, model: str, runs: str
+) -> None:
+    fake = Fake(tmp_path)
+    runtime = AcpRuntime(
+        cli_kind="claude_code",
+        settings=_settings(tmp_path, CLAUDE_MODEL="claude-opus-4-8"),
+        bridge_argv=[sys.executable, str(FAKE_AGENT)],
+    )
+
+    result = await runtime.execute_directive(
+        replace(_request(tmp_path, fake, cli_kind="claude_code"), model=model)
+    )
+
+    assert result.exit_code == 0, result.error
+    (new,) = fake.received("session/new")
+    expected = runs or "claude-opus-4-8"
+    assert new["params"]["_meta"]["claudeCode"]["options"]["model"] == expected
+    assert result.model == expected
+
+
+@pytest.mark.asyncio
+async def test_a_codex_session_is_switched_to_the_agents_model_before_the_prompt(
+    tmp_path: Path,
+) -> None:
+    fake = Fake(tmp_path)
+
+    result = await _runtime(tmp_path).execute_directive(
+        replace(_request(tmp_path, fake), model="gpt-5-codex")
+    )
+
+    assert result.exit_code == 0, result.error
+    assert [m["method"] for m in fake.received() if "method" in m] == [
+        "initialize",
+        "session/new",
+        "session/set_config_option",
+        "session/prompt",
+    ]
+    (switch,) = fake.received("session/set_config_option")
+    assert switch["params"]["configId"] == "model"
+    assert switch["params"]["value"] == "gpt-5-codex"
+    assert result.model == "gpt-5-codex"
+
+
+@pytest.mark.asyncio
+async def test_a_codex_session_with_no_agent_model_keeps_the_harness_roots(tmp_path: Path) -> None:
+    fake = Fake(tmp_path)
+
+    result = await _runtime(tmp_path).execute_directive(_request(tmp_path, fake))
+
+    assert result.exit_code == 0, result.error
+    assert not fake.received("session/set_config_option")
+    assert result.model == ""
+
+
+@pytest.mark.asyncio
+async def test_a_profile_harness_ignores_the_model_logs_it_once_and_runs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime = _profile_runtime(tmp_path)
+    fake = Fake(tmp_path)
+    request = replace(
+        _profile_request(tmp_path, fake, (sys.executable, str(FAKE_AGENT))), model="gemini-3-pro"
+    )
+
+    with caplog.at_level("WARNING", logger="agentic_runner.workers.acp_runtime"):
+        results = [await runtime.execute_directive(request) for _ in range(2)]
+
+    assert [result.exit_code for result in results] == [0, 0]
+    assert [result.model for result in results] == ["", ""]
+    assert all(
+        "model ignored: gemini_cli takes no model from the Runner" in result.evidence.notes
+        for result in results
+    )
+    ignored = [r for r in caplog.records if "takes no model from the Runner" in r.getMessage()]
+    assert len(ignored) == 1

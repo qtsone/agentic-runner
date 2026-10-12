@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -129,6 +129,28 @@ async def test_execute_directive_invokes_claude_print_bare_in_workspace(tmp_path
     assert result.command_hash
     assert result.evidence.workspace_id == "wr/repo"
     assert result.evidence.guard_mode == "auth=api-key; permission=skip-in-sandbox; output=json"
+    # No model on the Agent: the Runner's own default, and the result says which ran.
+    assert result.model == "claude-opus-4-8"
+
+
+@pytest.mark.asyncio
+async def test_execute_directive_runs_the_agents_model_over_the_runner_default(
+    tmp_path: Path,
+) -> None:
+    settings = _enabled_settings(tmp_path)
+    workspace = settings.WORKSPACE_ROOT / "wr" / "repo"
+    workspace.mkdir(parents=True)
+    runner = FakeRunner(SubprocessResult(exit_code=0, stdout="done", stderr=""))
+    runtime = ClaudeRuntime(settings=settings, runner=runner)
+
+    result = await runtime.execute_directive(
+        replace(_request(workspace), model="claude-sonnet-5-5")
+    )
+
+    (call,) = runner.calls
+    assert call.argv[call.argv.index("--model") + 1] == "claude-sonnet-5-5"
+    assert "claude-opus-4-8" not in call.argv
+    assert result.model == "claude-sonnet-5-5"
 
 
 @pytest.mark.asyncio
