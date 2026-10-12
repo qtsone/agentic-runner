@@ -219,8 +219,8 @@ def _claude_argv(model: str) -> list[str]:
         "--bare",
         "--output-format",
         "json",
-        "--model",
-        model,
+        # One element, so the value can never be read as a flag of its own (QTS-1505).
+        f"--model={model}",
         "--dangerously-skip-permissions",
     ]
 

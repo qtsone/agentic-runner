@@ -345,8 +345,9 @@ def _codex_argv(
         argv += ["--config", f"sandbox_workspace_write.network_access={network_access}"]
     if model:
         # Outranks the harness root's `config.toml`; without it Codex runs that file's
-        # model, which is the Runner's default for `codex_cli`.
-        argv += ["--model", model]
+        # model, which is the Runner's default for `codex_cli`. One element, so the value
+        # can never be read as a flag of its own (QTS-1505).
+        argv.append(f"--model={model}")
     argv.append("-")
     return argv
 
