@@ -127,6 +127,26 @@ def test_cli_kind_admits_any_harness_the_registration_pattern_does() -> None:
 
 
 @pytest.mark.parametrize(
+    "model", ["claude-opus-5-5", "gpt-5.5", "openai/gpt-5.5", "vendor/model:free@v1", None]
+)
+def test_a_model_name_parses(model: str | None) -> None:
+    context = WorkerRuntimeContext.model_validate(valid_context_payload() | {"model": model})
+
+    assert context.model == model
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["-x", "--dangerously-skip-permissions", "", "gpt 5", "gpt-5\n", "gpt-5\n--flag", "a" * 129],
+)
+def test_a_model_that_could_become_a_harness_flag_is_refused(model: str) -> None:
+    """QTS-1505: it fails at parse time, before any harness subprocess starts."""
+
+    with pytest.raises(ValidationError):
+        WorkerRuntimeContext.model_validate(valid_context_payload() | {"model": model})
+
+
+@pytest.mark.parametrize(
     "acp_command",
     [[], [""], ["/usr/bin/gemini", *["--flag"] * 32], ["/usr/bin/gemini", "x" * 1025]],
 )
