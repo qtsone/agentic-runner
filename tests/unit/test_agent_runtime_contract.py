@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from agentic_runner.llm_proxy import attempt_env
 from agentic_runner.workers.agent_runtime import (
     REFUSED_PERMISSION_MODE,
     AgentRuntime,
@@ -27,6 +28,11 @@ from agentic_runner.workers.agent_runtime import (
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime, SubprocessResult
 from agentic_runner.workers.settings import WorkerSettings
+
+# Claude Code runs api_key only, on the attempt's LLM proxy endpoint (QTS-1520).
+CLAUDE_PROXY_ENV = tuple(
+    attempt_env("claude_code", base_url="http://127.0.0.1:9/a/attempt", token="b").items()
+)
 
 
 @dataclass(frozen=True)
@@ -114,7 +120,6 @@ def _codex_outside_root(tmp_path: Path) -> tuple[AgentRuntime, DirectiveRequest]
 def _claude_settings(tmp_path: Path, *, guarded: bool) -> WorkerSettings:
     guard = (
         {
-            "ANTHROPIC_API_KEY": "sk-ant-contract-key",
             "CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS": True,
         }
         if guarded
@@ -137,7 +142,7 @@ def _claude_success(tmp_path: Path) -> tuple[AgentRuntime, DirectiveRequest]:
         settings=settings,
         runner=_async_runner(SubprocessResult(exit_code=0, stdout="done", stderr="")),
     )
-    return runtime, _directive_request(workspace)
+    return runtime, replace(_directive_request(workspace), extra_env=CLAUDE_PROXY_ENV)
 
 
 def _claude_refusal(tmp_path: Path) -> tuple[AgentRuntime, DirectiveRequest]:

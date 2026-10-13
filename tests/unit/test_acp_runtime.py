@@ -477,6 +477,45 @@ async def test_a_harness_root_skill_command_agent_or_memory_never_loads(
     assert new["params"]["_meta"]["claudeCode"]["options"]["settingSources"] == []
 
 
+# Provider keys a Runner host may carry in its own environment (QTS-1520).
+HOST_PROVIDER_KEYS = {
+    "ANTHROPIC_API_KEY": "sk-ant-host-key",
+    "OPENAI_API_KEY": "sk-openai-host-key",
+    "CODEX_API_KEY": "sk-codex-host-key",
+    "GEMINI_API_KEY": "gemini-host-key",
+    "GOOGLE_API_KEY": "google-host-key",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cli_kind", ("claude_code", "codex_cli", "gemini_cli"))
+@pytest.mark.parametrize("auth_mode", tuple(AuthMode))
+async def test_no_host_provider_key_reaches_the_acp_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cli_kind: str, auth_mode: AuthMode
+) -> None:
+    """QTS-1520: the bridge and the harness under it hold the attempt's bearer at most."""
+
+    for name, value in HOST_PROVIDER_KEYS.items():
+        monkeypatch.setenv(name, value)
+    fake = Fake(tmp_path)
+    if cli_kind == "gemini_cli":
+        runtime = _profile_runtime(tmp_path)
+        request = _profile_request(
+            tmp_path, fake, (sys.executable, str(FAKE_AGENT)), auth_mode=auth_mode
+        )
+    else:
+        runtime = _runtime(tmp_path, cli_kind)
+        request = _request(tmp_path, fake, cli_kind=cli_kind, auth_mode=auth_mode)
+
+    result = await runtime.execute_directive(request)
+
+    assert result.exit_code == 0, result.error
+    assert not set(HOST_PROVIDER_KEYS.values()) & set(fake.env.values())
+    assert {value for name, value in fake.env.items() if name.endswith(("_API_KEY", "_TOKEN"))} <= {
+        BEARER
+    }
+
+
 @pytest.mark.asyncio
 async def test_claude_api_key_mode_hides_the_login_and_reaches_the_proxy(tmp_path: Path) -> None:
     fake = Fake(tmp_path)

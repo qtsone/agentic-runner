@@ -78,9 +78,11 @@ recipientKey:
   secretName: ""
 
 # Anything else the Runner reads from its environment: GITHUB_APP_ID,
-# GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_PEM, ANTHROPIC_API_KEY, ... --
-# typically one Secret referenced from `extraEnvFrom`. Never INTERNAL_SERVICE_TOKEN: the
-# Runner authenticates on its own credentials (PRD issue 63) and does not read it.
+# GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_PEM, ... -- typically one Secret
+# referenced from `extraEnvFrom`. Never INTERNAL_SERVICE_TOKEN: the Runner authenticates on
+# its own credentials (PRD issue 63) and does not read it. Never a provider key such as
+# ANTHROPIC_API_KEY either: an Agent spends only a key its funder delivered, through the
+# Runner's LLM proxy (QTS-1520).
 extraEnv: []
 extraEnvFrom: []
 

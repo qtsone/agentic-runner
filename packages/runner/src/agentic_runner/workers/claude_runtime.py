@@ -56,16 +56,18 @@ _SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 class ClaudeRuntime(ResumableAgentRuntime):
     """Worker-local Claude Code CLI runtime.
 
-    Authenticates with an API key (``ANTHROPIC_API_KEY``) rather than a device-login session,
-    so an unattended Persona can run without an expiring browser session (ADR-0006). Like the
-    Codex runtime it confines execution to the supplied workspace, refuses fail-closed unless the
-    autonomous-permission guard is configured, and returns bounded, redacted evidence safe for
-    control-plane storage — the API key never appears in returned text.
+    Runs against the attempt's LLM proxy endpoint rather than a device-login session, so an
+    unattended Persona can run without an expiring browser session (ADR-0006), and the
+    subprocess holds only the attempt's bearer, never a provider key (QTS-1520). Like the
+    Codex runtime it confines execution to the supplied workspace, refuses fail-closed unless
+    the autonomous-permission guard is configured or the proxy endpoint is missing, and
+    returns bounded, redacted evidence safe for control-plane storage.
     """
 
-    # Subscription mode for Claude Code is local-agents 07; until then a user-hosted Runner
-    # with no key runs it on the host operator's key, as before.
+    # Subscription mode for Claude Code is local-agents 07; until then a Contract with no
+    # delivered key has nothing this runtime may run on.
     auth_modes = frozenset({AuthMode.API_KEY})
+    host_api_key = False
 
     def __init__(
         self,
@@ -75,7 +77,6 @@ class ClaudeRuntime(ResumableAgentRuntime):
     ) -> None:
         self._settings = settings
         self._runner = runner or run_subprocess_exec
-        self.host_api_key = bool(settings.ANTHROPIC_API_KEY)
 
     def capabilities(self) -> RuntimeCapabilities:
         return RuntimeCapabilities(
@@ -101,6 +102,17 @@ class ClaudeRuntime(ResumableAgentRuntime):
                 base_branch=request.base_branch,
                 work_branch=request.work_branch,
                 evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
+            )
+        if not dict(request.extra_env).get("ANTHROPIC_BASE_URL"):
+            # The proxy pair is the only credential this runtime hands the harness; without
+            # it the harness would fall back to whatever login or key it finds itself.
+            return _refused_result(
+                workspace_id=directive_workspace_id,
+                base_branch=request.base_branch,
+                work_branch=request.work_branch,
+                evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
+                guard_mode="refused: api_key mode without an LLM proxy endpoint",
+                error="an api_key Claude Code Directive needs the attempt's LLM proxy endpoint",
             )
 
         model = request.model or self._settings.CLAUDE_MODEL
@@ -140,7 +152,7 @@ class ClaudeRuntime(ResumableAgentRuntime):
             )
         # Per-Contract CLAUDE_CONFIG_DIR, never a fleet-wide one (ADR-0015 §4).
         sandbox = request.sandbox
-        env = {"ANTHROPIC_API_KEY": self._settings.ANTHROPIC_API_KEY}
+        env: dict[str, str] = {}
         if sandbox is not None:
             env["CLAUDE_CONFIG_DIR"] = str(sandbox.harness_config_dir)
             env["HOME"] = str(sandbox.home_dir)
@@ -207,7 +219,7 @@ class ClaudeRuntime(ResumableAgentRuntime):
 
 
 def _guard_mode(settings: WorkerSettings) -> str | None:
-    if settings.ANTHROPIC_API_KEY and settings.CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS:
+    if settings.CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS:
         return "auth=api-key; permission=skip-in-sandbox; output=json"
     return None
 
@@ -231,10 +243,9 @@ def _refused_result(
     base_branch: str,
     work_branch: str,
     evidence_limit_bytes: int,
-    guard_mode: str = "refused: missing API key or autonomous permission configuration",
+    guard_mode: str = "refused: missing autonomous permission configuration",
     error: str = (
-        "Claude Code API key and autonomous permission configuration are required "
-        "before worker-local execution"
+        "Claude Code autonomous permission configuration is required before worker-local execution"
     ),
 ) -> DirectiveResult:
     command_hash = hash_command(["claude", "refused"])
