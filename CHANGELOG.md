@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.16.1](https://github.com/qtsone/agentic-runner/compare/v3.16.0...v3.16.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **runner:** the Directive's Evidence names the Agent Runtime that ran (QTS-1498) ([#54](https://github.com/qtsone/agentic-runner/issues/54)) ([3ae68ad](https://github.com/qtsone/agentic-runner/commit/3ae68adc5c27382ec1cb36d539cf405bf9ad6973))
+
 # [3.16.0](https://github.com/qtsone/agentic-runner/compare/v3.15.1...v3.16.0) (2026-10-12)
 
 
