@@ -123,6 +123,9 @@ class RunnerState(BaseModel):
     # The control plane's cadence, as bootstrap told it (06 §4's 30 s by default); a
     # state file written before issue 47 carries none and keeps the default.
     heartbeat_interval_seconds: int = 30
+    # Where bootstrap said the namespace lives (ADR-0022 §4). Blank in a state file written
+    # before it, or from an older control plane: the process then uses `TEMPORAL_ADDRESS`.
+    temporal_address: str = ""
 
     def signer(self) -> Ed25519PrivateKey:
         key = serialization.load_pem_private_key(
@@ -279,6 +282,7 @@ class RunnerRegistrationClient:
             tags=dict(tags),
             max_concurrent_directives=max_concurrent_directives,
             heartbeat_interval_seconds=response.heartbeat_interval_seconds,
+            temporal_address=response.temporal_address,
         )
         return state, response
 

@@ -1112,6 +1112,14 @@ async def _serve(
         print(f"refusing to start ({error.reason}): {error}", flush=True)
         return 1
     print(outcome, flush=True)
+    temporal_address = state.temporal_address or settings.TEMPORAL_ADDRESS
+    if not temporal_address:
+        print(
+            "refusing to start (configuration_missing): the control plane gave no Temporal "
+            "address and TEMPORAL_ADDRESS is not set",
+            flush=True,
+        )
+        return 1
     interval = (
         heartbeat_interval if heartbeat_interval is not None else state.heartbeat_interval_seconds
     )
@@ -1125,6 +1133,7 @@ async def _serve(
             config=config,
             settings=settings,
             state=state,
+            temporal_address=temporal_address,
             mode=mode,
             can_change_uid=can_change_uid,
             control_plane=control_plane,
@@ -1148,6 +1157,7 @@ async def _serve_registered(
     config: RunnerConfig,
     settings: WorkerSettings,
     state: RunnerState,
+    temporal_address: str,
     mode: IsolationMode,
     can_change_uid: bool,
     control_plane: str,
@@ -1241,7 +1251,7 @@ async def _serve_registered(
             await asyncio.sleep(interval)
 
     client = await connect(
-        settings.TEMPORAL_ADDRESS,
+        temporal_address,
         namespace=state.temporal_namespace,
         api_key=stream.runner_token,
         tls=os.environ.get(TEMPORAL_TLS_ENV, "").strip().lower() in {"1", "true", "yes"},

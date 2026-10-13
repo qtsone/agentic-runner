@@ -80,6 +80,13 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `BootstrapRequest.registration_token` beside `agent_token`, exactly one of them, and
 # `BootstrapRequest.token`. A Runner on 3.16 sends `registration_token`, which a control
 # plane on 3.15 refuses -- upgrade the control plane before the Runner.
+# 3.17.0 (QTS-1526, ADR-0022 §4, §11, §22, §36): `routing.SelectorRequirement` and the
+# set operators; `DirectiveRouting.requirements` and `ProductReach.runner_requirements`
+# beside the legacy maps, so a Runner on 3.16 still decodes every payload and checks the
+# legacy map alone; `DirectiveRouting.funding_party`; Grant catalogue v6 (`work.start`,
+# `work.name_runner`); `BootstrapResponse.temporal_address`. The response forbids extra
+# keys, so the control plane must send the address only to a Runner whose bootstrap
+# names contracts 3.17 or later.
 __version__ = "3.16.2"
 
 __all__ = ["__version__"]

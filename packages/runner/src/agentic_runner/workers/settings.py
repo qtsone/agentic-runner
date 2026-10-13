@@ -13,7 +13,13 @@ from agentic_runner_contracts.activity_io import DEFAULT_BUDGET, Budget
 class WorkerSettings(BaseSettings):
     """Runtime configuration for worker-only processes."""
 
-    TEMPORAL_ADDRESS: str = Field(..., description="Temporal server address in host:port format")
+    TEMPORAL_ADDRESS: str = Field(
+        default="",
+        description=(
+            "Temporal server address in host:port format. Only a fallback: the Runner uses "
+            "the address its registration response carries (ADR-0022 §4)."
+        ),
+    )
     TEMPORAL_NAMESPACE: str = Field(default="default", description="Temporal namespace name")
     PLATFORM_WORKER_SHARD_INDEX: int = Field(
         default=0,
@@ -216,6 +222,8 @@ class WorkerSettings(BaseSettings):
         """Validate host:port shape for Temporal server address."""
 
         stripped_value = value.strip()
+        if not stripped_value:
+            return stripped_value
         if stripped_value.count(":") < 1:
             raise ValueError("TEMPORAL_ADDRESS must follow host:port")
 
