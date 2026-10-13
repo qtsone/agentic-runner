@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.17.0](https://github.com/qtsone/agentic-runner/compare/v3.16.2...v3.17.0) (2026-10-13)
+
+
+### Features
+
+* **contracts:** selector requirements, Agent verbs, Temporal address and funding party (QTS-1526) ([#57](https://github.com/qtsone/agentic-runner/issues/57)) ([cb57343](https://github.com/qtsone/agentic-runner/commit/cb5734321024cd693cb1495617094152c40e000c))
+
 ## [3.16.2](https://github.com/qtsone/agentic-runner/compare/v3.16.1...v3.16.2) (2026-10-13)
 
 
