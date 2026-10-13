@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.18.2](https://github.com/qtsone/agentic-runner/compare/v3.18.1...v3.18.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **runner:** drop the workstation `add` command; a second Runner is a second install (QTS-1468) ([#59](https://github.com/qtsone/agentic-runner/issues/59)) ([ea7187f](https://github.com/qtsone/agentic-runner/commit/ea7187f7a52ceafcf662501e55001797abd92c8e)), closes [#56](https://github.com/qtsone/agentic-runner/issues/56)
+
 ## [3.18.1](https://github.com/qtsone/agentic-runner/compare/v3.18.0...v3.18.1) (2026-10-13)
 
 

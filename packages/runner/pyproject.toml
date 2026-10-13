@@ -10,7 +10,7 @@ dependencies = [
   # Exactly this release's contracts: the two ship as one version, and an unpinned
   # requirement let `uv tool upgrade` keep an older contracts wheel the Runner cannot
   # import from (QTS-1473). `scripts/set-version.py` moves it with the version.
-  "agentic-runner-contracts==3.18.1",
+  "agentic-runner-contracts==3.18.2",
   # Imported directly by `registration.py` (the Ed25519 identity that signs every
   # heartbeat); already present transitively through pyjwt[crypto], declared because
   # we import it.
