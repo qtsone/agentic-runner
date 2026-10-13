@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.18.1](https://github.com/qtsone/agentic-runner/compare/v3.18.0...v3.18.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **runner:** exit promptly on a SIGTERM during start-up (QTS-1536) ([#58](https://github.com/qtsone/agentic-runner/issues/58)) ([6c3fb38](https://github.com/qtsone/agentic-runner/commit/6c3fb38108b07b0fda4eed4e66dcb87c1c366bfa)), closes [#56](https://github.com/qtsone/agentic-runner/issues/56)
+
 # [3.18.0](https://github.com/qtsone/agentic-runner/compare/v3.17.0...v3.18.0) (2026-10-13)
 
 
