@@ -1,9 +1,9 @@
 """Two Organisations on one workstation (PRD issue 47, map ticket 23 item 3).
 
-A contractor with two clients installs once, ``add``s the second Runner, and runs two
-processes -- no supervisor over N Organisations. Each registration goes against a fake
-control plane (served over real HTTP) and each ``agentic-runner run --org`` is a real OS
-process, exactly as its login agent would exec it, polling a Temporal dev server. What this pins:
+A contractor with two clients installs twice and runs two processes -- no supervisor
+over N Organisations. Each ``install`` registers against a fake control plane (served
+over real HTTP) and each ``agentic-runner run --org`` is a real OS process, exactly as
+its login agent would exec it, polling a Temporal dev server. What this pins:
 
 * two state directories, two identities, two Runner Tokens;
 * ``stop`` on one -- the ``SIGTERM`` ``launchctl bootout`` / ``systemctl --user stop``
@@ -146,8 +146,8 @@ async def test_two_organisations_run_as_two_processes_and_stopping_one_leaves_th
     async with await WorkflowEnvironment.start_local() as env:
         orgs = {org: workstation.OrgPaths(root=root, org=org) for org in ("acme", "globex")}
         for org, paths in orgs.items():
-            # `globex` is `add`ed beside `acme` (ADR-0022 §21): same install, own Runner.
-            settings = (
+            await workstation.install(
+                paths,
                 workstation.WorkstationSettings(
                     org=org,
                     control_plane_url=control_plane,
@@ -155,13 +155,7 @@ async def test_two_organisations_run_as_two_processes_and_stopping_one_leaves_th
                     temporal_tls=False,
                     path=path,
                     install_channel=InstallChannel.MANUAL,
-                )
-                if org == "acme"
-                else workstation.settings_to_add(paths, beside=None)
-            )
-            await workstation.install(
-                paths,
-                settings,
+                ),
                 registration_token=f"registration-token-issued-to-me-for-{org}",
                 home=tmp_path / "home",
                 start_service=False,

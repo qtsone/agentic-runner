@@ -36,8 +36,7 @@ Each needs a Runner Registration Token, which your Organisation's Admin issues i
 2. **Docker, on any Docker host** — the `ghcr.io/qtsone/agentic-runner` image, with
    `docker run` or Compose. Guide: [docs/docker.md](docs/docker.md).
 3. **On your own machine** — a per-user login agent, one per Organisation
-   (`agentic-runner install <org>`), plus a personal Runner per further Contract
-   (`agentic-runner add <name>`). Guide: [docs/workstation.md](docs/workstation.md).
+   (`agentic-runner install <org>`). Guide: [docs/workstation.md](docs/workstation.md).
 
 Each guide installs only published artifacts, and CI runs each one to a Runner that
 registers and heartbeats against a fake control plane. Before the first release, run from a
