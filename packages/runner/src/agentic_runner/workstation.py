@@ -390,7 +390,7 @@ def runner_command(org: str, root: Path) -> list[str]:
     # The console script as found, not resolved: Homebrew's `bin/agentic-runner` is a
     # symlink into a versioned Cellar path that the next `brew upgrade` deletes.
     script = shutil.which("agentic-runner")
-    prefix = [script] if script else [sys.executable, "-m", "agentic_runner.cli"]
+    prefix = [script] if script else [sys.executable, "-m", "agentic_runner.launch"]
     return [*prefix, "run", "--org", org, "--root", str(root), "--login-agent"]
 
 
