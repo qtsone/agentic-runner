@@ -685,6 +685,7 @@ async def test_the_agents_model_runs_and_its_evidence_and_usage_name_it(tmp_path
     [request] = runtime.requests
     assert request.model == "gpt-5-codex"
     [evidence] = client.payloads("ralph.codex_run")
+    assert evidence["cli_kind"] == "codex_cli"
     assert evidence["model"] == "gpt-5-codex"
     [usage] = client.usage
     assert usage["model_name"] == "gpt-5-codex"
