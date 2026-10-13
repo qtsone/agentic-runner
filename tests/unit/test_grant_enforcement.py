@@ -15,6 +15,7 @@ from agentic_runner_contracts.grants import (
     ResourceRegistration,
 )
 from agentic_runner_contracts.grants.seam import decide_verb
+from agentic_runner_contracts.routing import selector_from_legacy
 
 REPOSITORY = "qtsone/agentic-os"
 
@@ -188,7 +189,7 @@ def test_the_snapshot_parses_the_reach_of_an_organisation_scoped_work_record() -
 
     snapshot = GrantSnapshot.from_payload(payload)
 
-    assert snapshot.runner_selector_of("product-1") == {"pool": "hetzner"}
-    assert snapshot.runner_selector_of("product-2") == {}
+    assert snapshot.runner_selector_of("product-1") == selector_from_legacy({"pool": "hetzner"})
+    assert snapshot.runner_selector_of("product-2") == ()
     assert snapshot.runner_selector_of("product-3") is None
     assert snapshot.product_of(identifier="other/repo") is None

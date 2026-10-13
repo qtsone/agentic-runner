@@ -135,7 +135,25 @@ CATALOGUE_V5: Final = VerbCatalogue(
     expands_mcp=True,
 )
 
-CURRENT_CATALOGUE_VERSION: Final = CATALOGUE_V5.version
+WORK_START_VERB: Final = "work.start"
+WORK_NAME_RUNNER_VERB: Final = "work.name_runner"
+
+# v6 makes an Agent's starting a Work Record and naming its Runner Grant verbs (ADR-0022
+# §11), so an Epic's Lead is not special: any Agent granted the verb may. `work.start`
+# also covers adding Work Tags (§33). Their seam is the control plane's intake, the
+# same shape as `work.open`; a person needs neither verb (§19). A new version so a `*` on
+# `work` saved under v5 does not silently let an Agent name Runners.
+CATALOGUE_V6: Final = VerbCatalogue(
+    version="v6",
+    verbs={
+        **CATALOGUE_V5.verbs,
+        "work": CATALOGUE_V5.verbs["work"] | {WORK_START_VERB, WORK_NAME_RUNNER_VERB},
+    },
+    reserved={},
+    expands_mcp=True,
+)
+
+CURRENT_CATALOGUE_VERSION: Final = CATALOGUE_V6.version
 
 _CATALOGUES: Final[dict[str, VerbCatalogue]] = {
     CATALOGUE_V1.version: CATALOGUE_V1,
@@ -143,6 +161,7 @@ _CATALOGUES: Final[dict[str, VerbCatalogue]] = {
     CATALOGUE_V3.version: CATALOGUE_V3,
     CATALOGUE_V4.version: CATALOGUE_V4,
     CATALOGUE_V5.version: CATALOGUE_V5,
+    CATALOGUE_V6.version: CATALOGUE_V6,
 }
 
 # ``mcp:<server>`` entries carry the *server's* tool names as verbs, not platform

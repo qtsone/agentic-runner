@@ -161,6 +161,73 @@ async def test_an_isolation_none_runner_starts_and_heartbeats_none(
     assert readiness.ready is False
 
 
+async def _run_until_connected(harness: Harness) -> int:
+    async def stop_once_connected() -> None:
+        await harness.plane.wait_for(lambda: bool(harness.connects))
+        harness.stop.set()
+
+    stopper = asyncio.create_task(stop_once_connected())
+    exit_code = await harness.run(can_change_uid=False)
+    stopper.cancel()
+    return exit_code
+
+
+@pytest.mark.asyncio
+async def test_a_runner_connects_to_the_temporal_address_its_registration_gave(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-0022 §4: the install carries only the platform URL and the token.
+    _environment(monkeypatch, tmp_path, isolation="none")
+    monkeypatch.delenv("TEMPORAL_ADDRESS")
+    harness = Harness(FakeControlPlane(temporal_address="temporal.plane.test:443"))
+
+    assert await _run_until_connected(harness) == 0
+
+    [connect] = harness.connects
+    assert connect["address"] == "temporal.plane.test:443"
+
+
+@pytest.mark.asyncio
+async def test_the_registration_address_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _environment(monkeypatch, tmp_path, isolation="none")
+    harness = Harness(FakeControlPlane(temporal_address="temporal.plane.test:443"))
+
+    assert await _run_until_connected(harness) == 0
+
+    [connect] = harness.connects
+    assert connect["address"] == "temporal.plane.test:443"
+
+
+@pytest.mark.asyncio
+async def test_a_registration_without_an_address_falls_back_to_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A control plane that predates §4 sends no address at all.
+    _environment(monkeypatch, tmp_path, isolation="none")
+    harness = Harness(FakeControlPlane())
+
+    assert await _run_until_connected(harness) == 0
+
+    [connect] = harness.connects
+    assert connect["address"] == "temporal.test:7233"
+
+
+@pytest.mark.asyncio
+async def test_a_runner_with_no_temporal_address_anywhere_refuses_to_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _environment(monkeypatch, tmp_path, isolation="none")
+    monkeypatch.delenv("TEMPORAL_ADDRESS")
+    harness = Harness(FakeControlPlane())
+
+    assert await harness.run(can_change_uid=False) == 1
+
+    assert harness.connects == []
+    assert "TEMPORAL_ADDRESS" in capsys.readouterr().out
+
+
 class FakeSecretsApi:
     """The Kubernetes Secrets endpoint for one name: 404 until created, 409 after."""
 

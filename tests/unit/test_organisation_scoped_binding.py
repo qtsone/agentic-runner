@@ -261,7 +261,7 @@ async def test_a_runner_whose_tags_miss_the_products_selector_refuses_the_reposi
         ("read", APP),
         ("branch", APP),
     ]
-    assert refused[0]["selector"] == {"zone": "eu"}
+    assert refused[0]["selector"] == [{"key": "zone", "operator": "In", "values": ["eu"]}]
     assert refused[0]["runner_id"] == str(RUNNER_ID)
 
 

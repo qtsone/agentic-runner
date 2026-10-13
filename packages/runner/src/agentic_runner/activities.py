@@ -3888,7 +3888,7 @@ class RunnerRalphActivities:
                 "event": "directive.repository_refused",
                 "product_id": product_id,
                 "runner_id": str(self._routing_identity.runner_id),
-                "selector": dict(selector or {}),
+                "selector": [requirement.as_payload() for requirement in selector or ()],
             },
         )
 

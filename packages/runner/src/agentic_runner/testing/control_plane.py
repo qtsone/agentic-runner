@@ -167,6 +167,8 @@ class FakeControlPlane:
     contract_id: UUID = DEFAULT_CONTRACT_ID
     agent_id: UUID = DEFAULT_AGENT_ID
     cli_kind: str = "codex_cli"
+    # Blank answers as a control plane from before ADR-0022 §4 does: no address at all.
+    temporal_address: str = ""
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)
     runner_ids: list[UUID] = field(default_factory=list)
@@ -396,8 +398,14 @@ class FakeControlPlane:
             contracts_floor=self.contracts_floor,
             host_party=self.host_party,
             heartbeat_interval_seconds=self.heartbeat_interval_seconds,
+            temporal_address=self.temporal_address,
         )
-        return _Answer(200, response.model_dump(mode="json"))
+        return _Answer(
+            200,
+            response.model_dump(
+                mode="json", exclude=None if self.temporal_address else {"temporal_address"}
+            ),
+        )
 
     def _heartbeat(self, method: str, target: str, headers: dict[str, str], body: bytes) -> _Answer:
         runner_id, runner = self._signed(method, target, headers, body)

@@ -264,6 +264,10 @@ class BootstrapResponse(BaseModel):
     host_party: str = ""
     heartbeat_interval_seconds: int = int(HEARTBEAT_INTERVAL.total_seconds())
     stale_after_seconds: int = int(HEARTBEAT_STALE_AFTER.total_seconds())
+    # ADR-0022 §4: the Temporal frontend the namespace lives on, so no install command
+    # carries it. Blank from a control plane that predates the field; the Runner then
+    # falls back to its own `TEMPORAL_ADDRESS`.
+    temporal_address: str = ""
 
 
 class SelfTestFailure(StrEnum):

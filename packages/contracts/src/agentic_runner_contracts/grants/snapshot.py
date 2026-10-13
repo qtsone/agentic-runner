@@ -19,6 +19,7 @@ from fnmatch import fnmatchcase
 from typing import Any, Final
 
 from agentic_runner_contracts.grants.model import EMPTY_GRANT, Grant
+from agentic_runner_contracts.routing import SelectorRequirement, selector_from_legacy
 
 REPO_RESOURCE_TYPE: Final = "repo"
 # PRD issue 51: a Channel is registered as a Product resource so root grants and
@@ -77,7 +78,13 @@ class ProductReach:
     """
 
     product_id: str
+    # The legacy map, kept beside ``runner_requirements`` so a Runner one minor behind
+    # still parses the snapshot (ADR-0013 §7). Both hold.
     runner_selector: Mapping[str, str]
+    runner_requirements: tuple[SelectorRequirement, ...] = ()
+
+    def selector_requirements(self) -> tuple[SelectorRequirement, ...]:
+        return (*selector_from_legacy(self.runner_selector), *self.runner_requirements)
 
 
 @dataclass(frozen=True)
@@ -167,6 +174,10 @@ class GrantSnapshot:
                         str(key): str(value)
                         for key, value in (product.get("runner_selector") or {}).items()
                     },
+                    runner_requirements=tuple(
+                        SelectorRequirement.from_payload(requirement)
+                        for requirement in product.get("runner_requirements") or ()
+                    ),
                 )
                 for product in payload.get("reach", ())
             ),
@@ -190,11 +201,15 @@ class GrantSnapshot:
             None,
         )
 
-    def runner_selector_of(self, product_id: str) -> Mapping[str, str] | None:
+    def runner_selector_of(self, product_id: str) -> tuple[SelectorRequirement, ...] | None:
         """The Product's Runner selector, or ``None`` if the Product is out of reach."""
 
         return next(
-            (product.runner_selector for product in self.reach if product.product_id == product_id),
+            (
+                product.selector_requirements()
+                for product in self.reach
+                if product.product_id == product_id
+            ),
             None,
         )
 
