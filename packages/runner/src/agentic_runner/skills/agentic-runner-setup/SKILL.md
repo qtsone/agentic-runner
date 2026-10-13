@@ -22,7 +22,6 @@ The prompt they pasted from the console holds these. Ask for any that is missing
 - **Control plane URL**: the Runner's `controlPlane.url`, copied from the console's
   Runners page. It is the only control plane address you use, and only as a value you
   pass to the Runner. Never call it or any other control plane address yourself.
-- **Temporal address**: `host:port`, from the same page.
 
 The **Runner Registration Token** is not one of them. It is the reusable credential a Runner registers
 with, and the person types it only where the Runner reads it, never into this
@@ -82,7 +81,7 @@ without showing it:
 
 ```sh
 uv tool install agentic-runner
-agentic-runner install <org> --control-plane <control-plane-url> --temporal-address <temporal-address>
+agentic-runner install <org> --control-plane <control-plane-url>
 ```
 
 You run the first line. Do not run the second yourself: wait until the person says it
@@ -91,7 +90,7 @@ finished, and ask for its last lines of output.
 **Docker.** Follow
 https://github.com/qtsone/agentic-runner/blob/main/docs/docker.md#the-env-file and then
 https://github.com/qtsone/agentic-runner/blob/main/docs/docker.md#docker-run. Create
-`runner.env` with the URL and the address filled in, and ask the person to add the Agent
+`runner.env` with the control plane URL filled in, and ask the person to add the Agent
 Token line to it themselves.
 
 **Kubernetes.** Follow

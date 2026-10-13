@@ -386,6 +386,48 @@ def test_a_reinstall_keeps_the_acp_cli_kinds_the_last_install_was_given(
     assert len(installed) == 3
 
 
+def test_install_needs_no_temporal_address_and_keeps_one_given_as_a_fallback(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QTS-1540: the Runner takes its Temporal address from registration (ADR-0022 §4)."""
+
+    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    installed: list[workstation.WorkstationSettings] = []
+
+    async def install(
+        org_paths: workstation.OrgPaths, settings: workstation.WorkstationSettings, **_: Any
+    ) -> list[str]:
+        installed.append(settings)
+        return []
+
+    monkeypatch.setenv(cli.AGENT_TOKEN_ENV, "agent-token-of-sixteen-plus")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(cli.workstation, "install", install)
+    flags = ["install", "acme", "--control-plane", CONTROL_PLANE, "--root", str(paths.root)]
+
+    assert cli.main(flags) == 0
+    assert installed[-1].temporal_address == ""
+    assert cli.main([*flags, "--temporal-address", "temporal.test:443"]) == 0
+    assert installed[-1].temporal_address == "temporal.test:443"
+
+
+def test_settings_saved_with_or_without_a_temporal_address_load(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    paths = workstation.OrgPaths(root=tmp_path, org="acme")
+    paths.create()
+    _settings(paths, str(bin_dir)).save(paths)
+    loaded = workstation.WorkstationSettings.load(paths)
+    assert workstation.run_environment(paths, loaded)["TEMPORAL_ADDRESS"] == (
+        "temporal-grpc.test:443"
+    )
+
+    saved = json.loads(paths.settings_file.read_text())
+    del saved["temporal_address"]
+    paths.settings_file.write_text(json.dumps(saved))
+    assert workstation.WorkstationSettings.load(paths).temporal_address == ""
+
+
 # ------------------------------------------------------------------ the CLIs
 
 

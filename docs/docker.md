@@ -7,12 +7,13 @@ One container is one Runner, on any Docker host, from the published image
 
 ## Before you start
 
-You need three values from your Organisation's Admin, all on the Organisation Console's
+You need two values from your Organisation's Admin, both on the Organisation Console's
 **Runners** page:
 
 - the **Runner Registration Token**, shown once when it is minted;
-- the control plane's Runner edge, `https://api.agentic.<zone>`;
-- the Temporal address, `temporal-grpc.<zone>:443`.
+- the control plane's Runner edge, `https://api.agentic.<zone>`.
+
+The Runner learns its Temporal address when it registers.
 
 Pick an image version from the [releases](https://github.com/qtsone/agentic-runner/releases)
 and pin it. `latest` moves.
@@ -20,8 +21,7 @@ and pin it. `latest` moves.
 ## The env file
 
 Copy [`examples/runner.env.example`](../examples/runner.env.example) to `runner.env`, fill in
-the control plane URL, the Temporal address and the Runner Registration Token, and keep it
-private:
+the control plane URL and the Runner Registration Token, and keep it private:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/qtsone/agentic-runner/main/examples/runner.env.example
