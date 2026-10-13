@@ -125,7 +125,6 @@ def _fill(words: list[str], root: Path) -> list[str]:
     values = {
         "<org>": "acme",
         "<control-plane-url>": CONTROL_PLANE,
-        "<temporal-address>": "temporal-grpc.test:443",
         "<reference>": "OPENAI_API_KEY",
     }
     for placeholder, value in values.items():
@@ -148,7 +147,8 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     bin_dir.mkdir()
     (bin_dir / "claude").write_text("#!/bin/sh\necho '2.1.279 (Claude Code)'\n")
     (bin_dir / "claude").chmod(0o755)
-    plane = FakeControlPlane(host_party="user")
+    # The skill passes no Temporal address: the Runner takes it from here (QTS-1540).
+    plane = FakeControlPlane(host_party="user", temporal_address="temporal-grpc.test:443")
     real_install = workstation.install
 
     async def install_against_the_fake(*args: Any, **kwargs: Any) -> list[str]:
@@ -177,7 +177,9 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     assert cli.main(credential) == 0
     assert FileCredentialStore(paths.credentials).get("OPENAI_API_KEY") == SECRET_VALUE
 
-    await _start_the_login_agent(paths, plane, monkeypatch=monkeypatch)
+    assert await _start_the_login_agent(paths, plane, monkeypatch=monkeypatch) == (
+        "temporal-grpc.test:443"
+    )
     assert cli.main(status) == 0
 
     out = capsys.readouterr().out
@@ -189,8 +191,11 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
 
 async def _start_the_login_agent(
     paths: workstation.OrgPaths, plane: FakeControlPlane, *, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """What the login agent ``install`` wrote does: ``run --org``, until it is heard once."""
+) -> str:
+    """What the login agent ``install`` wrote does: ``run --org``, until it is heard once.
+
+    Returns the Temporal address the Runner connected to.
+    """
 
     settings = workstation.WorkstationSettings.load(paths)
     for name, value in workstation.run_environment(paths, settings).items():
@@ -209,7 +214,10 @@ async def _start_the_login_agent(
         async def shutdown(self) -> None:
             self._done.set()
 
-    async def connect(*_: Any, **__: Any) -> Any:
+    connected_to: list[str] = []
+
+    async def connect(address: str, **_: Any) -> Any:
+        connected_to.append(address)
         return type("Client", (), {"api_key": None})()
 
     async def stop_once_heard() -> None:
@@ -235,3 +243,5 @@ async def _start_the_login_agent(
         )
     await stopper
     assert code == 0
+    [address] = connected_to
+    return address

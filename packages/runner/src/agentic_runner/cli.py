@@ -164,7 +164,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--control-plane", default=os.environ.get(CONTROL_PLANE_ENV), help="control plane URL"
     )
     install.add_argument(
-        "--temporal-address", required=True, help="host:port, e.g. temporal-grpc.<zone>:443"
+        "--temporal-address",
+        default="",
+        help="host:port; a fallback only, the Runner uses the address its registration gives",
     )
     install.add_argument(
         "--temporal-plaintext",

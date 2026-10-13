@@ -43,10 +43,9 @@ macOS (`tests/install/workstation.sh`).
 3. **A Contract whose Runner is hosted by you.** Only your Contracts with `runner_host:
    user` route to your Runner. If yours says the Organisation, ask the Admin to change it.
 4. **The install command.** **/me/runners** (after minting) and the Organisation
-   Console's Runners page show it for your Organisation, with the
-   control plane URL and the Temporal address filled in. Copy both values from there: they
-   are set independently and need not share a domain, so neither can be guessed from the
-   other.
+   Console's Runners page show it for your Organisation, with the control plane URL filled
+   in. Copy it from there. The Runner learns its Temporal address when it registers;
+   `--temporal-address` is a fallback for a control plane that does not send one.
 
 ## Install
 
@@ -59,9 +58,7 @@ Then install one Runner per Organisation you work for. `acme` is your local name
 lowercase letters, digits and `-`.
 
 ```sh
-agentic-runner install acme \
-  --control-plane <control-plane URL from the Runners page> \
-  --temporal-address <Temporal address from the Runners page>
+agentic-runner install acme --control-plane <control-plane URL from the Runners page>
 # Runner Registration Token (yours from /me/runners, or the Organisation Admin's for an Organisation Runner): ********
 ```
 

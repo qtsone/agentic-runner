@@ -198,7 +198,9 @@ class WorkstationSettings(BaseModel):
 
     org: str
     control_plane_url: str
-    temporal_address: str
+    # A fallback only: `run` uses the address the registration response carries (ADR-0022
+    # §4). An install made before 3.17 saved one and keeps it.
+    temporal_address: str = ""
     # `temporal-grpc.<zone>` over TLS with the Runner Token (15's note on 23): no VPN, no
     # client certificate. Plaintext exists for a local dev server only.
     temporal_tls: bool = True

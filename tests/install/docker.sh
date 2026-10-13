@@ -48,7 +48,7 @@ docker run -d --name temporal --network "${network}" temporalio/admin-tools:1.32
 
 cp "${repo}"/examples/compose.yaml "${repo}"/examples/compose.isolation-none.yaml "${work}/"
 sed -e 's|^AGENTIC_CONTROL_PLANE_URL=.*|AGENTIC_CONTROL_PLANE_URL=http://fake-control-plane:8000|' \
-  -e 's|^TEMPORAL_ADDRESS=.*|TEMPORAL_ADDRESS=temporal:7233|' \
+  -e 's|^# TEMPORAL_ADDRESS=.*|TEMPORAL_ADDRESS=temporal:7233|' \
   -e 's|^AGENTIC_TEMPORAL_TLS=.*|AGENTIC_TEMPORAL_TLS=false|' \
   -e 's|^AGENTIC_RUNNER_REGISTRATION_TOKEN=.*|AGENTIC_RUNNER_REGISTRATION_TOKEN=docker-test-registration-token-0123|' \
   "${repo}/examples/runner.env.example" > "${work}/runner.env"
