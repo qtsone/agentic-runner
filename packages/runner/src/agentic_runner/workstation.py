@@ -7,6 +7,8 @@ precedent does on a developer machine and nothing a daemon would need:
   identity, namespace, Runner Token, hooks, credential store and Workspaces under
   ``<root>/<org>/``. A contractor with two clients runs two. There is no supervisor over
   N Organisations -- that is the "one Runner straddling Organisations" 12 A6 rejected.
+  ``add <name>`` puts another such process beside them, a personal Runner per Contract
+  (ADR-0022 §21), named freely rather than after its Organisation.
 * **A login agent, never a system daemon** (23 item 1): a LaunchAgent in
   ``~/Library/LaunchAgents`` on macOS, a systemd *user* unit (with linger) on Linux, a
   per-user logon task on Windows. No ``sudo`` anywhere: the login keychain is unreachable
@@ -81,6 +83,7 @@ __all__ = [
     "run_environment",
     "run_process",
     "service_definition",
+    "settings_to_add",
     "start",
     "status_lines",
     "stop",
@@ -671,6 +674,48 @@ async def install(
         lines.append(f"started        {state.runner_id}")
         lines.extend(next_step_lines(state.host_party))
     return lines
+
+
+def settings_to_add(paths: OrgPaths, *, beside: str | None) -> WorkstationSettings:
+    """``add <name>``: what ``install`` registers another Runner with (ADR-0022 §21).
+
+    A personal Runner serves one Contract, so a person with three Contracts runs three. Each
+    is ``install``'s own process with its own state directory -- identity, Runner Token and
+    Recipient Key (§37) -- and only the settings an earlier ``install`` was told are copied,
+    so the command the console shows carries no Temporal address.
+    """
+
+    if paths.settings_file.is_file():
+        raise ValueError(
+            f"{paths.org!r} is already installed under {paths.root}; pick a new name for "
+            "the Runner you are adding"
+        )
+    return _settings_beside(paths.root, beside).model_copy(update={"org": paths.org})
+
+
+def _settings_beside(root: Path, beside: str | None) -> WorkstationSettings:
+    if beside is not None:
+        return WorkstationSettings.load(OrgPaths(root=root, org=validate_org(beside)))
+    installed = [
+        WorkstationSettings.load(OrgPaths(root=root, org=file.parent.name))
+        for file in sorted(root.glob("*/workstation.json"), key=lambda file: file.stat().st_mtime)
+    ]
+    if not installed:
+        raise FileNotFoundError(
+            f"no Runner is installed under {root}; run `agentic-runner install` first"
+        )
+    endpoints = {
+        (settings.control_plane_url, settings.temporal_address, settings.temporal_tls)
+        for settings in installed
+    }
+    if len(endpoints) > 1:
+        names = ", ".join(sorted(settings.org for settings in installed))
+        raise ValueError(
+            f"the Runners under {root} ({names}) talk to different control planes; "
+            "name the one to add beside with --beside"
+        )
+    # The newest install's PATH and ACP kinds: the latest the person told this machine.
+    return installed[-1]
 
 
 def start(paths: OrgPaths, **driver: Any) -> None:
