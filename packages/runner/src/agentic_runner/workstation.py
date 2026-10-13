@@ -685,7 +685,9 @@ def settings_to_add(paths: OrgPaths, *, beside: str | None) -> WorkstationSettin
     so the command the console shows carries no Temporal address.
     """
 
-    if paths.settings_file.is_file():
+    # Registered state, not workstation.json: ``install`` saves the settings before it
+    # registers, so a refused token leaves them behind and the retry must go through.
+    if load_state(paths.state_dir) is not None:
         raise ValueError(
             f"{paths.org!r} is already installed under {paths.root}; pick a new name for "
             "the Runner you are adding"

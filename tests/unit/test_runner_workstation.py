@@ -304,6 +304,44 @@ async def test_an_added_runner_has_its_own_identity_and_recipient_key(
         open_sealed(private_key=billing_pair.private_key, binding=binding, ciphertext=sealed)
 
 
+@pytest.mark.asyncio
+async def test_add_after_a_refused_token_retries_under_the_same_name(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    root = tmp_path / "state"
+    first = workstation.OrgPaths(root=root, org="acme")
+    second = workstation.OrgPaths(root=root, org="acme-billing")
+    plane = FakeControlPlane(host_party="user")
+
+    def refuse(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "registration token is not valid"})
+
+    async def register(settings: Any, paths: workstation.OrgPaths, transport: Any) -> None:
+        async with httpx.AsyncClient(transport=transport) as http:
+            await workstation.install(
+                paths,
+                settings,
+                registration_token="token-of-sixteen-plus-chars",
+                platform="darwin",
+                home=tmp_path / "home",
+                run=Commands(),
+                http_client=http,
+            )
+
+    await register(_settings(first, str(bin_dir)), first, plane.transport())
+    with pytest.raises(RuntimeError):
+        await register(
+            workstation.settings_to_add(second, beside=None), second, httpx.MockTransport(refuse)
+        )
+    assert second.settings_file.is_file() and load_state(second.state_dir) is None
+
+    await register(workstation.settings_to_add(second, beside=None), second, plane.transport())
+
+    assert load_state(second.state_dir) is not None
+    with pytest.raises(ValueError, match="already installed"):
+        workstation.settings_to_add(second, beside=None)
+
+
 def test_add_refuses_a_taken_name_no_install_and_an_ambiguous_one(
     tmp_path: Path, bin_dir: Path
 ) -> None:
@@ -317,8 +355,6 @@ def test_add_refuses_a_taken_name_no_install_and_an_ambiguous_one(
         paths.create()
         _settings(paths, str(bin_dir), control_plane_url=plane).save(paths)
 
-    with pytest.raises(ValueError, match="already installed"):
-        workstation.settings_to_add(workstation.OrgPaths(root=root, org="acme"), beside=None)
     with pytest.raises(ValueError, match="--beside"):
         workstation.settings_to_add(new, beside=None)
     chosen = workstation.settings_to_add(new, beside="globex")
@@ -354,7 +390,7 @@ def test_the_add_command_registers_beside_the_install_without_a_temporal_address
     assert settings.acp_cli_kinds == "claude_code"
     assert started
 
-    assert cli.main(["add", "acme", "--root", str(root)]) == 1
+    assert cli.main(["add", "acme", "--root", str(tmp_path / "no-install")]) == 1
     assert len(installed) == 1
 
 
