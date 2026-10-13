@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from agentic_runner.llm_proxy import attempt_env
 from agentic_runner.service import build_agent_runtimes
 from agentic_runner.workers._runtime_support import SubprocessResult
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
@@ -54,6 +55,9 @@ class FakeRunner:
         return self.result
 
 
+PROXY_ENV = attempt_env("claude_code", base_url="http://127.0.0.1:9/a/attempt", token="bearer")
+
+
 def _settings(tmp_path: Path, **overrides: object) -> WorkerSettings:
     base: dict[str, object] = {
         "TEMPORAL_ADDRESS": "127.0.0.1:7233",
@@ -69,7 +73,6 @@ def _settings(tmp_path: Path, **overrides: object) -> WorkerSettings:
 
 def _enabled_settings(tmp_path: Path, **overrides: object) -> WorkerSettings:
     enabled: dict[str, object] = {
-        "ANTHROPIC_API_KEY": "sk-ant-worker-key",
         "CLAUDE_MODEL": "claude-opus-4-8",
         "CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS": True,
     }
@@ -83,12 +86,13 @@ def _request(workspace: Path) -> DirectiveRequest:
         prompt="Apply the fix",
         base_branch="main",
         work_branch="wr/claude",
+        extra_env=tuple(PROXY_ENV.items()),
     )
 
 
 @pytest.mark.asyncio
-async def test_execute_directive_refuses_without_api_key_and_permission(tmp_path: Path) -> None:
-    settings = _settings(tmp_path)  # no API key, permissions not granted
+async def test_execute_directive_refuses_without_permission(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)  # permissions not granted
     workspace = settings.WORKSPACE_ROOT / "wr" / "repo"
     workspace.mkdir(parents=True)
     runner = FakeRunner(SubprocessResult(exit_code=0, stdout="ok", stderr=""))
@@ -99,7 +103,7 @@ async def test_execute_directive_refuses_without_api_key_and_permission(tmp_path
     assert result.exit_code == 126
     assert runner.calls == []
     assert result.evidence.guard_mode.startswith("refused")
-    assert "API key" in result.error
+    assert "autonomous permission" in result.error
 
 
 @pytest.mark.asyncio
@@ -121,7 +125,7 @@ async def test_execute_directive_invokes_claude_print_bare_in_workspace(tmp_path
     assert "--dangerously-skip-permissions" in call.argv
     assert all("Apply the fix" not in argument for argument in call.argv)
     assert call.cwd == workspace
-    assert call.env == {"ANTHROPIC_API_KEY": "sk-ant-worker-key"}
+    assert call.env == PROXY_ENV
     assert call.stdin == "Apply the fix"
     assert call.timeout_seconds == settings.CLAUDE_CLI_TIMEOUT_SECONDS
     assert call.output_limit_bytes == settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES
@@ -155,7 +159,7 @@ async def test_execute_directive_runs_the_agents_model_over_the_runner_default(
 
 @pytest.mark.asyncio
 async def test_execute_directive_redacts_api_key_and_secrets(tmp_path: Path) -> None:
-    settings = _enabled_settings(tmp_path, ANTHROPIC_API_KEY="sk-ant-supersecret-9999")
+    settings = _enabled_settings(tmp_path)
     workspace = settings.WORKSPACE_ROOT / "wr" / "repo"
     workspace.mkdir(parents=True)
     leaky_stdout = (

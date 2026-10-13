@@ -25,6 +25,7 @@ from agentic_runner.activities import (
     _liveness_heartbeats,
 )
 from agentic_runner.attempts import AttemptRecords, PriorAttemptAliveError, process_start_time
+from agentic_runner.llm_proxy import attempt_env
 from agentic_runner.workers._runtime_support import SubprocessResult, run_subprocess_exec
 from agentic_runner.workers.agent_runtime import (
     AgentRuntime,
@@ -37,6 +38,11 @@ from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.settings import WorkerSettings
+
+# Claude Code runs api_key only, on the attempt's LLM proxy endpoint (QTS-1520).
+CLAUDE_PROXY_ENV = tuple(
+    attempt_env("claude_code", base_url="http://127.0.0.1:9/a/attempt", token="b").items()
+)
 
 _CONTRACT = "contract-a"
 _SESSION = "0199a3f2-6b1e-7c4d-9e8f-0a1b2c3d4e5f"
@@ -347,7 +353,6 @@ def _settings(tmp_path: Path) -> WorkerSettings:
         CODEX_ASK_FOR_APPROVAL="never",
         CODEX_STRICT_CONFIG=True,
         CODEX_POLICY_HOOK_CONFIGURED=True,
-        ANTHROPIC_API_KEY="sk-ant-worker-key",
         CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=True,
     )
 
@@ -362,6 +367,10 @@ def _request(tmp_path: Path, **fields: Any) -> DirectiveRequest:
         work_branch="wr/a",
         **({"auth_mode": AuthMode.SUBSCRIPTION} | fields),
     )
+
+
+def _claude_request(tmp_path: Path, **fields: Any) -> DirectiveRequest:
+    return _request(tmp_path, auth_mode=AuthMode.API_KEY, extra_env=CLAUDE_PROXY_ENV, **fields)
 
 
 def _sandbox(tmp_path: Path) -> DirectiveSandbox:
@@ -383,7 +392,7 @@ async def test_claude_names_a_fresh_session_before_it_spawns(tmp_path: Path) -> 
         return await runner(**kwargs)
 
     await ClaudeRuntime(settings=_settings(tmp_path), runner=spy).execute_directive(
-        _request(tmp_path, on_session_started=reported.append)
+        _claude_request(tmp_path, on_session_started=reported.append)
     )
 
     [session] = reported
@@ -398,7 +407,7 @@ async def test_claude_resumes_the_session_it_is_given(tmp_path: Path) -> None:
     reported: list[str] = []
 
     await ClaudeRuntime(settings=_settings(tmp_path), runner=runner).execute_directive(
-        _request(tmp_path, resume_session_id=_SESSION, on_session_started=reported.append)
+        _claude_request(tmp_path, resume_session_id=_SESSION, on_session_started=reported.append)
     )
 
     argv = runner.calls[0]["argv"]
@@ -412,7 +421,7 @@ async def test_claude_without_a_session_hook_runs_as_before(tmp_path: Path) -> N
     runner = _FakeRunner()
 
     await ClaudeRuntime(settings=_settings(tmp_path), runner=runner).execute_directive(
-        _request(tmp_path)
+        _claude_request(tmp_path)
     )
 
     assert not {"--session-id", "--resume"} & set(runner.calls[0]["argv"])

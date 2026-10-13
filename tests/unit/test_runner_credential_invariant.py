@@ -51,6 +51,15 @@ CREDENTIAL_ENV_DENYLIST = (
     "DATABASE_URL",
 )
 
+# Provider keys a Runner host may carry in its own environment (QTS-1520).
+HOST_PROVIDER_KEYS = {
+    "ANTHROPIC_API_KEY": "sk-ant-host-key",
+    "OPENAI_API_KEY": "sk-openai-host-key",
+    "CODEX_API_KEY": "sk-codex-host-key",
+    "GEMINI_API_KEY": "gemini-host-key",
+    "GOOGLE_API_KEY": "google-host-key",
+}
+
 
 def _settings(tmp_path: Path) -> WorkerSettings:
     return WorkerSettings(
@@ -62,7 +71,6 @@ def _settings(tmp_path: Path) -> WorkerSettings:
         CODEX_ASK_FOR_APPROVAL="never",
         CODEX_STRICT_CONFIG=True,
         CODEX_POLICY_HOOK_CONFIGURED=True,
-        ANTHROPIC_API_KEY="sk-ant-test-key",
         CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=True,
     )
 
@@ -77,10 +85,16 @@ def _request(workspace: Path, auth_mode: AuthMode = AuthMode.API_KEY) -> Directi
     )
 
 
-def _sign_in_mode(runtime_class: type[CodexRuntime] | type[ClaudeRuntime]) -> AuthMode:
-    # Codex on its harness-root sign-in: an api_key Codex Directive with no LLM proxy endpoint
-    # is refused before spawn (LA-04), so these tests would see no child env at all.
-    return AuthMode.SUBSCRIPTION if runtime_class is CodexRuntime else AuthMode.API_KEY
+def _runnable_request(
+    runtime_class: type[CodexRuntime] | type[ClaudeRuntime], workspace: Path
+) -> DirectiveRequest:
+    # An api_key Directive with no LLM proxy endpoint is refused before spawn (LA-04,
+    # QTS-1520), so these tests would see no child env at all: Codex runs on its
+    # harness-root sign-in, Claude Code (api_key only) on the proxy pair.
+    if runtime_class is CodexRuntime:
+        return _request(workspace, AuthMode.SUBSCRIPTION)
+    proxy_env = attempt_env("claude_code", base_url="http://127.0.0.1:9/a/attempt", token="b")
+    return replace(_request(workspace), extra_env=tuple(proxy_env.items()))
 
 
 class _EnvCapturingRunner:
@@ -108,7 +122,7 @@ async def test_the_directive_subprocess_carries_no_git_or_github_credential(
     runner = _EnvCapturingRunner()
 
     await runtime_class(settings=_settings(tmp_path), runner=runner).execute_directive(
-        _request(workspace, _sign_in_mode(runtime_class))
+        _runnable_request(runtime_class, workspace)
     )
 
     assert runner.env, "the runtime must build an explicit child environment, not inherit one"
@@ -135,14 +149,16 @@ async def test_the_attempt_env_gains_the_callback_pair_and_the_hooks_safe_export
     settings = _settings(tmp_path)
     baseline = _EnvCapturingRunner()
     await runtime_class(settings=settings, runner=baseline).execute_directive(
-        _request(workspace, _sign_in_mode(runtime_class))
+        _runnable_request(runtime_class, workspace)
     )
     amended = _EnvCapturingRunner()
 
+    runnable = _runnable_request(runtime_class, workspace)
     await runtime_class(settings=settings, runner=amended).execute_directive(
         replace(
-            _request(workspace, _sign_in_mode(runtime_class)),
+            runnable,
             extra_env=(
+                *runnable.extra_env,
                 (CALLBACK_SOCKET_ENV, "/run/agentic-runner/abc/s.sock"),
                 (CALLBACK_TOKEN_ENV, "attempt-bearer"),
                 ("BUILD_FLAVOUR", "fast"),
@@ -195,6 +211,59 @@ async def test_the_llm_proxy_replaces_the_provider_key_it_does_not_sit_beside_it
     assert runner.env.get("ANTHROPIC_BASE_URL", runner.env.get("OPENAI_BASE_URL", "")).startswith(
         "http://127.0.0.1:9/a/attempt"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_class", (CodexRuntime, ClaudeRuntime))
+@pytest.mark.parametrize("through_proxy", (True, False), ids=("proxy", "no-proxy"))
+@pytest.mark.parametrize("auth_mode", tuple(AuthMode))
+async def test_no_host_provider_key_reaches_the_agent_runtime(
+    runtime_class: type[CodexRuntime] | type[ClaudeRuntime],
+    through_proxy: bool,
+    auth_mode: AuthMode,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QTS-1520: a Credential Reference's value never reaches the Agent Runtime, and the
+    Runner host's own provider keys are no exception. With the proxy the subprocess holds
+    the attempt's bearer; without it, there is nothing for it to hold.
+    """
+
+    for name, value in HOST_PROVIDER_KEYS.items():
+        monkeypatch.setenv(name, value)
+    workspace = tmp_path / "workspaces" / "repo"
+    workspace.mkdir(parents=True)
+    runner = _EnvCapturingRunner()
+    cli_kind = "claude_code" if runtime_class is ClaudeRuntime else "codex_cli"
+    proxy_env = attempt_env(cli_kind, base_url="http://127.0.0.1:9/a/attempt", token="bearer")
+
+    await runtime_class(settings=_settings(tmp_path), runner=runner).execute_directive(
+        replace(
+            _request(workspace, auth_mode),
+            extra_env=tuple(proxy_env.items()) if through_proxy else (),
+        )
+    )
+
+    assert not set(HOST_PROVIDER_KEYS.values()) & set(runner.env.values())
+    assert {
+        name: value for name, value in runner.env.items() if name.endswith(("_API_KEY", "_TOKEN"))
+    } in ({}, {name: "bearer" for name in proxy_env if name.endswith(("_API_KEY", "_TOKEN"))})
+
+
+@pytest.mark.asyncio
+async def test_claude_code_without_the_llm_proxy_fails_closed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspaces" / "repo"
+    workspace.mkdir(parents=True)
+    runner = _EnvCapturingRunner()
+
+    result = await ClaudeRuntime(settings=_settings(tmp_path), runner=runner).execute_directive(
+        _request(workspace)
+    )
+
+    assert runner.argv == []
+    assert result.exit_code == 126
+    assert result.evidence.guard_mode == "refused: api_key mode without an LLM proxy endpoint"
+    assert "LLM proxy endpoint" in result.error
 
 
 def test_a_hook_may_not_point_the_agent_at_an_endpoint_of_its_own(tmp_path: Path) -> None:

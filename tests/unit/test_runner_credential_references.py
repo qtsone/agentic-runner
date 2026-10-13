@@ -26,12 +26,18 @@ from agentic_runner.credentials import (
     UnresolvableCredentialReferenceError,
 )
 from agentic_runner.hooks import DIRECTIVE_HOOK_ORDER, AttemptFacts, build_hook_env
+from agentic_runner.llm_proxy import attempt_env
 from agentic_runner.service import build_credential_resolver
 from agentic_runner.workers._runtime_support import SubprocessResult
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
 from agentic_runner.workers.settings import WorkerSettings
+
+# Claude Code runs api_key only, on the attempt's LLM proxy endpoint (QTS-1520).
+CLAUDE_PROXY_ENV = tuple(
+    attempt_env("claude_code", base_url="http://127.0.0.1:9/a/attempt", token="b").items()
+)
 
 CONTRACT = "6f1d4f3a-2b58-4c7e-9a10-0d5e8c3b7f42"
 REFERENCE = "acme_deploy_token"
@@ -85,7 +91,6 @@ def _settings(tmp_path: Path) -> WorkerSettings:
         CODEX_ASK_FOR_APPROVAL="never",
         CODEX_STRICT_CONFIG=True,
         CODEX_POLICY_HOOK_CONFIGURED=True,
-        ANTHROPIC_API_KEY="sk-ant-test-key",
         CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS=True,
     )
 
@@ -218,9 +223,12 @@ async def test_a_resolved_value_is_absent_from_the_agent_subprocess_env(
     workspace = tmp_path / "workspaces" / "repo"
     workspace.mkdir(parents=True)
     runner = _EnvCapturingRunner()
-    # Codex on its harness-root sign-in: an api_key Codex Directive with no LLM proxy endpoint
-    # is refused before spawn (LA-04), which would hide what this test checks.
-    auth_mode = AuthMode.SUBSCRIPTION if runtime_class is CodexRuntime else AuthMode.API_KEY
+    # An api_key Directive with no LLM proxy endpoint is refused before spawn (LA-04,
+    # QTS-1520), which would hide what this test checks: Codex runs on its harness-root
+    # sign-in, Claude Code on the proxy pair.
+    codex = runtime_class is CodexRuntime
+    auth_mode = AuthMode.SUBSCRIPTION if codex else AuthMode.API_KEY
+    extra_env = () if codex else CLAUDE_PROXY_ENV
 
     await runtime_class(settings=_settings(tmp_path), runner=runner).execute_directive(
         DirectiveRequest(
@@ -229,6 +237,7 @@ async def test_a_resolved_value_is_absent_from_the_agent_subprocess_env(
             base_branch="main",
             work_branch="agent/work",
             auth_mode=auth_mode,
+            extra_env=extra_env,
         )
     )
 

@@ -115,10 +115,6 @@ class WorkerSettings(BaseSettings):
         default=False,
         description="Worker assertion that Codex policy hook or permission profile is configured",
     )
-    ANTHROPIC_API_KEY: str = Field(
-        default="",
-        description="Claude Code runtime API key (api_key auth model; redacted from evidence)",
-    )
     CLAUDE_MODEL: str = Field(
         default="claude-opus-4-8",
         description="Model id the Claude Code runtime runs with",
