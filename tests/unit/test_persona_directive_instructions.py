@@ -139,6 +139,7 @@ def test_codex_evidence_records_persona_attribution_and_prompt_truncation() -> N
 
     payload = _codex_evidence_payload(
         _directive_result(),
+        cli_kind="codex_cli",
         persona_slug="dev-engineer",
         persona_instructions=_INSTRUCTIONS,
         prompt_notes=prompt_notes,
@@ -152,7 +153,7 @@ def test_codex_evidence_records_persona_attribution_and_prompt_truncation() -> N
 
 
 def test_codex_evidence_without_persona_records_null_attribution() -> None:
-    payload = _codex_evidence_payload(_directive_result())
+    payload = _codex_evidence_payload(_directive_result(), cli_kind="codex_cli")
 
     assert payload["persona_slug"] is None
     assert payload["persona_instructions_hash"] is None

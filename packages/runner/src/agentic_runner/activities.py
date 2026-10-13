@@ -1490,6 +1490,7 @@ def _persona_instructions_hash(instructions: str) -> str | None:
 def _codex_evidence_payload(
     codex_result: DirectiveResult,
     *,
+    cli_kind: str,
     persona_slug: str | None = None,
     persona_instructions: str = "",
     prompt_notes: list[str] | None = None,
@@ -1517,6 +1518,7 @@ def _codex_evidence_payload(
         ),
         "command_hash": codex_result.command_hash,
         # What ran, which the Agent's configuration alone does not prove (ADR-0021).
+        "cli_kind": cli_kind,
         "model": codex_result.model or None,
         "workspace": asdict(codex_result.evidence),
         "persona_slug": persona_slug,
@@ -2145,6 +2147,7 @@ class RunnerRalphActivities:
                 source="ralph.codex_run",
                 payload=_codex_evidence_payload(
                     codex_result,
+                    cli_kind=runtime_state.cli_kind,
                     persona_slug=runtime_state.persona_slug,
                     persona_instructions=runtime_state.persona_instructions,
                     prompt_notes=prompt_notes,
@@ -5352,6 +5355,7 @@ class RunnerRalphActivities:
                     "agent_id": state.agent_id,
                     **_codex_evidence_payload(
                         codex_result,
+                        cli_kind=state.cli_kind,
                         persona_slug=state.persona_slug,
                         persona_instructions=state.persona_instructions,
                         prompt_notes=prompt_notes,
