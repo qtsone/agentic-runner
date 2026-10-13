@@ -86,7 +86,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # legacy map alone; `DirectiveRouting.funding_party`; Grant catalogue v6 (`work.start`,
 # `work.name_runner`); `BootstrapResponse.temporal_address`. The response forbids extra
 # keys, so the control plane must send the address only to a Runner whose bootstrap
-# names contracts 3.17 or later.
+# names contracts 3.17 or later. A minor although the Python surface breaks --
+# `selector_satisfied` and `narrow_selector` take and return requirements, and
+# `GrantSnapshot.runner_selector_of` returns them -- because the wire does not: the only
+# caller of those functions is the control plane, which moves both pins in one PR (RR-04).
+# A Runner on 3.16 ignores the requirements and checks the legacy map alone, which is
+# safe only because routing itself is the control plane's.
 __version__ = "3.16.2"
 
 __all__ = ["__version__"]

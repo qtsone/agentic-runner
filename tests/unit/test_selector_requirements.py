@@ -8,8 +8,6 @@ it matched.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from temporalio.converter import DataConverter
 
@@ -148,7 +146,7 @@ def test_a_converted_legacy_map_matches_exactly_what_it_matched(legacy: dict[str
     assert selector_satisfied(selector_from_legacy(legacy), TAGS) is before
 
 
-def _decode(payload: dict[str, Any]) -> DirectiveRouting:
+def _decode(payload: object) -> DirectiveRouting:
     converter = DataConverter.default.payload_converter
     [encoded] = converter.to_payloads([payload])
     [decoded] = converter.from_payloads([encoded], [DirectiveRouting])
@@ -162,11 +160,8 @@ def test_routing_carries_requirements_over_the_wire() -> None:
         host_party="organisation",
         requirements=(_req("product", IN, "a", "b"), _req("zone", DOES_NOT_EXIST)),
     )
-    converter = DataConverter.default.payload_converter
-    [encoded] = converter.to_payloads([routing])
-    [decoded] = converter.from_payloads([encoded], [DirectiveRouting])
 
-    assert decoded == routing
+    assert _decode(routing) == routing
 
 
 def test_a_routing_payload_from_before_requirements_still_decodes() -> None:
@@ -175,7 +170,7 @@ def test_a_routing_payload_from_before_requirements_still_decodes() -> None:
     )
 
     assert decoded.requirements == ()
-    assert decoded.matched_on() == (_req("region", IN, "eu"),)
+    assert decoded.selector_requirements() == (_req("region", IN, "eu"),)
 
 
 def test_routing_is_matched_on_its_legacy_map_and_its_requirements_together() -> None:
@@ -186,7 +181,10 @@ def test_routing_is_matched_on_its_legacy_map_and_its_requirements_together() ->
         requirements=(_req("product", NOT_IN, "c"),),
     )
 
-    assert routing.matched_on() == (_req("gpu", EXISTS), _req("product", NOT_IN, "c"))
+    assert routing.selector_requirements() == (
+        _req("gpu", EXISTS),
+        _req("product", NOT_IN, "c"),
+    )
 
 
 def test_a_product_reach_reads_its_legacy_map_and_its_requirements() -> None:

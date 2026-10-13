@@ -92,7 +92,7 @@ class SelectorRequirement:
 
 
 def selector_satisfied(selector: Iterable[SelectorRequirement], tags: Mapping[str, str]) -> bool:
-    """Whether ``tags`` satisfies every requirement of ``selector``."""
+    """Whether ``tags`` satisfies every requirement of ``selector`` (25 §9: all AND-ed)."""
 
     return all(requirement.satisfied_by(tags) for requirement in selector)
 
@@ -176,14 +176,14 @@ class DirectiveRouting:
     # wipe-and-reassign the departing one the wipe removes. `assert_routed` does not read
     # it: the single-Contract lock is held control-plane-side by `current_contract_id`.
     contract_id: str = ""
-    # ADR-0022 §22: the selector as requirements. The Runner holds both fields.
+    # ADR-0022 §22: the selector as requirements. It and the legacy map must both hold.
     requirements: tuple[SelectorRequirement, ...] = ()
     # `organisation` | `user` -- who pays for the Contract. The Runner lends its host's own
     # secrets only when this is its host (ADR-0022 §36). Blank from a control plane that
     # predates the field.
     funding_party: str = ""
 
-    def matched_on(self) -> tuple[SelectorRequirement, ...]:
+    def selector_requirements(self) -> tuple[SelectorRequirement, ...]:
         """Everything this Directive was routed by: the legacy map and the requirements."""
 
         return (*selector_from_legacy(self.selector), *self.requirements)
@@ -236,7 +236,7 @@ def assert_routed(routing: DirectiveRouting | None, identity: RunnerRoutingIdent
             f"Contract requires a Runner hosted by {routing.host_party!r}; this Runner is "
             f"hosted by {identity.host_party!r}",
         )
-    selector = routing.matched_on()
+    selector = routing.selector_requirements()
     if not selector_satisfied(selector, identity.tags):
         raise RoutingRefusedError(
             "selector_unsatisfied",

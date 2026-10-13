@@ -83,6 +83,9 @@ class ProductReach:
     runner_selector: Mapping[str, str]
     runner_requirements: tuple[SelectorRequirement, ...] = ()
 
+    def selector_requirements(self) -> tuple[SelectorRequirement, ...]:
+        return (*selector_from_legacy(self.runner_selector), *self.runner_requirements)
+
 
 @dataclass(frozen=True)
 class GrantSnapshot:
@@ -203,7 +206,7 @@ class GrantSnapshot:
 
         return next(
             (
-                (*selector_from_legacy(product.runner_selector), *product.runner_requirements)
+                product.selector_requirements()
                 for product in self.reach
                 if product.product_id == product_id
             ),

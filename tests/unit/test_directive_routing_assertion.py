@@ -1,6 +1,6 @@
 """The Runner's own half of Directive routing (PRD issue 42, map ticket 25 §9, 17 A3).
 
-Two things, all fail-closed and all *before* any activity body runs (the selector
+Two things, both fail-closed and both *before* any activity body runs (the selector
 vocabulary itself: ``test_selector_requirements.py``):
 
 * an activity payload this Runner was not routed for is refused with an Evidence Event
