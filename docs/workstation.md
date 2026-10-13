@@ -87,6 +87,24 @@ To drive a CLI through its ACP bridge, name its kind on `install`:
 `--acp-cli-kinds ''` turns ACP off. Set it this way, not in the plist or the unit file:
 `install` rewrites both. A kind with no pinned bridge is refused.
 
+### Add a Runner for another Contract
+
+A personal Runner serves one Contract. For each further Contract, mint its token on
+**/me/runners** and add a Runner to this install under a new local name:
+
+```sh
+agentic-runner add acme-billing
+# Runner Registration Token (yours from /me/runners, or the Organisation Admin's for an Organisation Runner): ********
+```
+
+`add` takes the control plane URL, the Temporal address, the `PATH` and the ACP kinds from
+the Runner already installed, then does what `install` does under the new name: its own
+directory, identity, Runner Token, Recipient Key and login agent
+(`agentic-runner.acme-billing`). The Runners share nothing else, so a value sealed to one
+does not open on another: a funder seals it once per Runner. Drive each by its name
+(`status`, `stop`, `start`, `sign-in --org`). If your installed Runners use different
+control planes, name the one to copy from: `agentic-runner add acme-billing --beside acme`.
+
 ## Sign in to Codex and Claude Code
 
 Each Contract's CLI runs under its own sign-in, which the Runner keeps in the Contract's

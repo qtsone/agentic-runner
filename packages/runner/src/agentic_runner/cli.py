@@ -13,7 +13,8 @@ the Organisation's cap.
 
 ``install | start | stop | status <org>`` and ``credential set`` are the workstation
 Runner (PRD issue 47, ``workstation.py``): one login agent per Organisation, managed by
-the user who hosts it, with no ``sudo`` anywhere.
+the user who hosts it, with no ``sudo`` anywhere. ``add <name>`` registers another Runner
+beside them, reusing their control plane and ``PATH`` (ADR-0022 §21).
 
 ``sign-in --contract <id>`` signs one Contract's Claude Code in with Anthropic's own flow,
 in this terminal, as that Contract's uid in its harness root (QTS-1448). No code or token
@@ -179,6 +180,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     install.add_argument("--no-start", action="store_true", help="write the agent, do not start")
     install.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
+
+    add = subcommands.add_parser(
+        "add",
+        help="register another Runner under this install, with its own process, identity "
+        "and Recipient Key (one per Contract)",
+    )
+    add.add_argument("org", metavar="name", help="the new Runner's name on this machine")
+    add.add_argument(
+        "--beside",
+        default=None,
+        help="the installed Runner whose control plane and PATH to reuse; needed only when "
+        "the installed Runners talk to different control planes",
+    )
+    add.add_argument("--no-start", action="store_true", help="write the agent, do not start")
+    add.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
     for service_verb in ("start", "stop"):
         driven = subcommands.add_parser(
             service_verb, help=f"{service_verb} one Organisation's login agent"
@@ -312,7 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.org:
             return workstation.run_process(_org_paths(arguments), login_agent=arguments.login_agent)
         return asyncio.run(service.run(attestation=_image_attestation()))
-    if arguments.command in {"install", "start", "stop", "credential"}:
+    if arguments.command in {"install", "add", "start", "stop", "credential"}:
         return _workstation(arguments)
     if arguments.command == "recipient-key":
         api, kube_ns = in_cluster()
@@ -359,6 +375,8 @@ def _workstation(arguments: argparse.Namespace) -> int:
     try:
         if arguments.command == "install":
             return _install(arguments, paths)
+        if arguments.command == "add":
+            return _add(arguments, paths)
         if arguments.command == "start":
             workstation.start(paths)
             print(f"started {paths.org}")
@@ -422,11 +440,7 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
-    # Pasted, never a flag: a flag is in the process table for every uid on the box.
-    token = registration_token_from_env() or getpass.getpass(
-        "Runner Registration Token (yours from /me/runners, or the Organisation Admin's for "
-        "an Organisation Runner): "
-    )
+    token = _registration_token()
     settings = workstation.WorkstationSettings(
         org=paths.org,
         control_plane_url=arguments.control_plane,
@@ -436,11 +450,19 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
         install_channel=workstation.install_channel(),
         acp_cli_kinds=acp_cli_kinds,
     )
+    return _register(paths, settings, token, start=not arguments.no_start)
+
+
+def _register(
+    paths: workstation.OrgPaths,
+    settings: workstation.WorkstationSettings,
+    token: str,
+    *,
+    start: bool,
+) -> int:
     try:
         lines = asyncio.run(
-            workstation.install(
-                paths, settings, registration_token=token, start_service=not arguments.no_start
-            )
+            workstation.install(paths, settings, registration_token=token, start_service=start)
         )
     except (workstation.CliMissingError, RunnerRegistrationError, RuntimeError) as error:
         print(f"install refused: {error}", file=sys.stderr)
@@ -448,6 +470,19 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
     for line in lines:
         print(line)
     return 0
+
+
+def _add(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
+    settings = workstation.settings_to_add(paths, beside=arguments.beside)
+    return _register(paths, settings, _registration_token(), start=not arguments.no_start)
+
+
+def _registration_token() -> str:
+    # Pasted, never a flag: a flag is in the process table for every uid on the box.
+    return registration_token_from_env() or getpass.getpass(
+        "Runner Registration Token (yours from /me/runners, or the Organisation Admin's for "
+        "an Organisation Runner): "
+    )
 
 
 def _acp_cli_kinds(flag: str | None, paths: workstation.OrgPaths) -> str:

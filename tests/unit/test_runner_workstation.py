@@ -45,6 +45,13 @@ from agentic_runner.host_store import (
     open_workstation_store,
 )
 from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.registration import load_state
+from agentic_runner.sealed_box import (
+    RecipientKeyStore,
+    SealedCredentialError,
+    open_sealed,
+    seal,
+)
 from agentic_runner.testing import FakeControlPlane
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
@@ -246,6 +253,145 @@ async def test_reinstalling_over_a_registered_state_dir_says_the_token_was_not_u
     assert second[0].startswith("already registered")
     assert second[1].startswith("token          not used")
     assert str(paths.state_dir) in second[1] and "Switch to a new token" in second[1]
+
+
+@pytest.mark.asyncio
+async def test_an_added_runner_has_its_own_identity_and_recipient_key(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    """ADR-0022 §21 and §37: a value sealed to one Runner of the install opens on no other."""
+
+    root = tmp_path / "state"
+    first = workstation.OrgPaths(root=root, org="acme")
+    second = workstation.OrgPaths(root=root, org="acme-billing")
+    plane = FakeControlPlane(host_party="user")
+
+    async def register(paths: workstation.OrgPaths, settings: Any, token: str) -> None:
+        async with httpx.AsyncClient(transport=plane.transport()) as http:
+            await workstation.install(
+                paths,
+                settings,
+                registration_token=token,
+                platform="darwin",
+                home=tmp_path / "home",
+                run=Commands(),
+                http_client=http,
+            )
+
+    await register(first, _settings(first, str(bin_dir)), "token-for-the-acme-contract")
+    added = workstation.settings_to_add(second, beside=None)
+    await register(second, added, "token-for-the-billing-contract")
+
+    assert added.org == "acme-billing"
+    assert added.model_dump(exclude={"org"}) == _settings(first, str(bin_dir)).model_dump(
+        exclude={"org"}
+    )
+    states = [load_state(paths.state_dir) for paths in (first, second)]
+    assert states[0] and states[1] and states[0].runner_id != states[1].runner_id
+    assert (tmp_path / "home/Library/LaunchAgents/agentic-runner.acme-billing.plist").is_file()
+
+    [acme_key, billing_key] = [bootstrap.recipient_key for bootstrap in plane.bootstraps]
+    assert acme_key.key_id != billing_key.key_id
+    acme_pair, billing_pair = (RecipientKeyStore(p.state_dir).current() for p in (first, second))
+    assert acme_pair.public_key == acme_key.public_key
+    assert billing_pair.public_key == billing_key.public_key
+    binding = b"contract|slot"
+    sealed = seal(public_key=acme_key.public_key, binding=binding, plaintext="sk-acme")
+    assert open_sealed(private_key=acme_pair.private_key, binding=binding, ciphertext=sealed) == (
+        "sk-acme"
+    )
+    with pytest.raises(SealedCredentialError):
+        open_sealed(private_key=billing_pair.private_key, binding=binding, ciphertext=sealed)
+
+
+@pytest.mark.asyncio
+async def test_add_after_a_refused_token_retries_under_the_same_name(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    root = tmp_path / "state"
+    first = workstation.OrgPaths(root=root, org="acme")
+    second = workstation.OrgPaths(root=root, org="acme-billing")
+    plane = FakeControlPlane(host_party="user")
+
+    def refuse(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "registration token is not valid"})
+
+    async def register(settings: Any, paths: workstation.OrgPaths, transport: Any) -> None:
+        async with httpx.AsyncClient(transport=transport) as http:
+            await workstation.install(
+                paths,
+                settings,
+                registration_token="token-of-sixteen-plus-chars",
+                platform="darwin",
+                home=tmp_path / "home",
+                run=Commands(),
+                http_client=http,
+            )
+
+    await register(_settings(first, str(bin_dir)), first, plane.transport())
+    with pytest.raises(RuntimeError):
+        await register(
+            workstation.settings_to_add(second, beside=None), second, httpx.MockTransport(refuse)
+        )
+    assert second.settings_file.is_file() and load_state(second.state_dir) is None
+
+    await register(workstation.settings_to_add(second, beside=None), second, plane.transport())
+
+    assert load_state(second.state_dir) is not None
+    with pytest.raises(ValueError, match="already installed"):
+        workstation.settings_to_add(second, beside=None)
+
+
+def test_add_refuses_a_taken_name_no_install_and_an_ambiguous_one(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    root = tmp_path / "state"
+    new = workstation.OrgPaths(root=root, org="new")
+    with pytest.raises(FileNotFoundError, match="install"):
+        workstation.settings_to_add(new, beside=None)
+
+    for org, plane in (("acme", CONTROL_PLANE), ("globex", "http://other-plane.test")):
+        paths = workstation.OrgPaths(root=root, org=org)
+        paths.create()
+        _settings(paths, str(bin_dir), control_plane_url=plane).save(paths)
+
+    with pytest.raises(ValueError, match="--beside"):
+        workstation.settings_to_add(new, beside=None)
+    chosen = workstation.settings_to_add(new, beside="globex")
+    assert (chosen.org, chosen.control_plane_url) == ("new", "http://other-plane.test")
+
+
+def test_the_add_command_registers_beside_the_install_without_a_temporal_address(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "state"
+    acme = workstation.OrgPaths(root=root, org="acme")
+    acme.create()
+    _settings(acme, str(bin_dir), acp_cli_kinds="claude_code").save(acme)
+    installed: list[tuple[workstation.OrgPaths, workstation.WorkstationSettings, bool]] = []
+
+    async def install(
+        paths: workstation.OrgPaths,
+        settings: workstation.WorkstationSettings,
+        *,
+        registration_token: str,
+        start_service: bool,
+    ) -> list[str]:
+        installed.append((paths, settings, start_service))
+        return [f"registered with {registration_token}"]
+
+    monkeypatch.setenv(cli.AGENT_TOKEN_ENV, "agent-token-of-sixteen-plus")
+    monkeypatch.setattr(cli.workstation, "install", install)
+
+    assert cli.main(["add", "acme-billing", "--root", str(root)]) == 0
+    [(paths, settings, started)] = installed
+    assert paths == workstation.OrgPaths(root=root, org="acme-billing")
+    assert (settings.org, settings.temporal_address) == ("acme-billing", "temporal-grpc.test:443")
+    assert settings.acp_cli_kinds == "claude_code"
+    assert started
+
+    assert cli.main(["add", "acme", "--root", str(tmp_path / "no-install")]) == 1
+    assert len(installed) == 1
 
 
 def test_the_next_step_follows_who_hosts_the_runner() -> None:
