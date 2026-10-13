@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.18.3](https://github.com/qtsone/agentic-runner/compare/v3.18.2...v3.18.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **runner:** install without --temporal-address (QTS-1540) ([#60](https://github.com/qtsone/agentic-runner/issues/60)) ([dbe31aa](https://github.com/qtsone/agentic-runner/commit/dbe31aac3ca9f0cd64a66e3ee09cf93634148cca))
+
 ## [3.18.2](https://github.com/qtsone/agentic-runner/compare/v3.18.1...v3.18.2) (2026-10-13)
 
 
