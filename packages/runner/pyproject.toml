@@ -31,7 +31,7 @@ testing = [
 ]
 
 [project.scripts]
-agentic-runner = "agentic_runner.cli:main"
+agentic-runner = "agentic_runner.launch:main"
 
 [project.entry-points.pytest11]
 agentic_runner = "agentic_runner.testing.plugin"
