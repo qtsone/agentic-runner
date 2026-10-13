@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,9 +32,11 @@ import pytest
 from agentic_runner import __version__ as runner_version
 from agentic_runner import service
 from agentic_runner.build import build_id
+from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.recipient_key_secret import KubernetesSecrets, ensure_recipient_key
 from agentic_runner.registration import (
     CONTROL_PLANE_OLDER_REASON,
+    HEARTBEAT_PATH,
     RunnerRegistrationClient,
     RunnerRegistrationError,
     can_separate_uids,
@@ -43,6 +47,7 @@ from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
     BootstrapRequest,
     IsolationMode,
+    LifecycleKind,
     RecipientKey,
 )
 
@@ -226,6 +231,51 @@ async def test_a_runner_with_no_temporal_address_anywhere_refuses_to_start(
 
     assert harness.connects == []
     assert "TEMPORAL_ADDRESS" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_a_sigterm_before_the_worker_starts_exits_zero_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # QTS-1536: the first heartbeat never answers, so start-up is still waiting on it
+    # when SIGTERM lands. Before, nothing handled the signal until the Worker polled.
+    _environment(monkeypatch, tmp_path, isolation="none")
+    plane = FakeControlPlane()
+    harness = Harness(plane)
+    heartbeat_sent = asyncio.Event()
+
+    async def first_heartbeat_hangs(request: httpx.Request) -> httpx.Response:
+        if request.url.path == HEARTBEAT_PATH:
+            heartbeat_sent.set()
+            await asyncio.Event().wait()
+        answer = plane.handle(
+            request.method, request.url.raw_path.decode("ascii"), request.headers, request.content
+        )
+        return httpx.Response(answer.status, json=answer.body)
+
+    async def terminate_once_heartbeating() -> None:
+        await heartbeat_sent.wait()
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    terminator = asyncio.create_task(terminate_once_heartbeating())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(first_heartbeat_hangs)) as http:
+        exit_code = await asyncio.wait_for(
+            service.run(
+                http_client=http,
+                connect=harness.connect,
+                worker_factory=harness.worker,
+                can_change_uid=False,
+            ),
+            timeout=5,
+        )
+    await terminator
+
+    assert exit_code == 0
+    assert harness.connects == []
+    assert harness.workers == []
+    # Queued for the next start, which carries it on its first beat.
+    pending = LifecycleOutbox(tmp_path).pending()
+    assert [event.kind for event in pending] == [LifecycleKind.START, LifecycleKind.STOP]
 
 
 class FakeSecretsApi:

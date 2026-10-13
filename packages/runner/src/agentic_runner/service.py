@@ -27,7 +27,7 @@ import signal
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -558,12 +558,14 @@ async def run_worker_until_terminated(
     Directive is mid-run. The chart's ``preStop`` hook (issue 02) signals termination as
     early as possible; this handler is what turns that into ``Worker.shutdown()`` -- stop
     polling for new work, wait for the in-flight activity, then let ``run()`` return.
+
+    A caller that passes ``stop`` owns SIGTERM already (``run`` installs it before it
+    starts up, QTS-1536); one set before the Worker polls never starts it.
     """
 
-    loop = asyncio.get_running_loop()
-    stop_event = stop or asyncio.Event()
-    loop.add_signal_handler(signal.SIGTERM, stop_event.set)
-    try:
+    if stop is not None and stop.is_set():
+        return
+    async with _sigterm_sets(stop) as stop_event:
         run_task = asyncio.ensure_future(worker.run())
         stop_task = asyncio.ensure_future(stop_event.wait())
         await asyncio.wait({run_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -573,8 +575,49 @@ async def run_worker_until_terminated(
             _logger.info("Worker received SIGTERM: draining in-flight activity before exit")
             await worker.shutdown()
         await run_task
+
+
+@contextlib.asynccontextmanager
+async def _sigterm_sets(stop: asyncio.Event | None) -> AsyncIterator[asyncio.Event]:
+    """``stop`` as given, or a new event SIGTERM sets for the length of the block."""
+
+    if stop is not None:
+        yield stop
+        return
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    loop.add_signal_handler(signal.SIGTERM, stop_event.set)
+    try:
+        yield stop_event
     finally:
         loop.remove_signal_handler(signal.SIGTERM)
+
+
+class _StoppedBeforeStartError(Exception):
+    """SIGTERM (or ``stop``) arrived before the Worker polled: no Directive is in flight."""
+
+
+async def _before_stop[T](awaitable: Awaitable[T], stop: asyncio.Event) -> T:
+    """``awaitable``'s result, unless ``stop`` is set first; then it is cancelled.
+
+    Start-up waits on the network -- registration, the first heartbeat, the Temporal
+    connection -- for as long as the far end takes to answer. A stop during that wait
+    must not wait with it.
+    """
+
+    work = asyncio.ensure_future(awaitable)
+    stopped = asyncio.ensure_future(stop.wait())
+    try:
+        await asyncio.wait({work, stopped}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stopped.cancel()
+        if not work.done():
+            work.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await work
+    if work.cancelled():
+        raise _StoppedBeforeStartError
+    return work.result()
 
 
 # ------------------------------------------------------------------ the stream
@@ -971,6 +1014,40 @@ async def run(
     it says about itself. ``heartbeat_interval`` defaults to the cadence bootstrap gave.
     """
 
+    loop = asyncio.get_running_loop()
+    # Before the first await: in a container this process is PID 1, and the kernel drops
+    # a signal PID 1 has no handler for, so a SIGTERM during start-up was lost and
+    # `docker stop` waited out its grace period to SIGKILL (QTS-1536).
+    stop = stop or asyncio.Event()
+    loop.add_signal_handler(signal.SIGTERM, stop.set)
+    try:
+        return await _run(
+            stop=stop,
+            http_client=http_client,
+            connect=connect,
+            worker_factory=worker_factory,
+            can_change_uid=can_change_uid,
+            heartbeat_interval=heartbeat_interval,
+            readiness=readiness,
+            host_store=host_store,
+            attestation=attestation,
+        )
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
+async def _run(
+    *,
+    stop: asyncio.Event,
+    http_client: httpx.AsyncClient | None,
+    connect: Connector,
+    worker_factory: WorkerFactory,
+    can_change_uid: bool | None,
+    heartbeat_interval: float | None,
+    readiness: Readiness | None,
+    host_store: HostCredentialStore | None,
+    attestation: HostAttestation | None,
+) -> int:
     install_stop_tolerant_child_watcher(asyncio.get_running_loop())
     config = load_config()
     mode = isolation_mode()
@@ -1094,15 +1171,19 @@ async def _serve(
     http_client: httpx.AsyncClient | None,
     connect: Connector,
     worker_factory: WorkerFactory,
-    stop: asyncio.Event | None,
+    stop: asyncio.Event,
     heartbeat_interval: float | None,
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
 ) -> int:
     try:
-        state, outcome = await register(
-            state_dir=state_dir, can_separate_uids=can_change_uid, client=http_client
+        state, outcome = await _before_stop(
+            register(state_dir=state_dir, can_separate_uids=can_change_uid, client=http_client),
+            stop,
         )
+    except _StoppedBeforeStartError:
+        print("stopped before registration completed", flush=True)
+        return 0
     except RunnerRegistrationError as error:
         print(f"registration refused ({error.reason}): {error}", flush=True)
         if error.refuses_registration_token:
@@ -1148,6 +1229,12 @@ async def _serve(
             attestation=attestation,
             lifecycle=lifecycle,
         )
+    except _StoppedBeforeStartError:
+        # No beat with a 10 s timeout on the way out (`_report_stop`): the control plane
+        # may be what start-up was waiting for. The next start carries the stop.
+        lifecycle.add(LifecycleKind.STOP, datetime.now(UTC))
+        print("stopped before the Worker started", flush=True)
+        return 0
     finally:
         pidfile.unlink(missing_ok=True)
 
@@ -1166,7 +1253,7 @@ async def _serve_registered(
     http_client: httpx.AsyncClient | None,
     connect: Connector,
     worker_factory: WorkerFactory,
-    stop: asyncio.Event | None,
+    stop: asyncio.Event,
     interval: float,
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
@@ -1240,21 +1327,24 @@ async def _serve_registered(
     # none, and the Temporal connection below cannot be opened without it.
     while True:
         try:
-            await link.exchange()
+            await _before_stop(link.exchange(), stop)
             break
+        except _StoppedBeforeStartError:
+            raise
         except Exception as error:  # noqa: BLE001 - keep trying until the control plane answers
             if _revoked(error):
                 return 1
             _logger.warning("heartbeat failed before start: %s", error)
-            if stop is not None and stop.is_set():
-                return 1
-            await asyncio.sleep(interval)
+            await _before_stop(asyncio.sleep(interval), stop)
 
-    client = await connect(
-        temporal_address,
-        namespace=state.temporal_namespace,
-        api_key=stream.runner_token,
-        tls=os.environ.get(TEMPORAL_TLS_ENV, "").strip().lower() in {"1", "true", "yes"},
+    client = await _before_stop(
+        connect(
+            temporal_address,
+            namespace=state.temporal_namespace,
+            api_key=stream.runner_token,
+            tls=os.environ.get(TEMPORAL_TLS_ENV, "").strip().lower() in {"1", "true", "yes"},
+        ),
+        stop,
     )
     hooks = build_hook_runner(config)
     async with (
@@ -1289,7 +1379,6 @@ async def _serve_registered(
             graceful_shutdown_timeout=graceful_shutdown_timeout(settings),
             max_concurrent_activities=state.max_concurrent_directives,
         )
-        stop = stop or asyncio.Event()
         revoked = asyncio.Event()
         beat = asyncio.create_task(
             _heartbeat_forever(link, stream, client, interval, stop=stop, revoked=revoked)
