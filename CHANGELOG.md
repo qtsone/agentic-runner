@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.16.2](https://github.com/qtsone/agentic-runner/compare/v3.16.1...v3.16.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **security:** keep the host provider key out of the Claude Code Agent Runtime (QTS-1520) ([#55](https://github.com/qtsone/agentic-runner/issues/55)) ([1d8d425](https://github.com/qtsone/agentic-runner/commit/1d8d4250e78da15c60a81670afca7e16f521e799))
+
 ## [3.16.1](https://github.com/qtsone/agentic-runner/compare/v3.16.0...v3.16.1) (2026-10-13)
 
 

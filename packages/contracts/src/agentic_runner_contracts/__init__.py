@@ -80,6 +80,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `BootstrapRequest.registration_token` beside `agent_token`, exactly one of them, and
 # `BootstrapRequest.token`. A Runner on 3.16 sends `registration_token`, which a control
 # plane on 3.15 refuses -- upgrade the control plane before the Runner.
-__version__ = "3.16.1"
+__version__ = "3.16.2"
 
 __all__ = ["__version__"]
