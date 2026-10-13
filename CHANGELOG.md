@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.18.0](https://github.com/qtsone/agentic-runner/compare/v3.17.0...v3.18.0) (2026-10-13)
+
+
+### Features
+
+* **runner:** add a personal Runner beside an existing workstation install (QTS-1528) ([#56](https://github.com/qtsone/agentic-runner/issues/56)) ([3ab91e4](https://github.com/qtsone/agentic-runner/commit/3ab91e4ff22dae20d2d2aaecab3a7bad416b7d0c))
+
 # [3.17.0](https://github.com/qtsone/agentic-runner/compare/v3.16.2...v3.17.0) (2026-10-13)
 
 
