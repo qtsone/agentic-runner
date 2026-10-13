@@ -15,9 +15,10 @@ sandbox with the workflow.
 
 Three rules the shapes here carry:
 
-* **Tags are exact values and presence, AND-ed, never globs** (25 §9). A glob would make
-  "which Runners can see this Contract's workspace" a pattern-matching question, and an
-  operator-typed pattern is exactly the free text ADR-0010 §6 keeps out of routing.
+* **A selector is Kubernetes' ``matchExpressions``, never globs** (ADR-0022 §22, 25 §9):
+  requirements over exact values, all of which must hold. A glob would make "which Runners
+  can see this Contract's workspace" a pattern-matching question, and an operator-typed
+  pattern is exactly the free text ADR-0010 §6 keeps out of routing.
 * **Host party is a routing rule, never a tag** (17 A3). It is fixed at registration from
   the Runner Registration Token used, so it cannot be declared in config next to the tags;
   keeping it a separate field is what stops a contractor's laptop tagging itself into another
@@ -27,53 +28,131 @@ Three rules the shapes here carry:
   history; ``tests/unit/test_directive_routing_assertion.py`` is the structural gate.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Final
+from enum import StrEnum
+from typing import Any, Final
 
-# A selector entry with this value demands the *key*, whatever its value (25 §9's
-# "presence"). The empty string is the marker rather than ``None`` so the selector stays
-# a plain ``dict[str, str]`` across JSON, the wire and a JSON column.
+# In a legacy ``{key: value}`` selector, this value demanded the *key*, whatever its value
+# (25 §9's "presence"); :func:`selector_from_legacy` reads it as ``Exists``.
 PRESENT: Final = ""
 
 
-def selector_satisfied(selector: Mapping[str, str], tags: Mapping[str, str]) -> bool:
-    """Whether ``tags`` satisfies every entry of ``selector`` (25 §9: all keys AND-ed)."""
+class SelectorOperator(StrEnum):
+    """Kubernetes' set operators, spelled as Kubernetes spells them (ADR-0022 §22)."""
 
-    return all(
-        key in tags and (value == PRESENT or tags[key] == value) for key, value in selector.items()
+    IN = "In"
+    NOT_IN = "NotIn"
+    EXISTS = "Exists"
+    DOES_NOT_EXIST = "DoesNotExist"
+
+
+_TAKES_VALUES: Final = frozenset({SelectorOperator.IN, SelectorOperator.NOT_IN})
+
+
+@dataclass(frozen=True)
+class SelectorRequirement:
+    """One requirement on one Tag key. ``NotIn`` holds when the key is absent."""
+
+    key: str
+    operator: SelectorOperator
+    values: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Kubernetes' own validation: an empty `In` would match nothing and an empty
+        # `NotIn` everything, both silently; values on `Exists` would read as a filter
+        # they are not.
+        if (self.operator in _TAKES_VALUES) != bool(self.values):
+            raise ValueError(
+                f"{self.operator} on {self.key!r} "
+                + ("needs values" if self.operator in _TAKES_VALUES else "takes no values")
+            )
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "SelectorRequirement":
+        return cls(
+            key=str(payload["key"]),
+            operator=SelectorOperator(payload["operator"]),
+            values=tuple(str(value) for value in payload.get("values") or ()),
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        return {"key": self.key, "operator": self.operator.value, "values": list(self.values)}
+
+    def satisfied_by(self, tags: Mapping[str, str]) -> bool:
+        match self.operator:
+            case SelectorOperator.IN:
+                return self.key in tags and tags[self.key] in self.values
+            case SelectorOperator.NOT_IN:
+                return self.key not in tags or tags[self.key] not in self.values
+            case SelectorOperator.EXISTS:
+                return self.key in tags
+            case SelectorOperator.DOES_NOT_EXIST:
+                return self.key not in tags
+
+
+def selector_satisfied(selector: Iterable[SelectorRequirement], tags: Mapping[str, str]) -> bool:
+    """Whether ``tags`` satisfies every requirement of ``selector``."""
+
+    return all(requirement.satisfied_by(tags) for requirement in selector)
+
+
+def selector_from_legacy(legacy: Mapping[str, str]) -> tuple[SelectorRequirement, ...]:
+    """A legacy ``{key: value}`` selector as requirements that match exactly what it did."""
+
+    return tuple(
+        SelectorRequirement(key=key, operator=SelectorOperator.EXISTS)
+        if value == PRESENT
+        else SelectorRequirement(key=key, operator=SelectorOperator.IN, values=(value,))
+        for key, value in legacy.items()
     )
 
 
 class SelectorConflictError(ValueError):
-    """Two layers of the selector demand different values for the same tag key.
+    """The layers of a selector together demand something no Tag set can satisfy.
 
-    Unsatisfiable by construction -- a tag holds one value -- so it is raised rather than
-    resolved: silently letting the last layer win would route work to a Runner the
-    Contract narrowed *away* from.
+    Raised rather than resolved: silently dropping a layer would route work to a Runner
+    the Contract narrowed *away* from.
     """
 
 
-def narrow_selector(*layers: Mapping[str, str]) -> dict[str, str]:
-    """Merge the selector layers in narrowing order (25 §9).
+def narrow_selector(*layers: Iterable[SelectorRequirement]) -> tuple[SelectorRequirement, ...]:
+    """Combine the selector layers: Product, Contract, Agent Runtime Profile (25 §9).
 
-    Product default, narrowed by the Contract, pinned by the Agent Runtime Profile: each
-    layer may add a key or tighten a presence-only entry to an exact value, and may never
-    loosen one. A layer naming a different exact value for a key an earlier layer pinned
-    is a configuration contradiction, not a narrowing (:class:`SelectorConflictError`).
+    Layers only narrow, so combining them is concatenation -- a requirement any layer
+    states must hold. A combination that is provably empty on some key (``In [a]`` and
+    ``In [b]``) is a configuration contradiction, not a narrowing
+    (:class:`SelectorConflictError`).
     """
 
-    merged: dict[str, str] = {}
-    for layer in layers:
-        for key, value in layer.items():
-            held = merged.get(key)
-            if held is None or held in (PRESENT, value):
-                merged[key] = value
-            elif value != PRESENT:
-                raise SelectorConflictError(
-                    f"tag {key!r} is narrowed to {held!r} and to {value!r}; no Runner can be both"
-                )
-    return merged
+    combined = tuple(requirement for layer in layers for requirement in layer)
+    for key in {requirement.key for requirement in combined}:
+        _refuse_empty(key, [requirement for requirement in combined if requirement.key == key])
+    return combined
+
+
+def _refuse_empty(key: str, requirements: list[SelectorRequirement]) -> None:
+    # A key is either absent or holds one value. The conjunction is empty when absence is
+    # ruled out and so is every value.
+    operators = {requirement.operator for requirement in requirements}
+    absent_allowed = not operators & {SelectorOperator.IN, SelectorOperator.EXISTS}
+    present_allowed = SelectorOperator.DOES_NOT_EXIST not in operators
+    if present_allowed and SelectorOperator.IN in operators:
+        allowed = set.intersection(
+            *(set(r.values) for r in requirements if r.operator is SelectorOperator.IN)
+        )
+        allowed -= {
+            value
+            for requirement in requirements
+            if requirement.operator is SelectorOperator.NOT_IN
+            for value in requirement.values
+        }
+        present_allowed = bool(allowed)
+    if not (absent_allowed or present_allowed):
+        raise SelectorConflictError(
+            f"the requirements on tag {key!r} exclude every value and its absence; "
+            "no Runner can satisfy them"
+        )
 
 
 @dataclass(frozen=True)
@@ -89,11 +168,25 @@ class DirectiveRouting:
     runner_id: str
     # `organisation` | `account` | `user` -- the Contract's ``runner_host`` (17 A3).
     host_party: str
+    # The legacy ``{key: value}`` selector. Kept beside ``requirements`` rather than
+    # replaced so a Runner one minor behind, which reads only this field, still decodes
+    # the payload during its `warn` window (ADR-0013 §7). Remove at the next major.
     selector: dict[str, str] = field(default_factory=dict)
     # The Contract the control plane admitted this Runner for (17 A2), and on a
     # wipe-and-reassign the departing one the wipe removes. `assert_routed` does not read
     # it: the single-Contract lock is held control-plane-side by `current_contract_id`.
     contract_id: str = ""
+    # ADR-0022 §22: the selector as requirements. The Runner holds both fields.
+    requirements: tuple[SelectorRequirement, ...] = ()
+    # `organisation` | `user` -- who pays for the Contract. The Runner lends its host's own
+    # secrets only when this is its host (ADR-0022 §36). Blank from a control plane that
+    # predates the field.
+    funding_party: str = ""
+
+    def matched_on(self) -> tuple[SelectorRequirement, ...]:
+        """Everything this Directive was routed by: the legacy map and the requirements."""
+
+        return (*selector_from_legacy(self.selector), *self.requirements)
 
 
 @dataclass(frozen=True)
@@ -143,9 +236,10 @@ def assert_routed(routing: DirectiveRouting | None, identity: RunnerRoutingIdent
             f"Contract requires a Runner hosted by {routing.host_party!r}; this Runner is "
             f"hosted by {identity.host_party!r}",
         )
-    if not selector_satisfied(routing.selector, identity.tags):
+    selector = routing.matched_on()
+    if not selector_satisfied(selector, identity.tags):
         raise RoutingRefusedError(
             "selector_unsatisfied",
             f"this Runner's Tags do not satisfy the selector it was routed by "
-            f"({sorted(routing.selector)})",
+            f"({sorted({requirement.key for requirement in selector})})",
         )

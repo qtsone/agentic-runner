@@ -1,9 +1,8 @@
 """The Runner's own half of Directive routing (PRD issue 42, map ticket 25 §9, 17 A3).
 
-Three things, all fail-closed and all *before* any activity body runs:
+Two things, all fail-closed and all *before* any activity body runs (the selector
+vocabulary itself: ``test_selector_requirements.py``):
 
-* the selector vocabulary itself -- exact values and presence, AND-ed, never globs, and
-  layers that narrow rather than widen;
 * an activity payload this Runner was not routed for is refused with an Evidence Event
   and no verb, no workspace and no runtime turn;
 * nothing credential-shaped is in an activity payload at all: the Directive's own
@@ -18,18 +17,17 @@ import re
 from typing import Any
 
 import pytest
+from temporalio.converter import DataConverter
 
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner_contracts import activity_io as contracts
 from agentic_runner_contracts.routing import (
-    PRESENT,
     DirectiveRouting,
     RoutingRefusedError,
     RunnerRoutingIdentity,
-    SelectorConflictError,
+    SelectorOperator,
+    SelectorRequirement,
     assert_routed,
-    narrow_selector,
-    selector_satisfied,
 )
 
 IDENTITY = RunnerRoutingIdentity(
@@ -50,37 +48,6 @@ def _routing(**overrides: Any) -> DirectiveRouting:
     return DirectiveRouting(**fields)
 
 
-# --------------------------------------------------------------------------- selector
-
-
-def test_a_selector_matches_on_exact_values_and_on_presence() -> None:
-    tags = {"region": "eu-west-1", "gpu": "h100"}
-    assert selector_satisfied({"region": "eu-west-1"}, tags)
-    assert selector_satisfied({"gpu": PRESENT}, tags)
-    # All keys AND-ed: one unsatisfied entry is enough to exclude the Runner.
-    assert not selector_satisfied({"region": "eu-west-1", "zone": "trusted"}, tags)
-    assert not selector_satisfied({"region": "us-east-1"}, tags)
-
-
-def test_a_selector_never_globs() -> None:
-    # `*` is a value like any other, not a pattern: an operator-typed pattern is exactly
-    # the free text ADR-0010 §6 keeps out of routing.
-    assert not selector_satisfied({"region": "*"}, {"region": "eu-west-1"})
-    assert selector_satisfied({"region": "*"}, {"region": "*"})
-
-
-def test_layers_narrow_and_never_widen() -> None:
-    merged = narrow_selector({"region": PRESENT}, {"region": "eu-west-1"}, {"gpu": "h100"})
-    assert merged == {"region": "eu-west-1", "gpu": "h100"}
-    # A presence-only later layer cannot loosen an exact earlier one.
-    assert narrow_selector({"region": "eu-west-1"}, {"region": PRESENT}) == {"region": "eu-west-1"}
-
-
-def test_two_layers_demanding_different_values_is_a_conflict() -> None:
-    with pytest.raises(SelectorConflictError):
-        narrow_selector({"region": "eu-west-1"}, {"region": "us-east-1"})
-
-
 # --------------------------------------------------------------------------- assertion
 
 
@@ -96,6 +63,16 @@ def test_the_routed_runner_accepts_its_own_payload() -> None:
         (_routing(runner_id="22222222-2222-4222-8222-222222222222"), "runner_mismatch"),
         (_routing(host_party="user"), "host_party_mismatch"),
         (_routing(selector={"zone": "trusted"}), "selector_unsatisfied"),
+        (
+            _routing(
+                requirements=(
+                    SelectorRequirement(
+                        key="gpu", operator=SelectorOperator.NOT_IN, values=("h100",)
+                    ),
+                )
+            ),
+            "selector_unsatisfied",
+        ),
     ],
 )
 def test_a_payload_this_runner_was_not_routed_for_is_refused(
@@ -104,6 +81,45 @@ def test_a_payload_this_runner_was_not_routed_for_is_refused(
     with pytest.raises(RoutingRefusedError) as refusal:
         assert_routed(routing, IDENTITY)
     assert refusal.value.reason == reason
+
+
+def _fix_directive_input(routing: dict[str, Any]) -> contracts.FixDirectiveInput:
+    converter = DataConverter.default.payload_converter
+    payload = {
+        "work_record_id": "wr-1",
+        "repository": "acme/app",
+        "pr_number": 7,
+        "base_ref": "main",
+        "branch_name": "agentic/wr-1",
+        "directive_number": 2,
+        "verifier_summary": "tests failed",
+        "routing": routing,
+    }
+    [encoded] = converter.to_payloads([payload])
+    [decoded] = converter.from_payloads([encoded], [contracts.FixDirectiveInput])
+    assert isinstance(decoded, contracts.FixDirectiveInput)
+    return decoded
+
+
+def test_the_directive_input_carries_the_contracts_funding_party() -> None:
+    # ADR-0022 §36: the Runner lends its host's own secrets only to a Contract its host pays
+    # for, so it must be told who pays.
+    decoded = _fix_directive_input(
+        {"runner_id": IDENTITY.runner_id, "host_party": "organisation", "funding_party": "user"}
+    )
+
+    assert decoded.routing is not None
+    assert decoded.routing.funding_party == "user"
+
+
+def test_a_directive_input_from_before_the_funding_party_still_decodes() -> None:
+    decoded = _fix_directive_input(
+        {"runner_id": IDENTITY.runner_id, "host_party": "organisation", "selector": {}}
+    )
+
+    assert decoded.routing is not None
+    assert decoded.routing.funding_party == ""
+    assert decoded.routing.requirements == ()
 
 
 class _RecordingClient:
