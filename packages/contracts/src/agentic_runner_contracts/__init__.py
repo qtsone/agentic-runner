@@ -98,6 +98,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `credentials` empty, so the required field breaks no envelope that parsed. The ack
 # forbids extra keys, so the control plane sends `credential_manifests` only to a Runner
 # whose heartbeat names contracts 3.19 or later, and omits the key while it is empty.
-__version__ = "3.18.3"
+__version__ = "3.19.0"
 
 __all__ = ["__version__"]

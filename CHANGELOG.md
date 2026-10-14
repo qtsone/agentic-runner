@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.19.0](https://github.com/qtsone/agentic-runner/compare/v3.18.3...v3.19.0) (2026-10-14)
+
+
+### Features
+
+* **runner:** report Credential References per Contract; lend host keys only to host-funded work (QTS-1531) ([#61](https://github.com/qtsone/agentic-runner/issues/61)) ([4f0d26d](https://github.com/qtsone/agentic-runner/commit/4f0d26d34bfff0e0c8c2b1bfc422b1fcb58b9695))
+
 ## [3.18.3](https://github.com/qtsone/agentic-runner/compare/v3.18.2...v3.18.3) (2026-10-13)
 
 
