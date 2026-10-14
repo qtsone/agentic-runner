@@ -27,6 +27,8 @@ import base64
 import contextlib
 import hmac
 import ipaddress
+import re
+import socket
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from fnmatch import fnmatchcase
 from types import TracebackType
@@ -69,6 +71,7 @@ EGRESS_ENV_NAMES: Final[frozenset[str]] = frozenset(
 _LOOPBACK: Final[str] = "127.0.0.1,localhost,::1"
 _PROXY_USER: Final[str] = "agentic"
 _PIPE_CHUNK: Final[int] = 65536
+_INET_ATON_CHARS: Final[re.Pattern[str]] = re.compile(r"[0-9a-fx.]+")
 
 Resolver = Callable[[str, int], Awaitable[tuple[str, int]]]
 
@@ -87,10 +90,24 @@ def normalise_host(host: str) -> str:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        return host
+        return _inet_aton_spelling(host) or host
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         return str(address.ipv4_mapped)
     return address.compressed
+
+
+def _inet_aton_spelling(host: str) -> str | None:
+    """The dotted quad for an IPv4 address in a spelling ``ipaddress`` refuses and
+    ``getaddrinfo`` still connects to (``167772165``, ``0xa.0.0.5``, ``10.5``, ``012.0.0.5``):
+    left as a name, it would walk past a deny entry for the address it reaches."""
+
+    # Only the digits, hex and dots inet_aton parses: glibc's also accepts trailing garbage.
+    if not _INET_ATON_CHARS.fullmatch(host):
+        return None
+    try:
+        return socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        return None
 
 
 def parse_destination(entry: str) -> tuple[str, int | None]:
