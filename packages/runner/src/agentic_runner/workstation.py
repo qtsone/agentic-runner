@@ -46,6 +46,7 @@ from pydantic import BaseModel, ConfigDict
 from agentic_runner import service
 from agentic_runner.build import build_id
 from agentic_runner.cli_floor import CLI_FLOORS, CLI_NAMES, meets_floor, parse_cli_version
+from agentic_runner.config import CONFIG_FILE_ENV
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.registration import load_state
@@ -158,6 +159,12 @@ class OrgPaths:
         return self.state_dir / "workstation.json"
 
     @property
+    def config_file(self) -> Path:
+        # The host's own `config.toml`, where its `[limits]` table goes (ADR-0022 §57).
+        # Never written by `install`: absent, the Runner limits nothing.
+        return self.state_dir / "config.toml"
+
+    @property
     def pidfile(self) -> Path:
         return self.state_dir / PIDFILE_NAME
 
@@ -266,6 +273,7 @@ def run_environment(paths: OrgPaths, settings: WorkstationSettings) -> dict[str,
         "AGENTIC_RUNNER_HOOKS_PATH": str(paths.hooks),
         "AGENTIC_RUNNER_SOCKET_DIR": str(paths.socket_dir),
         "AGENTIC_RUNNER_ISOLATION": "none",
+        CONFIG_FILE_ENV: str(paths.config_file),
         # A laptop has nothing beneath the attempt's egress proxy to stop a raw socket,
         # so it reports the Profile's allow-list as unenforced (PRD issue 58).
         service.EGRESS_POSTURE_ENV: EgressPosture.UNENFORCED.value,

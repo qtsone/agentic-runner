@@ -85,6 +85,7 @@ from agentic_runner.attempts import (
 )
 from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV, call
 from agentic_runner.llm_proxy import PROXY_API_KEY_ENV, PROXY_BASE_URL_ENV
+from agentic_runner.runner_limit import DeniedFolders
 from agentic_runner.usage_windows import claude_rate_limit_windows
 from agentic_runner.workers._runtime_support import (
     apply_extra_env,
@@ -313,8 +314,12 @@ class AcpRuntime:
         settings: WorkerSettings,
         bridge_argv: Sequence[str] | None = None,
         ask: Ask = ask_over_callback,
+        denied_folders: DeniedFolders | None = None,
     ) -> None:
         self._cli_kind = cli_kind
+        # The Runner Limit's folders (ADR-0022 §55): refused on every permission request,
+        # and handed to Claude Code as its own `permissions.deny`.
+        self._denied_folders = denied_folders or DeniedFolders(())
         self._bridge = ACP_BRIDGES.get(cli_kind)
         self._profile_executable = (
             None if self._bridge is not None else profile_acp_executables(settings).get(cli_kind)
@@ -332,6 +337,18 @@ class AcpRuntime:
     @property
     def _is_claude(self) -> bool:
         return self._cli_kind == "claude_code"
+
+    @property
+    def folders_checked(self) -> bool:
+        """Whether the harness asks before it reads a path, so the Runner Limit's folders
+        are refused by the Runner and the harness both (ADR-0022 §55's ``checked``).
+
+        Only Claude Code: it asks for every command and every path outside the Workspace,
+        and takes the list as its own deny rules. codex-acp's ``workspace-write`` sandbox
+        reads the whole disk without asking, and a Profile-named harness is not known.
+        """
+
+        return self._is_claude
 
     def _model(self, request: DirectiveRequest) -> str:
         """The model this turn runs, blank where the harness chooses its own."""
@@ -643,11 +660,16 @@ class AcpRuntime:
                 "mcpServers": acp_mcp_servers(request.mcp_servers or (), extra_env),
             }
             if self._is_claude:
-                session_params["_meta"] = {
-                    "claudeCode": {
-                        "options": {**_CLAUDE_SESSION_OPTIONS, "model": self._model(request)}
-                    }
+                options: dict[str, Any] = {
+                    **_CLAUDE_SESSION_OPTIONS,
+                    "model": self._model(request),
                 }
+                if self._denied_folders:
+                    # The flag-settings tier: above every settings file, none of which load.
+                    options["settings"] = {
+                        "permissions": {"deny": self._denied_folders.claude_permission_deny()}
+                    }
+                session_params["_meta"] = {"claudeCode": {"options": options}}
             session = await connection.request("session/new", session_params)
             session_id = turn.session_id = str(session.get("sessionId") or "")
             if self._is_codex and request.model:
@@ -708,6 +730,12 @@ class AcpRuntime:
         else:
             raw_input = tool_call.get("rawInput") if isinstance(tool_call, Mapping) else None
             argv, cwd = _requested_command(raw_input, workspace_path)
+            folder = self._folder_refusal(tool_call, cwd)
+            if folder is not None:
+                # The entry's position only: not the path, not the command line, not the
+                # request, since Evidence is read by people §57 hides the path from.
+                turn.notes.append(f"permission denied: this Runner's Runner Limit denies {folder}")
+                return _select(params.get("options") or [], "reject_once")
             described = _redact(shlex.join(argv) if argv else title or "an action")
             # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid
             # nothing else keeps an allowlisted command out of another Work Record's
@@ -732,6 +760,17 @@ class AcpRuntime:
         turn.notes.append(f"permission denied: {described} ({reason})")
         # `reject_once`, never `reject_always`/`allow_always`: nothing outlives the turn.
         return _select(options, "reject_once")
+
+    def _folder_refusal(self, tool_call: object, cwd: Path) -> str | None:
+        """``folders[<n>]`` when anything the request names could reach a denied folder."""
+
+        if not self._denied_folders or not isinstance(tool_call, Mapping):
+            return None
+        for script in _requested_strings(tool_call):
+            refusal = self._denied_folders.script_refusal(script, cwd)
+            if refusal is not None:
+                return refusal
+        return None
 
     def _refused(
         self,
@@ -1029,6 +1068,36 @@ def _attempt_codex_home(
         yield home
     finally:
         shutil.rmtree(home, ignore_errors=True)
+
+
+# The `rawInput` keys the bridges put a path under (Read, Edit, Write, NotebookEdit, Grep,
+# Glob and Codex's patch tools), beside the command and the cwd.
+_PATH_INPUT_KEYS: Final[tuple[str, ...]] = (
+    "command",
+    "cwd",
+    "file_path",
+    "notebook_path",
+    "path",
+    "paths",
+    "pattern",
+)
+
+
+def _requested_strings(tool_call: Mapping[str, Any]) -> Iterator[str]:
+    """Every string a permission request names that could be, or hold, a path."""
+
+    raw_input = tool_call.get("rawInput")
+    if isinstance(raw_input, Mapping):
+        for key in _PATH_INPUT_KEYS:
+            value = raw_input.get(key)
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, list):
+                yield from (item for item in value if isinstance(item, str))
+    locations = tool_call.get("locations")
+    for location in locations if isinstance(locations, list) else []:
+        if isinstance(location, Mapping) and isinstance(location.get("path"), str):
+            yield location["path"]
 
 
 def _requested_command(raw_input: object, workspace_path: Path) -> tuple[list[str] | None, Path]:

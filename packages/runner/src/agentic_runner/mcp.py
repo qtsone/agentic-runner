@@ -31,6 +31,7 @@ from agentic_runner.tiny_http import bearer_matches, read_request, response_head
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner_contracts.grants import (
     Decision,
+    Grant,
     GrantSnapshot,
     McpServerDecision,
     decide_mcp_server,
@@ -94,19 +95,24 @@ def plan_mcp(
     *,
     consented: Collection[str] = (),
     declined: Collection[str] = (),
+    runner_limit: Grant | None = None,
 ) -> McpPlan:
     """Decide every bound server against the Effective Grant.
 
     ``consented`` / ``declined`` are the ``mcp:<server>`` names the owner has already
     answered for this step; anything else that evaluates ``confirm`` is left in
     ``to_confirm`` for the caller to ask about before a single server is started.
+    ``runner_limit`` is the Runner Limit's tools part: a server it denies is withheld,
+    never started (ADR-0022 §53).
     """
 
     granted: list[tuple[McpServerSpec, McpServerDecision]] = []
     withheld: list[tuple[McpServerSpec, McpServerDecision, str]] = []
     to_confirm: list[tuple[McpServerSpec, McpServerDecision]] = []
     for spec in servers:
-        decision = decide_mcp_server(snapshot, server=spec.slug, tools=spec.tools)
+        decision = decide_mcp_server(
+            snapshot, server=spec.slug, tools=spec.tools, runner_limit=runner_limit
+        )
         confirm = decision.decision is Decision.CONFIRM
         if decision.decision is Decision.ALLOW or (confirm and decision.verb in consented):
             granted.append((spec, decision))

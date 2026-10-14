@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
+from agentic_runner.runner_limit import DeniedFolders
+
 _SECRET_ARGUMENT_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?i)^[A-Z0-9_-]*(api[_-]?key|token|secret|password|credential|auth)[A-Z0-9_-]*\s*="
 )
@@ -77,14 +79,24 @@ def evaluate_command_policy(
     base_branch: str,
     work_branch: str,
     policy: CommandPolicy,
+    denied_folders: DeniedFolders | None = None,
 ) -> CommandPolicyDecision:
-    """Evaluate a worker command using fail-closed hard-deny rules."""
+    """Evaluate a worker command using fail-closed hard-deny rules.
+
+    ``denied_folders`` is the Runner Limit's folders part (ADR-0022 §55), read over every
+    argument and the cwd. Its refusal names the entry's position only, never the path.
+    """
 
     if not argv or not argv[0].strip():
         return _deny("command is not allowlisted")
 
     if not _is_relative_to(cwd, workspace_root):
         return _deny("cwd must be under workspace root")
+
+    if denied_folders:
+        folder = denied_folders.refusal([str(cwd), *argv], cwd)
+        if folder is not None:
+            return _deny(f"this Runner's Runner Limit denies {folder}")
 
     normalized_argv = [argument.strip() for argument in argv]
     command = Path(normalized_argv[0]).name

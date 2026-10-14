@@ -13,6 +13,11 @@ What this is *not* is a kernel boundary. A process that ignores the proxy variab
 opens a raw socket is stopped only by what the host adds underneath (a pod
 NetworkPolicy); a workstation adds nothing, which is why it reports its posture as
 ``unenforced`` in the heartbeat rather than claiming the list binds.
+
+The Runner Limit's ``networks`` part (ADR-0022 §54) is a deny-list in the same syntax, read
+by the same proxy after the allow-list: a destination passes only if the Profile allows it
+and no entry denies it. Both lists are compared through :func:`parse_destination`, so a
+case, a trailing dot, a port or an IP literal's spelling means the same in either.
 """
 
 from __future__ import annotations
@@ -21,7 +26,8 @@ import asyncio
 import base64
 import contextlib
 import hmac
-from collections.abc import Awaitable, Callable, Iterable
+import ipaddress
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from fnmatch import fnmatchcase
 from types import TracebackType
 from typing import Final
@@ -35,7 +41,10 @@ __all__ = [
     "EgressProxy",
     "Resolver",
     "destination_allowed",
+    "destination_denied",
     "host_of",
+    "parse_destination",
+    "url_destination",
 ]
 
 EGRESS_REFUSED_SOURCE: Final[str] = "runner.egress_refused"
@@ -70,17 +79,77 @@ async def _system_resolver(host: str, port: int) -> tuple[str, int]:
     return str(address[0]), int(address[1])
 
 
+def normalise_host(host: str) -> str:
+    """A host as both lists compare it: lower case, no brackets, no trailing dot, and an IP
+    literal in its one canonical spelling (an IPv4-mapped IPv6 address as the IPv4 one)."""
+
+    host = host.strip().lower().strip("[]").rstrip(".")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return address.compressed
+
+
+def parse_destination(entry: str) -> tuple[str, int | None]:
+    """A ``network_policy`` destination as ``(host pattern, port)``; None admits any port.
+
+    ``host``, ``host:port``, ``*.domain``, ``[v6]:port`` or a bare IPv6 literal. Raises
+    ``ValueError`` for an entry whose port is not one.
+    """
+
+    text = entry.strip()
+    if text.startswith("["):
+        host, closed, rest = text[1:].partition("]")
+        if not closed or (rest and not rest.startswith(":")):
+            raise ValueError(f"{entry!r} is not a destination")
+        raw_port: str | None = rest[1:] if rest else None
+    elif text.count(":") == 1:
+        host, _, raw_port = text.partition(":")
+    else:
+        # A bare host, or an IPv6 literal written without brackets and so without a port.
+        host, raw_port = text, None
+    if not host.strip():
+        raise ValueError(f"{entry!r} names no host")
+    if raw_port is None:
+        return normalise_host(host), None
+    if not raw_port.isdigit() or not 0 < int(raw_port) < 65536:
+        raise ValueError(f"{entry!r} has a port that is not a number from 1 to 65535")
+    return normalise_host(host), int(raw_port)
+
+
+def _matches(entry: str, host: str, port: int) -> bool:
+    try:
+        pattern, entry_port = parse_destination(entry)
+    except ValueError:
+        # Never a match, as before parsing: an allow-list entry that is not a destination
+        # admits nothing, and the Runner Limit refuses to start on one (`runner_limit`).
+        return False
+    if entry_port is not None and entry_port != port:
+        return False
+    return fnmatchcase(host, pattern)
+
+
 def destination_allowed(allow_list: Iterable[str], host: str, port: int) -> bool:
     """``host``, ``host:port`` or a ``*.domain`` pattern; a bare host admits any port."""
 
-    host = host.lower().strip("[]")
-    for entry in allow_list:
-        pattern, _, entry_port = entry.lower().partition(":")
-        if entry_port and entry_port != str(port):
-            continue
-        if fnmatchcase(host, pattern):
-            return True
-    return False
+    host = normalise_host(host)
+    return any(_matches(entry, host, port) for entry in allow_list)
+
+
+def destination_denied(deny_list: Sequence[str], host: str, port: int) -> int | None:
+    """The position of the first Runner Limit ``networks`` entry denying this, or None.
+
+    A hostname entry denies that name only: the proxy compares what the Directive asked
+    for, never what it resolves to (ADR-0022 §54).
+    """
+
+    host = normalise_host(host)
+    return next(
+        (index for index, entry in enumerate(deny_list) if _matches(entry, host, port)), None
+    )
 
 
 def host_of(url: str) -> str | None:
@@ -92,19 +161,35 @@ def host_of(url: str) -> str | None:
     return parts.hostname if parts.port is None else f"{parts.hostname}:{parts.port}"
 
 
+def url_destination(url: str) -> tuple[str, int] | None:
+    """Where a URL connects: its host and its port, the scheme's default when it names none."""
+
+    parts = urlsplit(url)
+    if not parts.hostname:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    return parts.hostname, port or (80 if parts.scheme in {"http", "ws"} else 443)
+
+
 class EgressProxy:
     """One attempt's forward proxy: CONNECT for TLS, absolute-form for plain HTTP."""
 
     def __init__(
         self,
-        allow_list: Iterable[str],
+        allow_list: Iterable[str] | None,
         *,
         token: str,
+        deny_list: Sequence[str] = (),
         resolver: Resolver | None = None,
-        on_refused: Callable[[str, int], Awaitable[None]] | None = None,
+        on_refused: Callable[[str, int, int | None], Awaitable[None]] | None = None,
         host: str = "127.0.0.1",
     ) -> None:
-        self.allow_list = tuple(dict.fromkeys(allow_list))
+        # None: no Profile allow-list, so only the Runner Limit's `networks` can refuse.
+        self.allow_list = None if allow_list is None else tuple(dict.fromkeys(allow_list))
+        self.deny_list = tuple(deny_list)
         self._token = token
         self._resolver = resolver or _system_resolver
         self._on_refused = on_refused
@@ -148,9 +233,13 @@ class EgressProxy:
                 await self._reply(writer, 400)
                 return
             host, port = destination
-            if not destination_allowed(self.allow_list, host, port):
+            # The Profile's list first, as the Grant is named before the Runner Limit: a
+            # destination both refuse is refused for the reason no other Runner would lift.
+            allowed = self.allow_list is None or destination_allowed(self.allow_list, host, port)
+            denied_by = None if not allowed else destination_denied(self.deny_list, host, port)
+            if not allowed or denied_by is not None:
                 if self._on_refused is not None:
-                    await self._on_refused(host, port)
+                    await self._on_refused(host, port, denied_by)
                 await self._reply(writer, 403)
                 return
             try:

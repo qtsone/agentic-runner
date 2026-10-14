@@ -77,7 +77,14 @@ from agentic_runner.credentials import (
     EmptyCredentialStore,
     UnresolvableCredentialReferenceError,
 )
-from agentic_runner.egress import EGRESS_REFUSED_SOURCE, EgressProxy, Resolver, host_of
+from agentic_runner.egress import (
+    EGRESS_REFUSED_SOURCE,
+    EgressProxy,
+    Resolver,
+    destination_denied,
+    host_of,
+    url_destination,
+)
 from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.heartbeat_link import HeartbeatLink, SeamUnavailableError
 from agentic_runner.hooks import (
@@ -119,6 +126,11 @@ from agentic_runner.mcp import (
 )
 from agentic_runner.message_store import MessageStore, WorkflowSignaller
 from agentic_runner.registration import RunnerRegistrationError
+from agentic_runner.runner_limit import (
+    EMPTY_RUNNER_LIMIT,
+    RUNNER_LIMIT_EVIDENCE_SOURCE,
+    AppliedRunnerLimit,
+)
 from agentic_runner.runtime import verifier_command
 from agentic_runner.runtime.verifier_command import CommandValidationError
 from agentic_runner.usage_windows import UsageWindows
@@ -261,6 +273,7 @@ from agentic_runner_contracts.grants import (
     REPO_RESOURCE_TYPE,
     UNENFORCED_SNAPSHOT,
     Decision,
+    GrantLink,
     GrantSnapshot,
 )
 from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
@@ -1688,8 +1701,12 @@ class RunnerRalphActivities:
         attempt_records: AttemptRecords | None = None,
         directives_in_flight: DirectivesInFlight | None = None,
         usage_windows: UsageWindows | None = None,
+        runner_limit: AppliedRunnerLimit | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
+        # What this Runner's host denies every Agent on it, checked at start (ADR-0022
+        # §52-§55). Empty by default, which narrows nothing.
+        self._runner_limit = runner_limit or EMPTY_RUNNER_LIMIT
         # Read by the harness self-test, which never runs beside a Contract's Directive.
         self._directives_in_flight = directives_in_flight or DirectivesInFlight()
         # Local-agents 10: None off a user-hosted Runner, which reports no usage windows.
@@ -2850,6 +2867,7 @@ class RunnerRalphActivities:
             state.mcp_servers,
             consented=consented,
             declined=declined,
+            runner_limit=self._runner_limit.tools_grant,
         )
         granted = list(plan.granted)
         withheld = list(plan.withheld)
@@ -2904,7 +2922,8 @@ class RunnerRalphActivities:
         proxy variables.
         """
 
-        needs_token = bool(state.egress_allow_list) or any(
+        denied_networks = self._runner_limit.networks
+        needs_token = bool(state.egress_allow_list or denied_networks) or any(
             spec.credential_reference is not None for spec, _ in plan.granted
         )
         if needs_token and CALLBACK_TOKEN_ENV not in env:
@@ -2936,6 +2955,7 @@ class RunnerRalphActivities:
             )
             entries.append(entry_for(spec, hosted_url=hosted.url, bearer_env=CALLBACK_TOKEN_ENV))
 
+        await self._refuse_denied_destinations(work_record_id, state, entries, env)
         allow_list: tuple[str, ...] = ()
         if state.egress_allow_list:
             allow_list = tuple(
@@ -2959,17 +2979,27 @@ class RunnerRalphActivities:
                 )
             )
 
-            async def refused(host: str, port: int) -> None:
+        if state.egress_allow_list or denied_networks:
+
+            async def refused(host: str, port: int, limit_entry: int | None) -> None:
+                payload: dict[str, object] = {"event": "egress.refused", "host": host, "port": port}
+                if limit_entry is not None:
+                    payload.update(
+                        deciding_link=GrantLink.RUNNER_LIMIT.value,
+                        entry=f"networks[{limit_entry}]",
+                    )
                 await self._fastapi_client.append_evidence(
-                    work_record_id,
-                    source=EGRESS_REFUSED_SOURCE,
-                    payload={"event": "egress.refused", "host": host, "port": port},
+                    work_record_id, source=EGRESS_REFUSED_SOURCE, payload=payload
                 )
 
+            # No Profile allow-list leaves the proxy only the Runner Limit to refuse with:
+            # `allow_list` stays empty, so a runtime that opens the network on a Profile
+            # list (Codex) keeps it shut exactly as before.
             proxy = await stack.enter_async_context(
                 EgressProxy(
-                    allow_list,
+                    allow_list if state.egress_allow_list else None,
                     token=env[CALLBACK_TOKEN_ENV],
+                    deny_list=denied_networks,
                     resolver=self._egress_resolver,
                     on_refused=refused,
                 )
@@ -2987,6 +3017,52 @@ class RunnerRalphActivities:
                 },
             )
         return (tuple(entries) if state.mcp_servers else None), allow_list
+
+    async def _refuse_denied_destinations(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        entries: Sequence[McpServerEntry],
+        env: Mapping[str, str],
+    ) -> None:
+        """Fail the Directive at its start when something it needs is denied (§54).
+
+        The git remote, each granted MCP server's URL and each LLM endpoint: denied, the
+        Directive could only fail half-way, so it fails now, non-retryably, naming the
+        entry by its position and the destination it needed.
+        """
+
+        needed = [
+            ("git remote", _github_remote_url(state.repository)),
+            *((f"MCP server {entry.slug}", entry.url) for entry in entries if entry.url),
+            *(("LLM endpoint", value) for name, value in env.items() if name.endswith("_BASE_URL")),
+        ]
+        for needed_for, url in needed:
+            destination = url_destination(url)
+            if destination is None:
+                continue
+            index = destination_denied(self._runner_limit.networks, *destination)
+            if index is None:
+                continue
+            await _raise_recorded(
+                ApplicationError(
+                    f"this Runner's Runner Limit networks[{index}] denies {destination[0]}, "
+                    f"which this Directive's {needed_for} needs",
+                    non_retryable=True,
+                ),
+                self._fastapi_client,
+                work_record_id,
+                source=RUNNER_LIMIT_EVIDENCE_SOURCE,
+                actor=self._actor(),
+                payload={
+                    "event": "runner_limit.destination_denied",
+                    "deciding_link": GrantLink.RUNNER_LIMIT.value,
+                    "entry": f"networks[{index}]",
+                    "host": destination[0],
+                    "port": destination[1],
+                    "needed_for": needed_for,
+                },
+            )
 
     async def _resolve_credentials(
         self,
@@ -3832,6 +3908,7 @@ class RunnerRalphActivities:
             verb=verb,
             identifier=identifier,
             resource_type=resource_type,
+            runner_limit=self._runner_limit.tools_grant,
         )
         evidence = decision.evidence()
         refusal = (
