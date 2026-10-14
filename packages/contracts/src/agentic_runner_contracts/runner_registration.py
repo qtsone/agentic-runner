@@ -85,7 +85,7 @@ SNAPSHOT_PUSH_MAX: Final = 64
 # references in each (ADR-0022 §7). Their product bounds the envelope's report, so a
 # Runner never builds a `credentials` list the control plane refuses.
 CREDENTIAL_MANIFESTS_MAX: Final = 64
-CREDENTIAL_REFERENCES_MAX: Final = 16
+CREDENTIAL_REFERENCES_MAX: Final = 64
 
 _EXCEPTION_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 # ``path/to/module.py:123`` and nothing else -- no function name, no source line, no
