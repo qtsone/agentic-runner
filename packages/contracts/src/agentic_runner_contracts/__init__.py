@@ -110,6 +110,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `runner_limit` link, also taken by `decide_verb` and `decide_mcp_server`. Additive and
 # omitted while None, but both bodies forbid extra keys, so the control plane moves to
 # 3.21 before a Runner reports a limit. The new Runner compatibility floor.
-__version__ = "3.21.0"
+__version__ = "3.21.1"
 
 __all__ = ["__version__"]

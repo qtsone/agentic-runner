@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.21.1](https://github.com/qtsone/agentic-runner/compare/v3.21.0...v3.21.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **runner:** the Learner prompt reads a hand-off as a hand-off, not an ending (QTS-1574) ([#64](https://github.com/qtsone/agentic-runner/issues/64)) ([f9a030a](https://github.com/qtsone/agentic-runner/commit/f9a030afe8b8d1862c130b26362f100708081f43)), closes [#477](https://github.com/qtsone/agentic-runner/issues/477)
+
 # [3.21.0](https://github.com/qtsone/agentic-runner/compare/v3.20.0...v3.21.0) (2026-10-14)
 
 
