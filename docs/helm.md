@@ -111,7 +111,8 @@ entry. The pod never runs with an empty limit instead.
 The console shows the limit on **/admin/runners**. Tools are `enforced`. Networks report
 the `egressPosture` value: the proxy refuses what asks it, and only your NetworkPolicy stops
 a process that ignores it. A hostname entry denies that name only, not the host's
-addresses or other names. Folders are `checked` for Claude Code through ACP and
+addresses or other names: `pastebin.com` does not deny `www.pastebin.com`, and
+`*.pastebin.com` does not deny `pastebin.com`, so list both. Folders are `checked` for Claude Code through ACP and
 `unenforced` for every other CLI, which reads paths without asking. `checked` is not a
 boundary: `isolation: contract_uid` is, because each Contract's OS user can read only what
 it is allowed to read. [Run a Runner on your own machine](workstation.md#limit-what-agents-may-use)

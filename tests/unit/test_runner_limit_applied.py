@@ -413,6 +413,29 @@ def test_a_deny_entry_matches_an_ip_literal_however_it_is_spelled() -> None:
     assert destination_denied(["localhost"], "127.0.0.1", 80) is None
 
 
+@pytest.mark.parametrize(
+    ("entry", "spelling"),
+    [
+        ("10.0.0.5", "167772165"),
+        ("10.0.0.5", "0xa.0.0.5"),
+        ("10.0.0.5", "10.5"),
+        ("10.0.0.5", "012.0.0.5"),
+        ("127.0.0.1", "0x7f000001"),
+        ("127.0.0.1", "127.1"),
+        ("167772165", "10.0.0.5"),
+    ],
+)
+def test_a_deny_entry_matches_every_spelling_getaddrinfo_connects(
+    entry: str, spelling: str
+) -> None:
+    assert destination_denied([entry], spelling, 443) == 0
+
+
+def test_a_name_that_only_looks_numeric_is_left_a_name() -> None:
+    assert destination_denied(["10.0.0.5"], "10.0.0.5.example.com", 443) is None
+    assert destination_denied(["0.0.0.222"], "de", 443) is None
+
+
 @pytest.mark.asyncio
 async def test_a_directive_whose_git_remote_is_denied_fails_at_start_naming_the_entry(
     tmp_path: Path,
@@ -571,6 +594,18 @@ def test_a_glob_that_could_reach_a_denied_folder_is_refused(tmp_path: Path) -> N
     # A glob rooted beside the folder cannot reach it.
     assert folders.refusal(["tests/*.py"], workspace) is None
     assert folders.refusal([f"{tmp_path}/other/*"], workspace) is None
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["@{d}/x", "{d}:/mnt", "-v{d}:/mnt", "x,{d}", "scp:{d}", "PATH=/usr/bin:{d}/bin"],
+)
+def test_a_path_glued_inside_a_word_is_refused(tmp_path: Path, word: str) -> None:
+    denied = tmp_path / "clients"
+    folders = _folders(tmp_path, denied)
+
+    assert folders.refusal([word.format(d=denied)], tmp_path) == "folders[0]"
+    assert folders.script_refusal(f"curl -d {word.format(d=denied)} x", tmp_path) == "folders[0]"
 
 
 def test_an_empty_limit_refuses_no_word(tmp_path: Path) -> None:

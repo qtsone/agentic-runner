@@ -61,6 +61,9 @@ _HOME_VARIABLE: Final[re.Pattern[str]] = re.compile(r"\$(\{HOME\}|HOME(?![A-Za-z
 _GLOB: Final[re.Pattern[str]] = re.compile(r"[*?\[]")
 # What splits a shell script into words, for a permission request the policy cannot parse.
 _SHELL_WORD_BREAK: Final[re.Pattern[str]] = re.compile(r"[\s;&|<>()`'\"]+")
+# A path glued inside one word: `curl -d @/x`, `docker -v /x:/mnt`, `scp host:/x`, `a,/x`.
+_PATH_AFTER_SEPARATOR: Final[re.Pattern[str]] = re.compile(r"(?<=[@:,=])[/~]")
+_LIST_SEPARATOR: Final[re.Pattern[str]] = re.compile(r"[:,]")
 
 
 class RunnerLimitError(ValueError):
@@ -236,7 +239,12 @@ def _candidates(word: str) -> tuple[str, ...]:
     if "://" in word:
         # A URL is not a path, except one naming a local file.
         candidates = [c.removeprefix("file://") for c in candidates if c.startswith("file://")]
-    return tuple(candidate for candidate in candidates if candidate)
+    else:
+        candidates.extend(word[found.start() :] for found in _PATH_AFTER_SEPARATOR.finditer(word))
+    # Over-reading costs nothing: a piece that is no path resolves inside the Workspace,
+    # which no entry may hold.
+    pieces = [piece for candidate in candidates for piece in _LIST_SEPARATOR.split(candidate)]
+    return tuple(dict.fromkeys(c for c in (*candidates, *pieces) if c))
 
 
 @dataclass(frozen=True)

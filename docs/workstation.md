@@ -197,7 +197,8 @@ What happens to an Agent:
   it. A Directive whose git remote, LLM endpoint or MCP server is denied fails when it
   starts, and the Evidence names the entry (`networks[0]`). A hostname entry denies that
   name only. It does not deny the host's addresses or its other names, so deny those too
-  if a Profile allows them.
+  if a Profile allows them. `pastebin.com` does not deny `www.pastebin.com`, and
+  `*.pastebin.com` does not deny `pastebin.com`: to deny both, list both.
 - **Folders.** A command or a permission request that names a path in a denied folder is
   refused. Claude Code also gets the folders as its own `permissions.deny` rules. The
   Runner resolves symlinks, `..`, `~` and `$HOME`, compares whole folder names (`/a/b`
