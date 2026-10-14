@@ -340,6 +340,8 @@ _CRITIC_VETO_SOURCE = "critic.veto"
 # lets the Directive write; the Runner reads it and deletes it before anything else runs.
 _LEARNING_RUN_SOURCE = "learning.directive_run"
 _LESSONS_FILE = Path(".agentic-learner") / "lessons.json"
+# The `ending_kind` agentic-os sends for the leaving Assignee's Learning Directive.
+_LEARNING_ENDING_HANDOFF = "HANDOFF"
 # PRD issue 59: where a Lead's Directive writes its plan (children to open, children to
 # end, whether it ends the Epic). Read and deleted before anything is committed, so the
 # plan never lands on the branch; the control plane evaluates `work.open` / `work.end`.
@@ -1090,10 +1092,19 @@ def _learning_prompt(request: LearningDirectiveInput, *, base_branch: str, trans
     transcript_section = section("Conversation transcript", transcript or "(none)")
     lessons_section = section("Existing Lessons", request.existing_lessons or "(none)")
     cut_line = f"Cut to fit: {'; '.join(notes)}.\n\n" if notes else ""
-    return (
-        "You are the Learner. This Work Record has ended "
+    # A hand-off is no ending: the work goes on under the next Assignee, and the Evidence
+    # the platform sent is the leaving Agent's own Directives only (QTS-1566, QTS-1574).
+    occasion = (
+        "The Agent whose work you review handed this Work Record off and is no longer its "
+        "Assignee; the work goes on without it. Propose Lessons from its own part of the work "
+        "that a future Directive of the same Persona should know"
+        if request.ending_kind == _LEARNING_ENDING_HANDOFF
+        else "This Work Record has ended "
         f"({request.ending_kind}{' / ' + request.end_reason if request.end_reason else ''}). "
-        "Propose Lessons a future Directive of the same Persona should know -- from a "
+        "Propose Lessons a future Directive of the same Persona should know"
+    )
+    return (
+        f"You are the Learner. {occasion} -- from a "
         "failure as much as from a success. Propose nothing rather than something vague, "
         "and never repeat an existing Lesson below.\n\n"
         f"The change is the branch checked out here: read it with `git diff "
