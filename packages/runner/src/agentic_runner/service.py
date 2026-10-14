@@ -97,6 +97,12 @@ from agentic_runner.registration import (
     require_isolation_supported,
     save_state,
 )
+from agentic_runner.runner_limit import (
+    EMPTY_RUNNER_LIMIT,
+    AppliedRunnerLimit,
+    DeniedFolders,
+    RunnerLimitError,
+)
 from agentic_runner.sealed_box import (
     RECIPIENT_KEY_FILENAME,
     RecipientKeyStore,
@@ -131,6 +137,7 @@ from agentic_runner_contracts.runner_registration import (
     CredentialValidity,
     DirectiveOutcome,
     EgressPosture,
+    FolderPosture,
     HarnessVersion,
     HeartbeatAck,
     HeartbeatEnvelope,
@@ -139,6 +146,7 @@ from agentic_runner_contracts.runner_registration import (
     LifecycleKind,
     RecipientKey,
     ResourcePressure,
+    RunnerLimitReport,
 )
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContextResolver
 from agentic_runner_contracts.sealed_credential import key_fingerprint
@@ -308,6 +316,7 @@ async def register(
     control_plane: str | None = None,
     registration_token: str | None = None,
     isolation: IsolationMode | None = None,
+    runner_limit: RunnerLimitReport | None = None,
 ) -> tuple[RunnerState, str]:
     """First boot (PRD issue 41): exchange the Runner Registration Token for this
     process's identity.
@@ -337,6 +346,7 @@ async def register(
         recipient_key=recipient,
         max_concurrent_directives=_max_concurrent_directives(),
         can_separate_uids=can_separate_uids,
+        runner_limit=runner_limit,
     )
     save_state(state_dir, state)
     return state, (
@@ -429,7 +439,10 @@ _RUNTIMES: dict[str, Callable[[WorkerSettings], AgentRuntime]] = {
 
 
 def build_agent_runtimes(
-    settings: WorkerSettings, clis: Sequence[CliVersion]
+    settings: WorkerSettings,
+    clis: Sequence[CliVersion],
+    *,
+    denied_folders: DeniedFolders | None = None,
 ) -> dict[str, AgentRuntime]:
     """Every Agent Runtime this process serves, by the Profile's `cli_kind` (ADR-0006).
 
@@ -443,19 +456,52 @@ def build_agent_runtimes(
     Runner's setting (`ACP_CLI_KINDS`), never the payload's (local-agents 12 items 6, 7).
     A kind the host opted in to run a Profile-named command for (`ACP_PROFILE_CLI_KINDS`,
     local-agents 18) reaches `clis` through :func:`with_profile_acp_cli_kinds`.
+    ``denied_folders`` is the Runner Limit's folders part: the ACP permission seam is where
+    a harness asks before it reads a path, so the ACP runtimes are the ones that take it.
     """
 
     pinned_kinds = _pinned_acp_cli_kinds(settings)
     profile_kinds = set(profile_acp_executables(settings))
     return {
         cli.cli_kind: (
-            AcpRuntime(cli_kind=cli.cli_kind, settings=settings)
+            AcpRuntime(cli_kind=cli.cli_kind, settings=settings, denied_folders=denied_folders)
             if cli.cli_kind in profile_kinds or cli.cli_kind in pinned_kinds
             else _RUNTIMES[cli.cli_kind](settings)
         )
         for cli in clis
         if cli.meets_floor and (cli.cli_kind in _RUNTIMES or cli.cli_kind in profile_kinds)
     }
+
+
+def runner_limit_report(
+    limit: AppliedRunnerLimit,
+    runtimes: Mapping[str, AgentRuntime],
+    *,
+    egress_posture: EgressPosture,
+) -> RunnerLimitReport | None:
+    """The Runner Limit with how far each part binds here (ADR-0022 §53-§55).
+
+    Folders are ``checked`` only for a runtime whose harness asks before it reads a path;
+    every other harness reads what it likes, so the list is ``unenforced`` against it.
+    """
+
+    return limit.report(
+        egress_posture=egress_posture,
+        folders={
+            kind: (
+                FolderPosture.CHECKED
+                if isinstance(runtime, AcpRuntime) and runtime.folders_checked
+                else FolderPosture.UNENFORCED
+            )
+            for kind, runtime in runtimes.items()
+        },
+    )
+
+
+def egress_posture_from_env() -> EgressPosture:
+    return EgressPosture(
+        os.environ.get(EGRESS_POSTURE_ENV, "").strip() or EgressPosture.UNRESTRICTED
+    )
 
 
 def _pinned_acp_cli_kinds(settings: WorkerSettings) -> set[str]:
@@ -735,6 +781,8 @@ class ControlPlaneStream:
     llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
+    # ADR-0022 §57: the Runner Limit read at start and its posture; None while it is empty.
+    runner_limit: RunnerLimitReport | None = None
     _delivered: set[tuple[str, str]] = field(default_factory=set)
     # ADR-0022 §7: the Contracts the last ack asked this Runner to report references for.
     _manifests: list[CredentialManifest] = field(default_factory=list)
@@ -867,6 +915,7 @@ class ControlPlaneStream:
             oauth_authorizations=self.oauth.take_authorizations() if self.oauth else [],
             oauth_tokens=self.oauth.uploads() if self.oauth else [],
             oauth_outcomes=self.oauth.take_outcomes() if self.oauth else [],
+            runner_limit=self.runner_limit,
         )
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
@@ -1078,7 +1127,13 @@ async def _run(
     attestation: HostAttestation | None,
 ) -> int:
     install_stop_tolerant_child_watcher(asyncio.get_running_loop())
-    config = load_config()
+    try:
+        config = load_config()
+    except (ValidationError, ValueError, OSError) as error:
+        # A `[limits]` table (or any other setting) that does not parse stops the Runner
+        # here, rather than starting it with a limit the host did not write (ADR-0022 §57).
+        print(f"refusing to start (configuration_invalid): {error}", flush=True)
+        return 1
     mode = isolation_mode()
     can = can_separate_uids() if can_change_uid is None else can_change_uid
     try:
@@ -1100,6 +1155,13 @@ async def _run(
     except ValueError as error:
         print(f"refusing to start: {error}", flush=True)
         return 1
+    try:
+        runner_limit = AppliedRunnerLimit.from_config(
+            config.limits, workspace_roots=(config.workspace_root, settings.WORKSPACE_ROOT)
+        )
+    except RunnerLimitError as error:
+        print(f"refusing to start (runner_limit): {error}", flush=True)
+        return 1
     state_dir = config.state_dir
 
     readiness = readiness or Readiness(int(os.environ.get(READINESS_PORT_ENV, "").strip() or 0))
@@ -1120,6 +1182,7 @@ async def _run(
             heartbeat_interval=heartbeat_interval,
             host_store=host_store,
             attestation=attestation,
+            runner_limit=runner_limit,
         )
     finally:
         await readiness.close()
@@ -1204,10 +1267,25 @@ async def _serve(
     heartbeat_interval: float | None,
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
+    runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
 ) -> int:
+    limit_report = runner_limit_report(
+        runner_limit,
+        build_agent_runtimes(
+            settings,
+            attestation.clis if attestation is not None else [],
+            denied_folders=runner_limit.folders,
+        ),
+        egress_posture=egress_posture_from_env(),
+    )
     try:
         state, outcome = await _before_stop(
-            register(state_dir=state_dir, can_separate_uids=can_change_uid, client=http_client),
+            register(
+                state_dir=state_dir,
+                can_separate_uids=can_change_uid,
+                client=http_client,
+                runner_limit=limit_report,
+            ),
             stop,
         )
     except _StoppedBeforeStartError:
@@ -1257,6 +1335,7 @@ async def _serve(
             host_store=host_store,
             attestation=attestation,
             lifecycle=lifecycle,
+            runner_limit=runner_limit,
         )
     except _StoppedBeforeStartError:
         # No beat with a 10 s timeout on the way out (`_report_stop`): the control plane
@@ -1287,6 +1366,7 @@ async def _serve_registered(
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
     lifecycle: LifecycleOutbox,
+    runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
 ) -> int:
     load = _LoadInterceptor()
     proxy = LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox())
@@ -1294,7 +1374,12 @@ async def _serve_registered(
         config, host_store=host_store, host_party=state.host_party
     )
     isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
-    runtimes = build_agent_runtimes(settings, attestation.clis if attestation is not None else [])
+    runtimes = build_agent_runtimes(
+        settings,
+        attestation.clis if attestation is not None else [],
+        denied_folders=runner_limit.folders,
+    )
+    egress_posture = egress_posture_from_env()
     in_flight = DirectivesInFlight()
     self_tests = HarnessSelfTests(
         sandbox_for=lambda contract_id, cli_kind: isolation.existing_sandbox(
@@ -1325,9 +1410,7 @@ async def _serve_registered(
             }
         ),
         load=load,
-        egress_posture=EgressPosture(
-            os.environ.get(EGRESS_POSTURE_ENV, "").strip() or EgressPosture.UNRESTRICTED
-        ),
+        egress_posture=egress_posture,
         attestation=attestation,
         lifecycle=lifecycle,
         heartbeat_stamp=state_dir / HEARTBEAT_STAMP_NAME,
@@ -1335,6 +1418,7 @@ async def _serve_registered(
         contracts=isolation,
         self_tests=self_tests,
         usage_windows=usage_windows,
+        runner_limit=runner_limit_report(runner_limit, runtimes, egress_posture=egress_posture),
     )
     stream.sources = UserSourcePoller(
         stream=SignedIntakeStream(stream.client, state),
@@ -1402,6 +1486,7 @@ async def _serve_registered(
                 tool_servers=tool_servers,
                 sign_ins=sign_ins,
                 usage_windows=usage_windows,
+                runner_limit=runner_limit,
                 # The wake signal rides the connection this process polls with: one
                 # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
                 signaller=TemporalWorkflowSignaller(client),
@@ -1598,6 +1683,7 @@ def _activities(
     tool_servers: ToolServerHealthLog | None = None,
     sign_ins: ClaudeSignIns | None = None,
     usage_windows: UsageWindows | None = None,
+    runner_limit: AppliedRunnerLimit | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1646,6 +1732,7 @@ def _activities(
         attempt_records=attempt_records,
         directives_in_flight=directives_in_flight,
         usage_windows=usage_windows,
+        runner_limit=runner_limit,
     )
     return [
         *ralph.activity_callables(),

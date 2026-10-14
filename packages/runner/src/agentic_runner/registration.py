@@ -46,6 +46,7 @@ from agentic_runner_contracts.runner_registration import (
     HeartbeatEnvelope,
     IsolationMode,
     RecipientKey,
+    RunnerLimitReport,
 )
 from agentic_runner_contracts.runner_signature import (
     RUNNER_ID_HEADER,
@@ -258,6 +259,7 @@ class RunnerRegistrationClient:
         recipient_key: RecipientKey,
         max_concurrent_directives: int = 1,
         can_separate_uids: bool,
+        runner_limit: RunnerLimitReport | None = None,
     ) -> tuple[RunnerState, BootstrapResponse]:
         """Exchange the Runner Registration Token for this process's durable identity."""
 
@@ -271,6 +273,7 @@ class RunnerRegistrationClient:
             recipient_key=recipient_key,
             max_concurrent_directives=max_concurrent_directives,
             build_id=build_id(),
+            runner_limit=runner_limit,
         )
         payload = await self._post(BOOTSTRAP_PATH, content=request.model_dump_json(), headers={})
         response = BootstrapResponse.model_validate(payload)

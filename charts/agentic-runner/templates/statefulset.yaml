@@ -116,6 +116,10 @@ spec:
               value: {{ .Values.maxConcurrentDirectives | quote }}
             - name: AGENTIC_RUNNER_EGRESS_POSTURE
               value: {{ .Values.egressPosture | quote }}
+            {{- if .Values.limits }}
+            - name: AGENTIC_RUNNER_LIMITS
+              value: {{ .Values.limits | toJson | quote }}
+            {{- end }}
             - name: AGENTIC_RUNNER_READINESS_PORT
               value: {{ .Values.readinessPort | quote }}
             - name: AGENTIC_RUNNER_STATE_DIR

@@ -11,17 +11,26 @@ operator-typed command — the Directive is dispatched, not scripted — and its
 namespace and task queues are delivered at bootstrap and never typed. ``WorkerSettings``
 remains the pod's env-only surface for the Temporal/FastAPI wiring; this is the surface a
 workstation Runner (PRD issue 47) and the Helm chart (issue 46) actually fill.
+
+``limits`` is the Runner Limit (ADR-0022 §57): a ``[limits]`` table in the file, or JSON in
+``AGENTIC_RUNNER_LIMITS`` (what the chart's ``limits`` value renders to). One that is present
+but does not parse raises here, and the Runner refuses to start: never an empty limit in
+its place, which would let the host believe a limit holds that does not.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from agentic_runner.runner_limit import expand_home
+from agentic_runner_contracts.runner_limit import RunnerLimit
 
 __all__ = ["CONFIG_FILE_ENV", "DEFAULT_CONFIG_FILE", "ENV_PREFIX", "RunnerConfig", "load"]
 
@@ -57,6 +66,21 @@ class RunnerConfig(BaseModel):
     openai_base_url: str | None = None
     anthropic_base_url: str | None = None
     log_level: str = "info"
+    # What this Runner's host denies every Agent on it (ADR-0022 §52); empty narrows nothing.
+    limits: RunnerLimit = Field(default_factory=RunnerLimit)
+
+    @field_validator("limits", mode="before")
+    @classmethod
+    def _expand_folder_homes(cls, value: object) -> object:
+        # A folder entry must be absolute (the contracts model), and `~/clients` is what a
+        # person writes: expanded here, against the Runner's own home, before that check.
+        if isinstance(value, Mapping) and isinstance(value.get("folders"), list | tuple):
+            folders = [
+                expand_home(folder) if isinstance(folder, str) else folder
+                for folder in value["folders"]
+            ]
+            return {**value, "folders": folders}
+        return value
 
 
 def load(
@@ -103,8 +127,14 @@ def _from_file(path: Path) -> dict[str, Any]:
 
 
 def _from_env(env: Mapping[str, str]) -> dict[str, Any]:
-    return {
+    values: dict[str, Any] = {
         field: env[f"{ENV_PREFIX}{field.upper()}"]
         for field in RunnerConfig.model_fields
         if env.get(f"{ENV_PREFIX}{field.upper()}", "").strip()
     }
+    if "limits" in values:
+        try:
+            values["limits"] = json.loads(values["limits"])
+        except ValueError as error:
+            raise ValueError(f"{ENV_PREFIX}LIMITS is not JSON: {error}") from None
+    return values
