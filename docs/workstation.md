@@ -154,6 +154,76 @@ asking every funder to deliver their sealed credentials again.
 Credential References go to the macOS Keychain or the Linux Secret Service when one is
 reachable, and otherwise to `0600` files in that directory.
 
+## Limit what Agents may use
+
+A Runner Limit says what the Agents on your Runner must not use: tools, network
+destinations and folders. It adds to the Grants, the Agent Runtime Profile's network policy
+and the command policy. It never allows something they refuse. Each list is empty by
+default, and an empty list limits nothing.
+
+Write it in `config.toml` in the Organisation's directory (for example
+`~/Library/Application Support/agentic-runner/acme/config.toml`), then restart the Runner:
+
+```toml
+[limits]
+# Network destinations, in the network policy's syntax: host, host:port or *.domain.
+networks = ["pastebin.com", "*.internal.example.com:443"]
+# Absolute paths. `~` and `$HOME` are your home folder.
+folders = ["~/clients", "~/Documents/taxes"]
+
+# Tools: a Grant entry with `deny` only. A resource type from the Verb Catalogue
+# (`repo`, `channel`, `work`) or `mcp:<server>`, a selector, and the verbs or `*`.
+[[limits.tools]]
+resource_type = "repo"
+selector = "*"
+verbs = { "pr.merge" = "deny" }
+```
+
+```sh
+agentic-runner stop acme && agentic-runner start acme
+```
+
+The Runner reads the limit only when it starts. It refuses to start, and says which entry,
+when an entry is wrong: a verb or resource type the Verb Catalogue does not have, a
+destination that is not one, a folder that is not absolute or that contains the Workspaces,
+or a `[limits]` table that does not parse. It never starts with an empty limit instead.
+
+What happens to an Agent:
+
+- **Tools.** A denied verb is refused at the verb seam and through `agentic-runner`'s own
+  callbacks. A denied MCP server is not started. The Evidence names `runner_limit` as the
+  deciding link.
+- **Networks.** The egress proxy refuses a denied destination, also when the Profile allows
+  it. A Directive whose git remote, LLM endpoint or MCP server is denied fails when it
+  starts, and the Evidence names the entry (`networks[0]`). A hostname entry denies that
+  name only. It does not deny the host's addresses or its other names, so deny those too
+  if a Profile allows them.
+- **Folders.** A command or a permission request that names a path in a denied folder is
+  refused. Claude Code also gets the folders as its own `permissions.deny` rules. The
+  Runner resolves symlinks, `..`, `~` and `$HOME`, compares whole folder names (`/a/b`
+  denies `/a/b/c`, not `/a/bc`), ignores case on a case-insensitive disk, and refuses a
+  path with a variable it cannot expand or a wildcard that could reach a denied folder.
+  The Evidence names the entry (`folders[1]`), never the path.
+
+The console shows your limit on **/me/runners**, and how strongly each part holds on your
+computer:
+
+| Part | Posture | What it means |
+| --- | --- | --- |
+| Tools | `enforced` | Every verb needs a credential only the Runner holds. |
+| Networks | `unenforced` | The proxy refuses what asks it. A program that ignores the proxy settings and opens its own connection is not stopped. |
+| Folders | `checked` or `unenforced`, per CLI | `checked`: the CLI asks before it reads a path, and the Runner and the CLI both refuse. `unenforced`: the CLI reads paths without asking, so only the commands it asks about are checked. |
+
+Folders are `checked` only for **Claude Code through its ACP bridge**
+(`--acp-cli-kinds claude_code` on `install`, above). These CLIs read paths without asking, so
+their folders are `unenforced`: **Codex** (through ACP or not), **Claude Code** without ACP,
+and any CLI the Profile runs by its own ACP command.
+
+`checked` is not a boundary. A script in the Workspace, or an interpreter the Agent runs,
+reads paths that no command names. Only running each Contract as its own OS user stops
+that, which a workstation Runner does not do. Keep files an Agent must not read off the
+computer it runs on, or in a folder your user cannot read.
+
 ## What to expect
 
 - **One Contract at a time.** A workstation Runner runs `isolation: none`: Directives run as

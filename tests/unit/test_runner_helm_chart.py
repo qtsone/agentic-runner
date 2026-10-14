@@ -19,6 +19,9 @@ from typing import Any
 import pytest
 import yaml
 
+from agentic_runner.config import load
+from agentic_runner_contracts.runner_limit import RunnerLimit
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHART = REPO_ROOT / "charts" / "agentic-runner"
 FIVE_CAPABILITIES = ["SETUID", "SETGID", "CHOWN", "FOWNER", "DAC_OVERRIDE"]
@@ -256,3 +259,26 @@ def test_the_chart_test_fixtures_are_in_step_with_the_chart() -> None:
     assert "--set replicas=2" in script
     assert "recipient-key" in script
     assert json.dumps(FIVE_CAPABILITIES, separators=(",", ":")).strip("[]") in script
+
+
+def test_the_runner_limit_value_reaches_the_runner_as_the_limit_it_reads(tmp_path: Path) -> None:
+    """ADR-0022 §57: `limits` renders to the env var the Runner's config parses, unchanged;
+    no value renders no variable, so an unset chart limits nothing."""
+
+    limits = {
+        "tools": [{"resource_type": "repo", "selector": "acme/*", "verbs": {"pr.merge": "deny"}}],
+        "networks": ["pastebin.com"],
+        "folders": ["/mnt/shared-cache"],
+    }
+    values = tmp_path / "values.yaml"
+    values.write_text(yaml.safe_dump({"limits": limits}), encoding="utf-8")
+
+    env = _env(_runner(_render("-f", str(values)))["spec"]["template"]["spec"]["containers"][0])
+    unset = _env(_runner(_render())["spec"]["template"]["spec"]["containers"][0])
+
+    read = load(
+        config_file=tmp_path / "none.toml",
+        environ={"AGENTIC_RUNNER_LIMITS": env["AGENTIC_RUNNER_LIMITS"]},
+    )
+    assert read.limits == RunnerLimit.model_validate(limits)
+    assert "AGENTIC_RUNNER_LIMITS" not in unset
