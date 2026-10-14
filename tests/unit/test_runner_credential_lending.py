@@ -247,3 +247,23 @@ async def test_a_sealed_value_makes_the_contractor_funded_reference_usable(
     assert registration.sent[-1].credentials == [
         CredentialValidity(contract_id=UUID(CONTRACTOR_FUNDED), reference=REFERENCE, valid=True)
     ]
+
+
+def test_an_ack_with_nothing_to_ask_omits_the_key_a_318_runner_refuses() -> None:
+    def ack(manifests: list[CredentialManifest]) -> dict[str, Any]:
+        return HeartbeatAck(
+            runner_id=uuid4(),
+            floor_state=FloorState.OK,
+            contracts_floor=contracts_version,
+            tag_set_version=1,
+            accepts_new_directives=True,
+            credential_manifests=manifests,
+        ).model_dump(mode="json")
+
+    assert "credential_manifests" not in ack([])
+    manifest = CredentialManifest(
+        contract_id=UUID(ORG_FUNDED), funding_party="organisation", references=[REFERENCE]
+    )
+    assert ack([manifest])["credential_manifests"] == [
+        {"contract_id": ORG_FUNDED, "funding_party": "organisation", "references": [REFERENCE]}
+    ]

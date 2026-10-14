@@ -400,7 +400,7 @@ class CredentialManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     contract_id: UUID
-    # `organisation` | `account` | `user` -- who pays for the Contract, as
+    # `organisation` | `user` -- who pays for the Contract, as
     # `DirectiveRouting.funding_party` says it (§36).
     funding_party: Annotated[str, StringConstraints(max_length=32)]
     references: list[Annotated[str, StringConstraints(max_length=128)]] = Field(
@@ -759,6 +759,15 @@ class HeartbeatAck(BaseModel):
     credential_manifests: list[CredentialManifest] = Field(
         default_factory=list, max_length=CREDENTIAL_MANIFESTS_MAX
     )
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_credential_manifests(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
+        # body that Runner already parses.
+        body = handler(self)
+        if isinstance(body, dict) and not body.get("credential_manifests"):
+            body.pop("credential_manifests", None)
+        return body
 
 
 class DirectiveTokenRequest(BaseModel):
