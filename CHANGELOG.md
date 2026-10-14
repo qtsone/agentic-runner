@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.22.0](https://github.com/qtsone/agentic-runner/compare/v3.21.1...v3.22.0) (2026-10-14)
+
+
+### Features
+
+* **runner:** apply and report the Runner Limit (QTS-1562) ([#65](https://github.com/qtsone/agentic-runner/issues/65)) ([9521f99](https://github.com/qtsone/agentic-runner/commit/9521f99652f67fa0f80b47c52708034972b1db41)), closes [#63](https://github.com/qtsone/agentic-runner/issues/63) [#63](https://github.com/qtsone/agentic-runner/issues/63)
+
 ## [3.21.1](https://github.com/qtsone/agentic-runner/compare/v3.21.0...v3.21.1) (2026-10-14)
 
 
