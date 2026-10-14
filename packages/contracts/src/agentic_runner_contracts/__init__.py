@@ -104,6 +104,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose heartbeat names contracts 3.20 or later, and refuses a Tag edit on any other: a
 # Runner below 3.20 keeps checking its bootstrap Tags and would refuse work routed on an
 # added one.
-__version__ = "3.19.0"
+__version__ = "3.20.0"
 
 __all__ = ["__version__"]

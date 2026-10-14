@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.20.0](https://github.com/qtsone/agentic-runner/compare/v3.19.0...v3.20.0) (2026-10-14)
+
+
+### Features
+
+* **runner:** adopt the Runner Tags each heartbeat ack carries (QTS-1553) ([#62](https://github.com/qtsone/agentic-runner/issues/62)) ([e381492](https://github.com/qtsone/agentic-runner/commit/e38149237491f1b1a9a66eb9509d078e19c4bd47))
+
 # [3.19.0](https://github.com/qtsone/agentic-runner/compare/v3.18.3...v3.19.0) (2026-10-14)
 
 
