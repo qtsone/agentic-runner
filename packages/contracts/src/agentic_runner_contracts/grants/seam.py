@@ -22,8 +22,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from agentic_runner_contracts.grants.catalogue import mcp_resource_type
-from agentic_runner_contracts.grants.evaluator import Resource, evaluate_effective_grant
-from agentic_runner_contracts.grants.model import DECISION_RANK, Decision, GrantLink
+from agentic_runner_contracts.grants.evaluator import (
+    Resource,
+    decide_runner_limit,
+    evaluate_effective_grant,
+)
+from agentic_runner_contracts.grants.model import (
+    DECISION_RANK,
+    Decision,
+    Grant,
+    GrantEntry,
+    GrantLink,
+)
 from agentic_runner_contracts.grants.snapshot import REPO_RESOURCE_TYPE, GrantSnapshot
 
 
@@ -81,10 +91,38 @@ def decide_verb(
     verb: str,
     identifier: str,
     resource_type: str = REPO_RESOURCE_TYPE,
+    runner_limit: Grant | None = None,
 ) -> VerbDecision:
-    """Evaluate one privileged verb against the Effective Grant in ``snapshot``."""
+    """Evaluate one privileged verb against the Effective Grant in ``snapshot``.
 
+    ``runner_limit`` is the tools part of this Runner's Runner Limit (ADR-0022 §53). It
+    binds even where no Agent is bound: it is the host's, not the Grant chain's.
+    """
+
+    resource = Resource(
+        resource_type=resource_type,
+        identifier=identifier,
+        in_contract_scope=snapshot.in_contract_scope(
+            resource_type=resource_type, identifier=identifier
+        ),
+    )
     if not snapshot.enforced:
+        limited = (
+            None
+            if runner_limit is None
+            else decide_runner_limit(runner_limit, resource=resource, verb=verb)
+        )
+        if limited is not None and limited.entry is not None:
+            return _decision(
+                snapshot,
+                verb=verb,
+                resource_type=resource_type,
+                identifier=identifier,
+                decision=Decision.DENY,
+                reason=f"this Runner's Runner Limit denies {verb!r} on {identifier}",
+                deciding_link=GrantLink.RUNNER_LIMIT,
+                deciding_entry=_entry_evidence(limited.entry, verb=verb, fallback=Decision.DENY),
+            )
         return _decision(
             snapshot,
             verb=verb,
@@ -110,15 +148,10 @@ def decide_verb(
         root=snapshot.root,
         agent=snapshot.agent,
         persona=snapshot.persona,
-        resource=Resource(
-            resource_type=resource_type,
-            identifier=identifier,
-            in_contract_scope=snapshot.in_contract_scope(
-                resource_type=resource_type, identifier=identifier
-            ),
-        ),
+        resource=resource,
         verb=verb,
         account_contract=snapshot.account_contract,
+        runner_limit=runner_limit,
     )
     entry = effective.deciding_entry
     return _decision(
@@ -132,13 +165,17 @@ def decide_verb(
         deciding_entry=(
             None
             if entry is None
-            else {
-                "resource_type": entry.resource_type,
-                "selector": entry.selector,
-                "decision": entry.verbs.get(verb, effective.decision).value,
-            }
+            else _entry_evidence(entry, verb=verb, fallback=effective.decision)
         ),
     )
+
+
+def _entry_evidence(entry: GrantEntry, *, verb: str, fallback: Decision) -> dict[str, object]:
+    return {
+        "resource_type": entry.resource_type,
+        "selector": entry.selector,
+        "decision": entry.verbs.get(verb, fallback).value,
+    }
 
 
 @dataclass(frozen=True)
@@ -177,7 +214,11 @@ class McpServerDecision:
 
 
 def decide_mcp_server(
-    snapshot: GrantSnapshot, *, server: str, tools: Sequence[str]
+    snapshot: GrantSnapshot,
+    *,
+    server: str,
+    tools: Sequence[str],
+    runner_limit: Grant | None = None,
 ) -> McpServerDecision:
     """Evaluate every tool of one server and keep the most restrictive answer.
 
@@ -205,7 +246,13 @@ def decide_mcp_server(
             server=server, decision=Decision.DENY, deciding=refused, tools=(refused,)
         )
     decisions = tuple(
-        decide_verb(snapshot, verb=tool, identifier=server, resource_type=resource_type)
+        decide_verb(
+            snapshot,
+            verb=tool,
+            identifier=server,
+            resource_type=resource_type,
+            runner_limit=runner_limit,
+        )
         for tool in (tuple(tools) or ("*",))
     )
     deciding = min(decisions, key=lambda decision: DECISION_RANK[decision.decision])
