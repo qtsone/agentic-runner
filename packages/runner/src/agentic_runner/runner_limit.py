@@ -199,7 +199,9 @@ class DeniedFolders:
 
     def _candidate_refusal(self, candidate: str, cwd: Path) -> str | None:
         expanded = expand_home(candidate, self._home)
-        if _VARIABLE.search(expanded):
+        # A NUL ends the path where the kernel reads it and is refused by `realpath`, so no
+        # resolution here can say what it names.
+        if _VARIABLE.search(expanded) or "\x00" in expanded:
             return "folders[*]"
         if _GLOB.search(expanded):
             return self._glob_refusal(expanded, cwd)

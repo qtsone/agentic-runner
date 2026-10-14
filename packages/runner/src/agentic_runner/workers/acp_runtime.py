@@ -740,7 +740,9 @@ class AcpRuntime:
             # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid
             # nothing else keeps an allowlisted command out of another Work Record's
             # Workspace.
-            verdict, reason = _verdict(argv, cwd, request, workspace_path)
+            verdict, reason = _verdict(
+                argv, cwd, request, workspace_path, denied_folders=self._denied_folders
+            )
         options = params.get("options") or []
         if verdict == _Verdict.ALLOW:
             turn.notes.append(f"permission allowed: {described}")
@@ -1094,6 +1096,10 @@ def _requested_strings(tool_call: Mapping[str, Any]) -> Iterator[str]:
                 yield value
             elif isinstance(value, list):
                 yield from (item for item in value if isinstance(item, str))
+        # Codex's patch request: the paths it would write are the keys of `changes`.
+        changes = raw_input.get("changes")
+        if isinstance(changes, Mapping):
+            yield from (path for path in changes if isinstance(path, str))
     locations = tool_call.get("locations")
     for location in locations if isinstance(locations, list) else []:
         if isinstance(location, Mapping) and isinstance(location.get("path"), str):
@@ -1135,7 +1141,12 @@ def _split(command: str) -> list[str] | None:
 
 
 def _verdict(
-    argv: list[str] | None, cwd: Path, request: DirectiveRequest, workspace_path: Path
+    argv: list[str] | None,
+    cwd: Path,
+    request: DirectiveRequest,
+    workspace_path: Path,
+    *,
+    denied_folders: DeniedFolders | None = None,
 ) -> tuple[_Verdict, str]:
     if argv is None:
         return _Verdict.SILENT, "not a command the policy can read"
@@ -1146,6 +1157,7 @@ def _verdict(
         base_branch=request.base_branch,
         work_branch=request.work_branch,
         policy=CommandPolicy(),
+        denied_folders=denied_folders,
     )
     if decision.allowed:
         return _Verdict.ALLOW, decision.reason

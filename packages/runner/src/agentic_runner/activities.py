@@ -3032,6 +3032,8 @@ class RunnerRalphActivities:
         entry by its position and the destination it needed.
         """
 
+        if not self._runner_limit.networks:
+            return
         needed = [
             ("git remote", _github_remote_url(state.repository)),
             *((f"MCP server {entry.slug}", entry.url) for entry in entries if entry.url),

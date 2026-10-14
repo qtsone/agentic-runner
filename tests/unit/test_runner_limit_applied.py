@@ -730,3 +730,22 @@ def test_an_empty_limit_reports_nothing_so_an_older_control_plane_keeps_the_hear
     tmp_path: Path,
 ) -> None:
     assert _applied(tmp_path).report(egress_posture=EgressPosture.UNRESTRICTED, folders={}) is None
+
+
+def test_a_path_with_a_nul_byte_is_refused_rather_than_raising(tmp_path: Path) -> None:
+    assert _folders(tmp_path, tmp_path / "clients").refusal(["/etc\x00/x"], tmp_path) == (
+        "folders[*]"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_no_rlimits")
+async def test_a_codex_patch_into_a_denied_folder_is_refused(tmp_path: Path) -> None:
+    denied = tmp_path / "clients"
+    patch = {"title": "Edit", "rawInput": {"changes": {str(denied / "a.txt"): {"add": "x"}}}}
+
+    result = await _acp(tmp_path, "codex_cli", _folders(tmp_path, denied)).execute_directive(
+        _acp_request(tmp_path, {"permissions": [patch], "stop_reason": "cancelled"}, "codex_cli")
+    )
+
+    assert "Runner Limit denies folders[0]" in " ".join(result.evidence.notes)
