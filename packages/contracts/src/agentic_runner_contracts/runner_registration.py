@@ -31,7 +31,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -53,6 +53,7 @@ from agentic_runner_contracts.oauth_connector import (
     OAuthStart,
     SealedOAuthCode,
 )
+from agentic_runner_contracts.runner_limit import RunnerLimit
 from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
@@ -134,6 +135,43 @@ class EgressPosture(StrEnum):
     UNENFORCED = "unenforced"
 
 
+class FolderPosture(StrEnum):
+    """How far one harness is held to the Runner Limit's folders (ADR-0022 §55).
+
+    ``CHECKED``: both the Runner and the harness refuse a denied path. ``UNENFORCED``: the
+    harness can read a path without asking, so only what it asks about is refused.
+    """
+
+    CHECKED = "checked"
+    UNENFORCED = "unenforced"
+
+
+class RunnerLimitPosture(BaseModel):
+    """How strongly each part of the Runner Limit binds on this host.
+
+    ``tools`` is always ``enforced``: every verb needs a credential only the Runner holds
+    (§53). ``networks`` is the Runner's ``egress_posture`` (§54). ``folders`` is per
+    ``cli_kind`` the Runner serves (§55).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tools: Literal["enforced"] = "enforced"
+    networks: EgressPosture
+    folders: dict[
+        Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")], FolderPosture
+    ] = Field(default_factory=dict, max_length=8)
+
+
+class RunnerLimitReport(BaseModel):
+    """The Runner Limit and its posture, as registration and each heartbeat carry it (§57)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    limit: RunnerLimit
+    posture: RunnerLimitPosture
+
+
 class SlotProbe(StrEnum):
     """The funder-visible probe result for one credential slot (22 A10)."""
 
@@ -204,6 +242,9 @@ class BootstrapRequest(BaseModel):
     recipient_key: RecipientKey
     max_concurrent_directives: int = Field(default=1, ge=1, le=64)
     build_id: BuildId | None = None
+    # ADR-0022 §57-§58: what this Runner's host denies its Agents, and how far it binds.
+    # Optional so a Runner below 3.21 still registers.
+    runner_limit: RunnerLimitReport | None = None
 
     @model_validator(mode="after")
     def _exactly_one_token(self) -> BootstrapRequest:
@@ -212,13 +253,13 @@ class BootstrapRequest(BaseModel):
         return self
 
     @model_serializer(mode="wrap")
-    def _omit_the_absent_token(self, handler: SerializerFunctionWrapHandler) -> Any:
+    def _omit_absent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A control plane below 3.16 forbids extra keys and requires `agent_token`, so a
         # body that names the field it does not know is refused whatever its value --
-        # upgrade the control plane before the Runner.
+        # upgrade the control plane before the Runner. Likewise `runner_limit` below 3.21.
         body = handler(self)
         if isinstance(body, dict):
-            for name in ("registration_token", "agent_token"):
+            for name in ("registration_token", "agent_token", "runner_limit"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body
@@ -675,9 +716,12 @@ class HeartbeatEnvelope(BaseModel):
     oauth_authorizations: list[OAuthAuthorizeUrl] = Field(default_factory=list, max_length=16)
     oauth_tokens: list[SealedCredential] = Field(default_factory=list, max_length=64)
     oauth_outcomes: list[OAuthOutcome] = Field(default_factory=list, max_length=64)
+    # ADR-0022 §57-§58: the Runner Limit read at start, on every beat. None from a Runner
+    # below 3.21, which the console shows as "not reported" rather than as no limit.
+    runner_limit: RunnerLimitReport | None = None
 
     @model_serializer(mode="wrap")
-    def _omit_empty_optional_lists(self, handler: SerializerFunctionWrapHandler) -> Any:
+    def _omit_empty_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # An older control plane forbids extra keys, so a Runner with nothing to say in
         # these sends the body that control plane already parses. One that has something
         # needs the control plane on the contracts minor that added the field first.
@@ -688,6 +732,7 @@ class HeartbeatEnvelope(BaseModel):
                 "oauth_authorizations",
                 "oauth_tokens",
                 "oauth_outcomes",
+                "runner_limit",
             ):
                 if not body.get(name):
                     body.pop(name, None)

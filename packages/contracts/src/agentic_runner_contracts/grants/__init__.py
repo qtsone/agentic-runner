@@ -32,6 +32,7 @@ from agentic_runner_contracts.grants.evaluator import (
     LinkDecision,
     Resource,
     decide_link,
+    decide_runner_limit,
     evaluate_effective_grant,
 )
 from agentic_runner_contracts.grants.model import (
@@ -111,6 +112,7 @@ __all__ = [
     "catalogue_for",
     "decide_link",
     "decide_mcp_server",
+    "decide_runner_limit",
     "decide_verb",
     "evaluate_effective_grant",
     "expand_and_validate_grant",

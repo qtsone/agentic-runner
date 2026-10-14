@@ -104,6 +104,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose heartbeat names contracts 3.20 or later, and refuses a Tag edit on any other: a
 # Runner below 3.20 keeps checking its bootstrap Tags and would refuse work routed on an
 # added one.
+# 3.21.0 (QTS-1561, ADR-0022 §52-§58): the Runner Limit -- `runner_limit.RunnerLimit`,
+# `RunnerLimitReport` and `RunnerLimitPosture` on `BootstrapRequest.runner_limit` and
+# `HeartbeatEnvelope.runner_limit`; `GrantLink.RUNNER_LIMIT` and the evaluator's
+# `runner_limit` link, also taken by `decide_verb` and `decide_mcp_server`. Additive and
+# omitted while None, but both bodies forbid extra keys, so the control plane moves to
+# 3.21 before a Runner reports a limit. The new Runner compatibility floor.
 __version__ = "3.20.0"
 
 __all__ = ["__version__"]
