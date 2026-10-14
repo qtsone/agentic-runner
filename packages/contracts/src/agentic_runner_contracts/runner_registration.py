@@ -81,6 +81,12 @@ RECENT_OUTCOMES_MAX: Final = 10
 # Agent it is currently working for.
 SNAPSHOT_PUSH_MAX: Final = 64
 
+# The Contracts one ack asks a Runner to report Credential References for, and the
+# references in each (ADR-0022 §7). Their product bounds the envelope's report, so a
+# Runner never builds a `credentials` list the control plane refuses.
+CREDENTIAL_MANIFESTS_MAX: Final = 64
+CREDENTIAL_REFERENCES_MAX: Final = 64
+
 _EXCEPTION_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 # ``path/to/module.py:123`` and nothing else -- no function name, no source line, no
 # message. A frame that carries a repository path still carries only a path shape, which
@@ -378,6 +384,28 @@ class CredentialValidity(BaseModel):
 
     reference: Annotated[str, StringConstraints(max_length=128)]
     valid: bool
+    # ADR-0022 §7: usability is per Contract, because whether a host's own value is lent
+    # depends on who funds the Contract (§36). Required: a Runner on 3.18 or earlier
+    # never filled this list, so no envelope that parsed before carries an entry.
+    contract_id: UUID
+
+
+class CredentialManifest(BaseModel):
+    """One Contract's Credential References, which the Runner reports on (ADR-0022 §7).
+
+    Sent by the control plane because the Runner learns a manifest only from a Directive's
+    runtime context, and routing needs the report before the first Directive arrives.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract_id: UUID
+    # `organisation` | `user` -- who pays for the Contract, as
+    # `DirectiveRouting.funding_party` says it (§36).
+    funding_party: Annotated[str, StringConstraints(max_length=32)]
+    references: list[Annotated[str, StringConstraints(max_length=128)]] = Field(
+        default_factory=list, max_length=CREDENTIAL_REFERENCES_MAX
+    )
 
 
 class ToolServerHealth(BaseModel):
@@ -588,7 +616,10 @@ class HeartbeatEnvelope(BaseModel):
     recent_outcomes: list[DirectiveOutcome] = Field(
         default_factory=list, max_length=RECENT_OUTCOMES_MAX
     )
-    credentials: list[CredentialValidity] = Field(default_factory=list, max_length=64)
+    # One entry per reference of every Contract the last ack's `credential_manifests` named.
+    credentials: list[CredentialValidity] = Field(
+        default_factory=list, max_length=CREDENTIAL_MANIFESTS_MAX * CREDENTIAL_REFERENCES_MAX
+    )
     slots: list[SlotStatus] = Field(default_factory=list, max_length=64)
     # Usage is an outbound stream item (ADR-0013 §11): the relocated proxy meters on the
     # host that holds the funder's key and ships the rows out here, batched. Counts,
@@ -721,6 +752,22 @@ class HeartbeatAck(BaseModel):
     oauth_starts: list[OAuthStart] = Field(default_factory=list, max_length=16)
     oauth_codes: list[SealedOAuthCode] = Field(default_factory=list, max_length=16)
     oauth_disconnects: list[OAuthDisconnect] = Field(default_factory=list, max_length=16)
+    # ADR-0022 §7: the Contracts this Runner may serve that declare Credential
+    # References. Authoritative, like `sealed_credentials`: the next envelope reports on
+    # exactly these. The ack forbids extra keys, so the control plane sends it only to a
+    # Runner whose heartbeat names contracts 3.19 or later.
+    credential_manifests: list[CredentialManifest] = Field(
+        default_factory=list, max_length=CREDENTIAL_MANIFESTS_MAX
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_credential_manifests(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
+        # body that Runner already parses.
+        body = handler(self)
+        if isinstance(body, dict) and not body.get("credential_manifests"):
+            body.pop("credential_manifests", None)
+        return body
 
 
 class DirectiveTokenRequest(BaseModel):

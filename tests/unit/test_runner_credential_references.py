@@ -45,7 +45,9 @@ VALUE = "ghp-never-in-an-env-anywhere"
 
 
 def _resolver(**values: str) -> CredentialResolver:
-    return CredentialResolver(store=FakeCredentialStore(values))
+    # A personal Runner lends its own store to the one Contract it runs (ADR-0022 §42);
+    # who else it is lent to is `test_runner_credential_lending.py`.
+    return CredentialResolver(store=FakeCredentialStore(values), host_party="user")
 
 
 def _resolved() -> DirectiveCredentials:
@@ -130,7 +132,9 @@ def test_the_composition_root_wires_the_configured_host_store(tmp_path: Path) ->
     """
 
     (tmp_path / REFERENCE).write_text(VALUE, encoding="utf-8")
-    configured = build_credential_resolver(RunnerConfig(credential_store=tmp_path))
+    configured = build_credential_resolver(
+        RunnerConfig(credential_store=tmp_path), host_party="user"
+    )
 
     assert (
         configured.resolve(contract_id=CONTRACT, manifest=[REFERENCE]).for_verb_seam(REFERENCE)
@@ -138,7 +142,7 @@ def test_the_composition_root_wires_the_configured_host_store(tmp_path: Path) ->
     )
 
     with pytest.raises(UnresolvableCredentialReferenceError) as refusal:
-        build_credential_resolver(RunnerConfig()).resolve(
+        build_credential_resolver(RunnerConfig(), host_party="user").resolve(
             contract_id=CONTRACT, manifest=[REFERENCE]
         )
     assert refusal.value.reason == "not_installed"

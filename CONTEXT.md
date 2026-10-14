@@ -61,7 +61,7 @@ A free-form key–value pair declared by a Runner at registration and stored on 
 _Avoid_: Label, Queue (that is the Runner's identity, not a tag), Selector (that is the Product's or Contract's requirement matched against tags)
 
 **Credential Reference**:
-The name, held by the control plane on a Contract's credential manifest, of a secret whose value lives only in the Runner's host store, put there by the host operator or by Credential Delivery. The Runner resolves it at Directive time for its LLM proxy, verb seams, hooks and out-of-tree MCP servers; the value never reaches the control plane in the clear or the Agent Runtime at all.
+The name, held by the control plane on a Contract's credential manifest, of a secret whose value lives only in the Runner's host store, put there by the host operator or by Credential Delivery. The Runner resolves it at Directive time — a value sealed for the Contract first, then its host's store by name, which an Organisation's or Account's Runner consults only for Contracts its host pays for (ADR-0022 §36) — for its LLM proxy, verb seams, hooks and out-of-tree MCP servers; the value never reaches the control plane in the clear or the Agent Runtime at all.
 _Avoid_: Secret (that is the value), Credential (ambiguous between name and value), Env var
 
 **Credential Delivery**:
