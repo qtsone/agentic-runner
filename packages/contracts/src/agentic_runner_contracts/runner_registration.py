@@ -12,10 +12,12 @@ holds" a statement about the wire rather than about a control-plane deploy.
 
 Three rules are enforced by the schema itself rather than by a reviewer:
 
-* **Runner Tags travel once, at bootstrap, and never in a heartbeat body** (map ticket 25
-  §9). :class:`HeartbeatEnvelope` has no tag field and forbids extras, so a body carrying
-  one fails validation before any handler sees it; :attr:`HeartbeatEnvelope.tag_set_version`
-  is how a Runner says *which* tag set it is running.
+* **A Runner states its Tags once, at bootstrap, and never in a heartbeat body** (map
+  ticket 25 §9). :class:`HeartbeatEnvelope` has no tag field and forbids extras, so a body
+  carrying one fails validation before any handler sees it;
+  :attr:`HeartbeatEnvelope.tag_set_version` is how a Runner says *which* tag set it is
+  running. The control plane owns them after that: :attr:`HeartbeatAck.tags` is the set
+  the console edited (ADR-0022 §13).
 * **Self-reported facts only, scrubbed of content** (06 §4 as refined by 07). A Directive
   outcome carries a status, an error code, an exception *type* and redacted frames --
   never a payload, a message or a repository path. The patterns below are what "scrubbed"
@@ -175,9 +177,10 @@ class RecipientKey(BaseModel):
 class BootstrapRequest(BaseModel):
     """What a Runner process presents on first boot (ADR-0013 §8).
 
-    ``tags`` is the one and only place Runner Tags cross the wire: free-form
-    ``key=value`` the operator declared in config, used for routing (issue 42) and never
-    in a queue name, a Search Attribute or a heartbeat body.
+    ``tags`` is the one place a Runner states its own Tags: free-form ``key=value`` the
+    operator declared in config, used for routing (issue 42) and never in a queue name, a
+    Search Attribute or a heartbeat body. Edits after registration come back on
+    :attr:`HeartbeatAck.tags`.
 
     ``build_id`` is the same digest the heartbeat's attestation carries, here so a
     platform that admits only published builds can refuse before it issues an identity
@@ -718,9 +721,18 @@ class HeartbeatAck(BaseModel):
     # Set only when `floor_state` holds: the reason the console banner and the Directive
     # refusal both read (25 §7).
     hold_reason: str | None = None
-    # The control plane's tag-set version. Disagreeing with the envelope's means the
-    # operator edited config; the Runner re-bootstraps rather than mutating tags in place.
+    # The control plane's tag-set version: it ticks on every edit of the Runner's Tags.
     tag_set_version: int
+    # ADR-0022 §13: the Runner's Tags as the control plane routes on them, edited in the
+    # console after registration. Authoritative, like `sealed_credentials`: the Runner
+    # checks every Directive's selector against this set, not against the Tags it
+    # bootstrapped with, or work routed on an added Tag is refused on every retry. None
+    # from a control plane that predates the field; the Runner then keeps what it holds.
+    # The ack forbids extra keys, so the control plane sends it only to a Runner whose
+    # heartbeat names contracts 3.20 or later.
+    tags: dict[TagKey, Annotated[str, StringConstraints(max_length=256)]] | None = Field(
+        default=None, max_length=32
+    )
     accepts_new_directives: bool
     # ``directive_id:sequence`` for every Usage Record this heartbeat committed. The
     # Runner's outbox drops exactly these and re-sends the rest, so a dropped ack costs a
@@ -761,12 +773,16 @@ class HeartbeatAck(BaseModel):
     )
 
     @model_serializer(mode="wrap")
-    def _omit_empty_credential_manifests(self, handler: SerializerFunctionWrapHandler) -> Any:
+    def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
-        # body that Runner already parses.
+        # body that Runner already parses; likewise `tags` for a Runner on 3.19. An empty
+        # tag set is still sent: it says the Runner has no Tags.
         body = handler(self)
-        if isinstance(body, dict) and not body.get("credential_manifests"):
-            body.pop("credential_manifests", None)
+        if isinstance(body, dict):
+            if not body.get("credential_manifests"):
+                body.pop("credential_manifests", None)
+            if body.get("tags") is None:
+                body.pop("tags", None)
         return body
 
 

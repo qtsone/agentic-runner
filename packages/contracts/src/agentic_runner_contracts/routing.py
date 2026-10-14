@@ -194,7 +194,8 @@ class RunnerRoutingIdentity:
     """What a Runner process knows about itself, as the control plane registered it.
 
     Built at the composition root from the bootstrap response and the config-declared
-    Tags -- never from an activity payload, which is the thing being checked.
+    Tags, and rebuilt with the Tags each heartbeat ack carries (ADR-0022 §13) -- never
+    from an activity payload, which is the thing being checked.
     """
 
     runner_id: str
