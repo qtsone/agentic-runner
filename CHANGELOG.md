@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.21.0](https://github.com/qtsone/agentic-runner/compare/v3.20.0...v3.21.0) (2026-10-14)
+
+
+### Features
+
+* **contracts:** Runner Limit model, wire field and runner_limit link (QTS-1561) ([#63](https://github.com/qtsone/agentic-runner/issues/63)) ([0759bcf](https://github.com/qtsone/agentic-runner/commit/0759bcf1ae0e09bdb6806fe769be4540bf420df5))
+
 # [3.20.0](https://github.com/qtsone/agentic-runner/compare/v3.19.0...v3.20.0) (2026-10-14)
 
 
