@@ -267,6 +267,7 @@ from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
 from agentic_runner_contracts.questions import WORK_ASK_VERB
 from agentic_runner_contracts.redaction import redact_secret_like_text
 from agentic_runner_contracts.routing import (
+    DirectiveRouting,
     RoutingRefusedError,
     RunnerRoutingIdentity,
     assert_routed,
@@ -2028,6 +2029,7 @@ class RunnerRalphActivities:
                     state=runtime_state,
                     workspace_path=workspace_path,
                     directive_number=request.directive_number,
+                    routing=request.routing,
                     sandbox=self._contract_sandbox(runtime_state),
                     mcp_plan=mcp_plan,
                     asked=asked,
@@ -2595,6 +2597,7 @@ class RunnerRalphActivities:
         mcp_plan: McpPlan | None = None,
         asked: list[QuestionAsked] | None = None,
         bound: list[ProductBinding] | None = None,
+        routing: DirectiveRouting | None = None,
     ) -> AsyncIterator[_DirectiveAttempt]:
         """Open one attempt's hook lifecycle and its callback socket (PRD issue 45).
 
@@ -2623,7 +2626,9 @@ class RunnerRalphActivities:
             )
 
         await self._refuse_skill_digest_mismatch(work_record_id, state)
-        credentials = await self._resolve_credentials(work_record_id, state)
+        credentials = await self._resolve_credentials(
+            work_record_id, state, funding_party=routing.funding_party if routing else None
+        )
         if credentials is not None:
             # Names only, at the moment they resolved (22 A1's Evidence): a support read
             # of "which credentials did this Directive have" must not be answerable by
@@ -2969,7 +2974,11 @@ class RunnerRalphActivities:
         return (tuple(entries) if state.mcp_servers else None), allow_list
 
     async def _resolve_credentials(
-        self, work_record_id: str, state: _RuntimeContextState
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        *,
+        funding_party: str | None = None,
     ) -> DirectiveCredentials | None:
         """Resolve this Contract's Credential References, or fail the Directive closed.
 
@@ -2985,7 +2994,9 @@ class RunnerRalphActivities:
         resolver = self._credentials or CredentialResolver(store=EmptyCredentialStore())
         try:
             return resolver.resolve(
-                contract_id=state.contract_id, manifest=state.credential_references
+                contract_id=state.contract_id,
+                manifest=state.credential_references,
+                funding_party=funding_party,
             )
         except UnresolvableCredentialReferenceError as error:
             await self._fastapi_client.append_evidence(
@@ -5055,6 +5066,7 @@ class RunnerRalphActivities:
                     state=state,
                     workspace_path=workspace,
                     directive_number=request.directive_number,
+                    routing=request.routing,
                     sandbox=self._contract_sandbox(state),
                     reserve_max_tokens=request.reserve_max_tokens or None,
                     mcp_plan=learning_plan,
@@ -5301,6 +5313,7 @@ class RunnerRalphActivities:
                     state=state,
                     workspace_path=state.workspace_path,
                     directive_number=request.directive_number,
+                    routing=request.routing,
                     sandbox=self._contract_sandbox(state),
                     mcp_plan=mcp_plan,
                     asked=asked,

@@ -628,7 +628,7 @@ def test_a_value_stored_through_the_os_store_reads_back_and_is_absent_from_disk(
     assert store.get("deploy_key") == secret
     # Read by the Runner through the same resolver a Directive uses.
     resolved = service.build_credential_resolver(
-        service.load_config(environ={}), host_store=store
+        service.load_config(environ={}), host_store=store, host_party="user"
     ).resolve(contract_id=None, manifest=["deploy_key"])
     assert resolved.for_verb_seam("deploy_key") == secret
     # Nowhere on disk, and never in argv (every process on the box can read argv).

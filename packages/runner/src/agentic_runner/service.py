@@ -127,6 +127,8 @@ from agentic_runner_contracts.runner_registration import (
     RECENT_OUTCOMES_MAX,
     AcpBridgeVersion,
     CliVersion,
+    CredentialManifest,
+    CredentialValidity,
     DirectiveOutcome,
     EgressPosture,
     HarnessVersion,
@@ -379,7 +381,10 @@ def build_hook_runner(config: RunnerConfig) -> HookRunner:
 
 
 def build_credential_resolver(
-    config: RunnerConfig, *, host_store: HostCredentialStore | None = None
+    config: RunnerConfig,
+    *,
+    host_store: HostCredentialStore | None = None,
+    host_party: str | None = None,
 ) -> CredentialResolver:
     """The host store a Directive resolves its Credential References from (22 A1).
 
@@ -393,7 +398,7 @@ def build_credential_resolver(
         if config.credential_store is not None
         else EmptyCredentialStore()
     )
-    return CredentialResolver(store=store)
+    return CredentialResolver(store=store, host_party=host_party)
 
 
 def build_socket_dir(config: RunnerConfig) -> Path:
@@ -731,6 +736,8 @@ class ControlPlaneStream:
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
     _delivered: set[tuple[str, str]] = field(default_factory=set)
+    # ADR-0022 §7: the Contracts the last ack asked this Runner to report references for.
+    _manifests: list[CredentialManifest] = field(default_factory=list)
     _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
     _last_seen: tuple[float, datetime] | None = None
 
@@ -802,6 +809,23 @@ class ControlPlaneStream:
             ),
         )
 
+    def _credential_report(self) -> list[CredentialValidity]:
+        """Per Contract the last ack named, whether each reference would resolve (§7).
+
+        Asked of the same resolver a Directive resolves through, so the report and the
+        Directive cannot disagree on what a funder sealed or what the host lends (§36).
+        """
+
+        return [
+            CredentialValidity(
+                contract_id=manifest.contract_id,
+                reference=reference,
+                valid=self.credentials.usable(str(manifest.contract_id), reference),
+            )
+            for manifest in self._manifests
+            for reference in manifest.references
+        ]
+
     async def directive_token(self, directive_id: str) -> str:
         """One activity execution's control-plane token, by Directive id (PRD issue 63)."""
 
@@ -821,6 +845,7 @@ class ControlPlaneStream:
             max_concurrent_directives=self.state.max_concurrent_directives,
             current_load=self.load.in_flight,
             recent_outcomes=list(self.load.outcomes),
+            credentials=self._credential_report(),
             slots=self.proxy.slots.statuses(),
             usage=self.proxy.outbox.pending(),
             egress_posture=self.egress_posture,
@@ -865,6 +890,10 @@ class ControlPlaneStream:
                 refused.slot,
             )
         self._sync_delivered()
+        self._manifests = list(ack.credential_manifests)
+        self.credentials.fund(
+            {str(manifest.contract_id): manifest.funding_party for manifest in self._manifests}
+        )
         await self._sync_llm_slots()
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token
@@ -1261,7 +1290,9 @@ async def _serve_registered(
 ) -> int:
     load = _LoadInterceptor()
     proxy = LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox())
-    credentials = build_credential_resolver(config, host_store=host_store)
+    credentials = build_credential_resolver(
+        config, host_store=host_store, host_party=state.host_party
+    )
     isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
     runtimes = build_agent_runtimes(settings, attestation.clis if attestation is not None else [])
     in_flight = DirectivesInFlight()

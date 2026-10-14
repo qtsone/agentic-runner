@@ -92,6 +92,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # caller of those functions is the control plane, which moves both pins in one PR (RR-04).
 # A Runner on 3.16 ignores the requirements and checks the legacy map alone, which is
 # safe only because routing itself is the control plane's.
+# 3.19.0 (QTS-1531, ADR-0022 §7): `HeartbeatAck.credential_manifests` and
+# `CredentialManifest`; `CredentialValidity.contract_id`, required, and the envelope's
+# `credentials` bound raised to one entry per reported reference. A Runner on 3.18 sent
+# `credentials` empty, so the required field breaks no envelope that parsed. The ack
+# forbids extra keys, so the control plane sends `credential_manifests` only to a Runner
+# whose heartbeat names contracts 3.19 or later.
 __version__ = "3.18.3"
 
 __all__ = ["__version__"]
