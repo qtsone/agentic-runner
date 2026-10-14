@@ -1710,8 +1710,9 @@ class RunnerRalphActivities:
         self._workspace_root = workspace_root
         self._contract_isolation = contract_isolation
         # What this process is, as the control plane registered it (PRD issue 42): its
-        # Runner id, its host party and its config-declared Tags. Every activity payload
-        # is checked against it before the body runs, so a stolen or misrouted task costs
+        # Runner id, its host party and its config-declared Tags, which the last heartbeat
+        # ack's Tags replace (`_current_routing_identity`). Every activity payload is
+        # checked against it before the body runs, so a stolen or misrouted task costs
         # no verb. ``None`` in a process that never registered -- it polls no
         # ``runner.{runner_id}`` queue, so nothing routes to it and there is nothing to
         # assert against; the fail-closed check is on every Runner the router can pick.
@@ -1791,10 +1792,11 @@ class RunnerRalphActivities:
         poller into a visible intra-Organisation incident rather than silence (17 A11).
         """
 
-        if self._routing_identity is not None:
+        identity = self._current_routing_identity()
+        if identity is not None:
             routing = getattr(request, "routing", None)
             try:
-                assert_routed(routing, self._routing_identity)
+                assert_routed(routing, identity)
             except RoutingRefusedError as refusal:
                 work_record_id = getattr(request, "work_record_id", "")
                 if not work_record_id:
@@ -1804,11 +1806,11 @@ class RunnerRalphActivities:
                     self._fastapi_client,
                     str(work_record_id),
                     source=_ROUTING_EVIDENCE_SOURCE,
-                    actor=f"runner:{self._routing_identity.runner_id}",
+                    actor=f"runner:{identity.runner_id}",
                     payload={
                         "event": "directive.routing_refused",
                         "reason": refusal.reason,
-                        "runner_id": self._routing_identity.runner_id,
+                        "runner_id": identity.runner_id,
                         "routed_runner_id": None if routing is None else routing.runner_id,
                         "detail": str(refusal),
                     },
@@ -1817,6 +1819,19 @@ class RunnerRalphActivities:
             await pull_directive_token(
                 self._token_source, self._fastapi_client, request, actor=self._actor()
             )
+
+    def _current_routing_identity(self) -> RunnerRoutingIdentity | None:
+        """The registered identity, with the Tags the last heartbeat ack carried.
+
+        The console edits a Runner's Tags after registration and the control plane routes
+        on the edit at once (ADR-0022 §13); checking the bootstrap set instead would
+        refuse work routed on an added Tag on every retry.
+        """
+
+        acked = self._heartbeat_link.tags if self._heartbeat_link is not None else None
+        if self._routing_identity is None or acked is None:
+            return self._routing_identity
+        return replace(self._routing_identity, tags=acked)
 
     def _actor(self) -> str:
         return (
@@ -3887,10 +3902,11 @@ class RunnerRalphActivities:
                     "remedy": "work.open",
                 },
             )
-        if state.repository or self._routing_identity is None:
+        identity = self._current_routing_identity()
+        if state.repository or identity is None:
             return None
         selector = snapshot.runner_selector_of(product_id)
-        if selector is not None and selector_satisfied(selector, self._routing_identity.tags):
+        if selector is not None and selector_satisfied(selector, identity.tags):
             return None
         return (
             f"this Runner's tags do not satisfy the Runner selector of Product {product_id}, "
@@ -3898,7 +3914,7 @@ class RunnerRalphActivities:
             {
                 "event": "directive.repository_refused",
                 "product_id": product_id,
-                "runner_id": str(self._routing_identity.runner_id),
+                "runner_id": str(identity.runner_id),
                 "selector": [requirement.as_payload() for requirement in selector or ()],
             },
         )

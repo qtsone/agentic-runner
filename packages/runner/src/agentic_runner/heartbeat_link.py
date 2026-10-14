@@ -121,6 +121,7 @@ class HeartbeatLink:
         # finished is never read again, while one under a running Directive is read at
         # every verb -- and `max_concurrent_directives` is itself bounded by this number.
         self._held: OrderedDict[str, _Held] = OrderedDict()
+        self._tags: dict[str, str] | None = None
         self._last_ack: float | None = None
         self._seen_monotonic, self._seen_wall = self._clock()
         self._woke = False
@@ -147,6 +148,16 @@ class HeartbeatLink:
             self._held.move_to_end(agent_id)
         return held
 
+    @property
+    def tags(self) -> dict[str, str] | None:
+        """This Runner's Tags as the last ack carried them (ADR-0022 §13).
+
+        ``None`` until an ack carries them, from a control plane below contracts 3.20 or
+        before the first beat: routing then checks the Tags this Runner bootstrapped with.
+        """
+
+        return None if self._tags is None else dict(self._tags)
+
     def applied(self) -> list[AppliedSnapshot]:
         return [
             AppliedSnapshot(agent_id=UUID(agent_id), version=held.version)
@@ -154,13 +165,15 @@ class HeartbeatLink:
         ]
 
     def apply(self, ack: HeartbeatAck) -> None:
-        """Apply one ack's pushes: snapshots per Agent, ceilings per Contract.
+        """Apply one ack's pushes: snapshots per Agent, ceilings per Contract, the Tags.
 
         Replacement, never a merge. A narrowed Grant that merged into what it narrowed
         would leave the wider entry standing, which is the one mistake this whole layer
         exists to prevent.
         """
 
+        if ack.tags is not None:
+            self._tags = dict(ack.tags)
         for push in ack.grant_pushes:
             agent_id = str(push.agent_id)
             self._held[agent_id] = _Held(

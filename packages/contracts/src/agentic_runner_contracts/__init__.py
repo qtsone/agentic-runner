@@ -98,6 +98,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `credentials` empty, so the required field breaks no envelope that parsed. The ack
 # forbids extra keys, so the control plane sends `credential_manifests` only to a Runner
 # whose heartbeat names contracts 3.19 or later, and omits the key while it is empty.
+# 3.20.0 (QTS-1553, ADR-0022 §13): `HeartbeatAck.tags`, the Runner's Tags as the console
+# last edited them; the Runner checks routing against them. Additive, and omitted while
+# None. The ack forbids extra keys, so the control plane sends `tags` only to a Runner
+# whose heartbeat names contracts 3.20 or later, and refuses a Tag edit on any other: a
+# Runner below 3.20 keeps checking its bootstrap Tags and would refuse work routed on an
+# added one.
 __version__ = "3.19.0"
 
 __all__ = ["__version__"]
