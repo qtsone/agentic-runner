@@ -202,8 +202,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The contracts tag is what the control plane's floor check names (issue 41); with one
-      # version for both packages it equals the runner tag, and stays for those who pin it.
+      # Pushed by digest, untagged: the release tags are written last, in "Tag the release".
       - name: Build and push
         id: push
         uses: docker/build-push-action@v7
@@ -211,7 +210,7 @@ jobs:
           context: .
           file: Dockerfile.runner
           platforms: linux/amd64,linux/arm64
-          push: ${{ env.PUBLISH == 'true' }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
           sbom: true
           provenance: mode=max
           build-args: |
@@ -223,10 +222,6 @@ jobs:
             index:org.opencontainers.image.source=https://github.com/qtsone/agentic-runner
             index:org.opencontainers.image.description=The Agentic OS Runner: an activity-only Temporal executor for workspaces, Agent Runtimes and verb seams
             index:org.opencontainers.image.licenses=AGPL-3.0-only
-          tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}
-            ${{ env.IMAGE }}:contracts-${{ env.VERSION }}
-            ${{ env.IMAGE }}:latest
 
       - uses: sigstore/cosign-installer@v4.1.2
         if: env.PUBLISH == 'true'
@@ -242,6 +237,29 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - uses: imjasonh/setup-crane@v0.7
+        if: env.PUBLISH == 'true'
+        with:
+          version: v0.22.1
+
+      # Last, after the signature and the attestation: GHCR has no referrers API, so both land
+      # in an index tagged `sha256-<digest>`, and the package page shows the newest tagged
+      # version, which docker cannot pull (QTS-1712). `crane tag` re-uses the manifest as is,
+      # so the digest signed above is the one tagged. The contracts tag is what the control
+      # plane's floor check names (issue 41); it equals the runner tag and stays for those
+      # who pin it.
+      - name: Tag the release
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for tag in "$VERSION" "contracts-${VERSION}" latest; do
+            crane tag "${IMAGE}@${DIGEST}" "$tag"
+          done
+          [ "$(crane digest "${IMAGE}:${VERSION}")" = "$DIGEST" ] \
+            || { echo "::error::${IMAGE}:${VERSION} does not resolve to ${DIGEST}"; exit 1; }
 
   chart:
     name: Chart
@@ -304,6 +322,17 @@ jobs:
           subject-name: ghcr.io/qtsone/charts/agentic-runner
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      - uses: imjasonh/setup-crane@v0.7
+        if: env.PUBLISH == 'true'
+        with:
+          version: v0.22.1
+
+      # `helm push` cannot push untagged, so the version tag is written again after the
+      # signature and the attestation, for the same package page as the image's (QTS-1712).
+      - name: Tag the release
+        if: env.PUBLISH == 'true'
+        run: crane tag "ghcr.io/qtsone/charts/agentic-runner@${{ steps.push.outputs.digest }}" "$VERSION"
 
   # semantic-release created the Release with the changelog when it pushed the tag; this
   # appends what an installer checks against.
