@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.23.1](https://github.com/qtsone/agentic-runner/compare/v3.23.0...v3.23.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **image:** link the agentic-runner GHCR package to this repository (QTS-1711) ([#67](https://github.com/qtsone/agentic-runner/issues/67)) ([73b8936](https://github.com/qtsone/agentic-runner/commit/73b8936af64b06af087c005fd98b733a97d9d734))
+
 # [3.23.0](https://github.com/qtsone/agentic-runner/compare/v3.22.0...v3.23.0) (2026-10-15)
 
 
