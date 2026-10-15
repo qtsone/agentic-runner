@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.23.0](https://github.com/qtsone/agentic-runner/compare/v3.22.0...v3.23.0) (2026-10-15)
+
+
+### Features
+
+* **runner:** hold a Grant snapshot per Agent and Contract (QTS-1706) ([#66](https://github.com/qtsone/agentic-runner/issues/66)) ([34803c8](https://github.com/qtsone/agentic-runner/commit/34803c82407323b5a14e696fc07824c8c2127851))
+
 # [3.22.0](https://github.com/qtsone/agentic-runner/compare/v3.21.1...v3.22.0) (2026-10-14)
 
 

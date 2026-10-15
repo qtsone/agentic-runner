@@ -116,6 +116,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # extra keys, so the control plane keys its pushes only for a Runner whose heartbeat names
 # contracts 3.23 or later; a Runner on 3.23 under an older control plane reads an unkeyed
 # snapshot only for the Contract the snapshot itself names.
-__version__ = "3.22.0"
+__version__ = "3.23.0"
 
 __all__ = ["__version__"]
