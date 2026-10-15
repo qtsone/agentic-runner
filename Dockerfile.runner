@@ -43,7 +43,11 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS runtime
 
 ARG RUNNER_VERSION
 ARG CONTRACTS_VERSION
+# title, description and url replace the uv base image's own, which the runtime stage inherits.
 LABEL org.opencontainers.image.source="https://github.com/qtsone/agentic-runner" \
+      org.opencontainers.image.url="https://github.com/qtsone/agentic-runner" \
+      org.opencontainers.image.title="agentic-runner" \
+      org.opencontainers.image.description="The Agentic OS Runner: an activity-only Temporal executor for workspaces, Agent Runtimes and verb seams" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${RUNNER_VERSION}" \
       one.qts.agentic-runner.contracts="${CONTRACTS_VERSION}"

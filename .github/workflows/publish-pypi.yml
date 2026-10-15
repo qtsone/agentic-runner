@@ -217,6 +217,12 @@ jobs:
           build-args: |
             RUNNER_VERSION=${{ env.VERSION }}
             CONTRACTS_VERSION=${{ env.VERSION }}
+          # GHCR reads a multi-platform image's package metadata from the index, not from
+          # the per-platform config labels the Dockerfile sets.
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/qtsone/agentic-runner
+            index:org.opencontainers.image.description=The Agentic OS Runner: an activity-only Temporal executor for workspaces, Agent Runtimes and verb seams
+            index:org.opencontainers.image.licenses=AGPL-3.0-only
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:contracts-${{ env.VERSION }}
