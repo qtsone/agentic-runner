@@ -1,10 +1,12 @@
 # One Runner on any Docker host (docs/docker.md). Fill in runner.env from
-# runner.env.example, then `docker compose up -d`.
+# runner.env.example, then `AGENTIC_RUNNER_VERSION=<version> docker compose up -d`.
 name: agentic-runner
 
 services:
   runner:
-    image: ghcr.io/qtsone/agentic-runner:${AGENTIC_RUNNER_VERSION:-latest}
+    # No default: the newest release can be one the control plane does not admit yet, and a
+    # refused registration names the version it does admit (docs/docker.md).
+    image: "ghcr.io/qtsone/agentic-runner:${AGENTIC_RUNNER_VERSION:?set AGENTIC_RUNNER_VERSION to the version your control plane admits (docs/docker.md)}"
     restart: unless-stopped
     env_file: runner.env
     environment:

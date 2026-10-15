@@ -92,6 +92,8 @@ python3 "${repo}/tests/install/await_runner.py" "${stats}" --isolation contract_
   || { docker logs agentic-runner; exit 1; }
 docker rm -f agentic-runner >/dev/null
 
+# compose.yaml has no default version; compose.ci.yaml replaces the image it names.
+export AGENTIC_RUNNER_VERSION=ci
 compose=(docker compose --project-directory "${work}" -f "${work}/compose.yaml"
   -f "${work}/compose.ci.yaml")
 
