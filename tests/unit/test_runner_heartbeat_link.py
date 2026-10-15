@@ -4,7 +4,8 @@ Four properties, each the reason a line of ``heartbeat_link`` exists:
 
 * a pushed snapshot is applied on receipt and **replaces** what the Agent held, so the
   next verb evaluation -- not the next Directive -- sees the narrowing;
-* a Runner holding two Contracts' Agents never reads one Agent's snapshot for another;
+* a Runner holding two Contracts' Agents never reads one Agent's snapshot for another,
+  nor one Contract's snapshot of an Agent for a Work Record under another (QTS-1706);
 * three minutes without an acknowledged exchange refuses every privileged verb, and one
   successful exchange lets the retry through;
 * a suspend/resume forces one exchange *before* the next privileged verb, so a laptop
@@ -135,10 +136,18 @@ class FakeClock:
 async def test_a_pushed_snapshot_replaces_the_previous_one_and_is_acknowledged() -> None:
     agent, contract = uuid4(), uuid4()
     stream = FakeStream(
-        _ack(GrantPush(agent_id=agent, version="version-one", snapshot=_snapshot(agent, contract))),
         _ack(
             GrantPush(
                 agent_id=agent,
+                contract_id=contract,
+                version="version-one",
+                snapshot=_snapshot(agent, contract),
+            )
+        ),
+        _ack(
+            GrantPush(
+                agent_id=agent,
+                contract_id=contract,
                 version="version-two",
                 snapshot=_snapshot(agent, contract, **{PR_MERGE_VERB: "deny"}),
             )
@@ -147,7 +156,7 @@ async def test_a_pushed_snapshot_replaces_the_previous_one_and_is_acknowledged()
     link = HeartbeatLink(stream, clock=FakeClock())
 
     await link.exchange()
-    first = link.snapshot_for(str(agent))
+    first = link.snapshot_for(str(agent), str(contract))
     assert first is not None
     assert decide_verb(first, verb=PR_MERGE_VERB, identifier=REPOSITORY).decision is Decision.ALLOW
 
@@ -155,16 +164,21 @@ async def test_a_pushed_snapshot_replaces_the_previous_one_and_is_acknowledged()
 
     # The narrowed snapshot is in force, and the wide one it replaced is gone: a merge
     # of the two would leave the allowing entry standing.
-    narrowed = link.snapshot_for(str(agent))
+    narrowed = link.snapshot_for(str(agent), str(contract))
     assert narrowed is not None
     assert (
         decide_verb(narrowed, verb=PR_MERGE_VERB, identifier=REPOSITORY).decision is Decision.DENY
     )
     assert decide_verb(narrowed, verb=PUSH_VERB, identifier=REPOSITORY).decision is Decision.ALLOW
-    assert link.applied() == [AppliedSnapshot(agent_id=agent, version="version-two")]
+    assert link.applied() == [
+        AppliedSnapshot(agent_id=agent, contract_id=contract, version="version-two")
+    ]
     # ...and the second exchange told the control plane which version it was holding, so
     # "sent" and "applied" are distinguishable on that side.
-    assert stream.calls == [(), (AppliedSnapshot(agent_id=agent, version="version-one"),)]
+    assert stream.calls == [
+        (),
+        (AppliedSnapshot(agent_id=agent, contract_id=contract, version="version-one"),),
+    ]
 
 
 @pytest.mark.asyncio
@@ -183,6 +197,7 @@ async def test_one_runner_holding_two_contracts_never_reads_the_other_agents_sna
                 *(
                     GrantPush(
                         agent_id=agent,
+                        contract_id=agents[agent],
                         version=f"version-{round_number:04d}",
                         snapshot=_snapshot(
                             agent,
@@ -195,11 +210,152 @@ async def test_one_runner_holding_two_contracts_never_reads_the_other_agents_sna
             )
         )
         for agent, contract in agents.items():
-            snapshot = link.snapshot_for(str(agent))
+            snapshot = link.snapshot_for(str(agent), str(agents[agent]))
             if snapshot is None:
                 continue
             assert snapshot.agent_id == str(agent)
             assert snapshot.contract_id == str(contract)
+
+
+def test_an_organisation_agent_holds_one_snapshot_per_owners_contract() -> None:
+    """QTS-1706: one Organisation Agent under Owner A's and Owner B's Contracts at once.
+
+    Each Work Record's verb is decided on its own Contract's chain, and the heartbeat
+    acknowledges both, by Agent and Contract, in a body the control plane parses.
+    """
+
+    agent, owner_a, owner_b = uuid4(), uuid4(), uuid4()
+    link = HeartbeatLink(FakeStream(), clock=FakeClock())
+    link.apply(
+        _ack(
+            GrantPush(
+                agent_id=agent,
+                contract_id=owner_a,
+                version="version-a1",
+                snapshot=_snapshot(agent, owner_a),
+            ),
+            GrantPush(
+                agent_id=agent,
+                contract_id=owner_b,
+                version="version-b1",
+                snapshot=_snapshot(agent, owner_b, **{PR_MERGE_VERB: "deny"}),
+            ),
+        )
+    )
+
+    under_a = link.snapshot_for(str(agent), str(owner_a))
+    under_b = link.snapshot_for(str(agent), str(owner_b))
+    assert under_a is not None and under_a.contract_id == str(owner_a)
+    assert under_b is not None and under_b.contract_id == str(owner_b)
+    merge_a = decide_verb(under_a, verb=PR_MERGE_VERB, identifier=REPOSITORY)
+    merge_b = decide_verb(under_b, verb=PR_MERGE_VERB, identifier=REPOSITORY)
+    assert merge_a.decision is Decision.ALLOW
+    assert merge_b.decision is Decision.DENY
+
+    applied = link.applied()
+    assert {(entry.agent_id, entry.contract_id, entry.version) for entry in applied} == {
+        (agent, owner_a, "version-a1"),
+        (agent, owner_b, "version-b1"),
+    }
+    envelope = HeartbeatEnvelope.model_validate(
+        {**_ENVELOPE, "applied_snapshots": [entry.model_dump(mode="json") for entry in applied]}
+    )
+    assert envelope.applied_snapshots == applied
+
+
+@pytest.mark.asyncio
+async def test_a_verb_under_a_contract_with_no_snapshot_never_reads_another_contracts() -> None:
+    agent, owner_a, owner_b = uuid4(), uuid4(), uuid4()
+    link = HeartbeatLink(
+        FakeStream(
+            _ack(
+                GrantPush(
+                    agent_id=agent,
+                    contract_id=owner_a,
+                    version="version-a1",
+                    snapshot=_snapshot(agent, owner_a),
+                )
+            )
+        ),
+        clock=FakeClock(),
+    )
+    await link.exchange()
+
+    assert link.snapshot_for(str(agent), str(owner_b)) is None
+    assert link.payload_for(str(agent), str(owner_b)) == {}
+    with pytest.raises(SeamUnavailableError) as refused:
+        await link.require_ready(str(agent), str(owner_b), verb=PUSH_VERB)
+    assert refused.value.reason == SNAPSHOT_MISSING_REASON
+    assert str(owner_b) in str(refused.value)
+    await link.require_ready(str(agent), str(owner_a), verb=PUSH_VERB)
+
+
+@pytest.mark.asyncio
+async def test_an_unkeyed_push_answers_only_the_contract_it_names() -> None:
+    """A control plane below 3.23 pushes one snapshot per Agent, without a Contract.
+
+    The Runner reads it for the Contract the snapshot names, and for no other. Its held
+    snapshot names none and refuses every verb, so it answers any. A keyed push replaces
+    it, and an unkeyed one replaces every keyed snapshot of its Agent: either way nothing
+    from the other keying is left standing beside it.
+    """
+
+    agent, owner_a, owner_b = uuid4(), uuid4(), uuid4()
+    link = HeartbeatLink(
+        FakeStream(
+            _ack(GrantPush(agent_id=agent, version="unkeyed-a", snapshot=_snapshot(agent, owner_a)))
+        ),
+        clock=FakeClock(),
+    )
+    await link.exchange()
+
+    assert link.snapshot_for(str(agent), str(owner_a)) is not None
+    with pytest.raises(SeamUnavailableError) as refused:
+        await link.require_ready(str(agent), str(owner_b), verb=PUSH_VERB)
+    assert refused.value.reason == SNAPSHOT_MISSING_REASON
+    # Acknowledged without a Contract: the body that control plane parses.
+    assert [entry.model_dump(mode="json") for entry in link.applied()] == [
+        {"agent_id": str(agent), "version": "unkeyed-a"}
+    ]
+
+    held = {**_snapshot(agent, owner_a), "contract_id": None, "dispatchable": False}
+    link.apply(_ack(GrantPush(agent_id=agent, version="unkeyed-held", snapshot=held)))
+    for owner in (owner_a, owner_b):
+        snapshot = link.snapshot_for(str(agent), str(owner))
+        assert snapshot is not None
+        push = decide_verb(snapshot, verb=PUSH_VERB, identifier=REPOSITORY)
+        assert push.decision is Decision.DENY
+
+    link.apply(
+        _ack(
+            GrantPush(
+                agent_id=agent,
+                contract_id=owner_a,
+                version="keyed-a1",
+                snapshot=_snapshot(agent, owner_a),
+            )
+        )
+    )
+    assert link.snapshot_for(str(agent), str(owner_b)) is None
+    assert [entry.version for entry in link.applied()] == ["keyed-a1"]
+
+    link.apply(
+        _ack(GrantPush(agent_id=agent, version="unkeyed-b", snapshot=_snapshot(agent, owner_b)))
+    )
+    assert link.snapshot_for(str(agent), str(owner_a)) is None
+    assert [entry.version for entry in link.applied()] == ["unkeyed-b"]
+
+
+def test_a_push_carries_its_contract_only_when_it_has_one() -> None:
+    """A Runner below 3.23 forbids the key, so an unkeyed push is the body it parses."""
+
+    agent, contract = uuid4(), uuid4()
+    unkeyed = GrantPush(agent_id=agent, version="version-one", snapshot={})
+    keyed = GrantPush(agent_id=agent, contract_id=contract, version="version-one", snapshot={})
+
+    assert "contract_id" not in unkeyed.model_dump(mode="json")
+    assert keyed.model_dump(mode="json")["contract_id"] == str(contract)
+    assert GrantPush.model_validate(keyed.model_dump(mode="json")) == keyed
 
 
 @pytest.mark.asyncio
@@ -207,20 +363,27 @@ async def test_a_stale_link_refuses_a_privileged_verb_until_a_heartbeat_lands() 
     agent, contract = uuid4(), uuid4()
     clock = FakeClock()
     stream = FakeStream(
-        _ack(GrantPush(agent_id=agent, version="version-one", snapshot=_snapshot(agent, contract))),
+        _ack(
+            GrantPush(
+                agent_id=agent,
+                contract_id=contract,
+                version="version-one",
+                snapshot=_snapshot(agent, contract),
+            )
+        ),
     )
     link = HeartbeatLink(stream, clock=clock)
     await link.exchange()
 
     clock.tick(HEARTBEAT_STALE_AFTER.total_seconds() + 1)
     with pytest.raises(SeamUnavailableError) as refused:
-        await link.require_ready(str(agent), verb=PUSH_VERB)
+        await link.require_ready(str(agent), str(contract), verb=PUSH_VERB)
     assert refused.value.reason == HEARTBEAT_STALE_REASON
     # No heartbeat was attempted: the link went quiet, it did not wake up.
     assert len(stream.calls) == 1
 
     await link.exchange()
-    await link.require_ready(str(agent), verb=PUSH_VERB)
+    await link.require_ready(str(agent), str(contract), verb=PUSH_VERB)
 
 
 @pytest.mark.asyncio
@@ -228,10 +391,18 @@ async def test_a_wake_forces_one_exchange_before_the_next_privileged_verb() -> N
     agent, contract = uuid4(), uuid4()
     clock = FakeClock()
     stream = FakeStream(
-        _ack(GrantPush(agent_id=agent, version="version-one", snapshot=_snapshot(agent, contract))),
         _ack(
             GrantPush(
                 agent_id=agent,
+                contract_id=contract,
+                version="version-one",
+                snapshot=_snapshot(agent, contract),
+            )
+        ),
+        _ack(
+            GrantPush(
+                agent_id=agent,
+                contract_id=contract,
                 version="version-two",
                 snapshot=_snapshot(agent, contract, **{PUSH_VERB: "deny"}),
             )
@@ -241,17 +412,17 @@ async def test_a_wake_forces_one_exchange_before_the_next_privileged_verb() -> N
     await link.exchange()
 
     clock.sleep(600)  # the lid was shut for ten minutes
-    await link.require_ready(str(agent), verb=PUSH_VERB)
+    await link.require_ready(str(agent), str(contract), verb=PUSH_VERB)
 
     # Exactly one extra exchange, and it happened *before* the verb was decided -- so the
     # narrowing that landed while the host slept is what the verb is evaluated against.
     assert len(stream.calls) == 2
-    snapshot = link.snapshot_for(str(agent))
+    snapshot = link.snapshot_for(str(agent), str(contract))
     assert snapshot is not None
     assert decide_verb(snapshot, verb=PUSH_VERB, identifier=REPOSITORY).decision is Decision.DENY
 
     # And no second exchange for the second verb: the wake was answered once.
-    await link.require_ready(str(agent), verb=PR_MERGE_VERB)
+    await link.require_ready(str(agent), str(contract), verb=PR_MERGE_VERB)
     assert len(stream.calls) == 2
 
 
@@ -264,7 +435,10 @@ async def test_a_wake_whose_heartbeat_fails_goes_on_refusing() -> None:
                 raise ConnectionError("the control plane is unreachable")
             return _ack(
                 GrantPush(
-                    agent_id=AGENT, version="version-one", snapshot=_snapshot(AGENT, CONTRACT)
+                    agent_id=AGENT,
+                    contract_id=CONTRACT,
+                    version="version-one",
+                    snapshot=_snapshot(AGENT, CONTRACT),
                 )
             )
 
@@ -275,7 +449,7 @@ async def test_a_wake_whose_heartbeat_fails_goes_on_refusing() -> None:
     clock.sleep(600)
     for _ in range(2):
         with pytest.raises(SeamUnavailableError) as refused:
-            await link.require_ready(str(AGENT), verb=PUSH_VERB)
+            await link.require_ready(str(AGENT), str(CONTRACT), verb=PUSH_VERB)
         assert refused.value.reason == HEARTBEAT_STALE_REASON
 
 
@@ -285,12 +459,12 @@ async def test_an_agent_with_no_pushed_snapshot_is_refused_never_run_unattenuate
     await link.exchange()
 
     with pytest.raises(SeamUnavailableError) as refused:
-        await link.require_ready(str(uuid4()), verb=PUSH_VERB)
+        await link.require_ready(str(uuid4()), str(CONTRACT), verb=PUSH_VERB)
     assert refused.value.reason == SNAPSHOT_MISSING_REASON
 
     # A Work Record with no Agent bound has no chain to be attenuated by and is not
     # refused here (Release 1's Organisation #1 loop, ADR-0011 §8).
-    await link.require_ready(None, verb=PUSH_VERB)
+    await link.require_ready(None, None, verb=PUSH_VERB)
 
 
 @pytest.mark.asyncio
@@ -346,6 +520,7 @@ async def test_the_store_stays_within_what_one_envelope_may_acknowledge() -> Non
             *(
                 GrantPush(
                     agent_id=agent,
+                    contract_id=contract,
                     version=f"version-{index:04d}",
                     snapshot=_snapshot(agent, contract),
                 )
@@ -354,13 +529,14 @@ async def test_the_store_stays_within_what_one_envelope_may_acknowledge() -> Non
         )
     )
     # This Runner is working for one of them, and keeps reading its snapshot.
-    assert link.snapshot_for(str(working)) is not None
+    assert link.snapshot_for(str(working), str(contract)) is not None
 
     link.apply(
         _ack(
             *(
                 GrantPush(
                     agent_id=agent,
+                    contract_id=contract,
                     version=f"version-{index:04d}",
                     snapshot=_snapshot(agent, contract),
                 )
@@ -376,5 +552,5 @@ async def test_the_store_stays_within_what_one_envelope_may_acknowledge() -> Non
             "applied_snapshots": [entry.model_dump(mode="json") for entry in link.applied()],
         }
     )
-    assert link.snapshot_for(str(working)) is not None
-    assert link.snapshot_for(str(finished)) is None
+    assert link.snapshot_for(str(working), str(contract)) is not None
+    assert link.snapshot_for(str(finished), str(contract)) is None
