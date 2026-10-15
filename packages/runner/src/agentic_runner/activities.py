@@ -3661,8 +3661,9 @@ class RunnerRalphActivities:
 
         The Grant snapshot is the one thing that no longer arrives either way when this
         Runner has a heartbeat stream (PRD issue 44): the control plane pushes it on
-        change and the link holds the current one per Agent, so narrowing bites at the
-        next *verb* rather than the next Directive. ``grant_snapshot`` carried on the
+        change and the link holds the current one per Agent and Contract, read under the
+        Contract this context names for the Work Record (QTS-1706), so narrowing bites at
+        the next *verb* rather than the next Directive. ``grant_snapshot`` carried on the
         input is the link-less host's source and is ignored wherever a link is attached.
         """
 
@@ -3677,7 +3678,7 @@ class RunnerRalphActivities:
                 work_record_id=work_record_id,
             )
         snapshot_payload = (
-            self._heartbeat_link.payload_for(runtime_context.agent_id)
+            self._heartbeat_link.payload_for(runtime_context.agent_id, runtime_context.contract_id)
             if self._heartbeat_link is not None
             else dict(grant_snapshot or {})
         )
@@ -4151,7 +4152,10 @@ class RunnerRalphActivities:
 
         if self._heartbeat_link is None:
             return state.grant_snapshot
-        return self._heartbeat_link.snapshot_for(state.agent_id) or state.grant_snapshot
+        return (
+            self._heartbeat_link.snapshot_for(state.agent_id, state.contract_id)
+            or state.grant_snapshot
+        )
 
     async def _require_live_link(
         self,
@@ -4175,7 +4179,7 @@ class RunnerRalphActivities:
         if self._heartbeat_link is None:
             return
         try:
-            await self._heartbeat_link.require_ready(state.agent_id, verb=verb)
+            await self._heartbeat_link.require_ready(state.agent_id, state.contract_id, verb=verb)
         except SeamUnavailableError as error:
             await self._fastapi_client.append_evidence(
                 work_record_id,

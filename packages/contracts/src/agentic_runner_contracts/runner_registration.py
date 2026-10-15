@@ -485,20 +485,38 @@ class AppliedSnapshot(BaseModel):
     The version, not the snapshot: this is how the control plane tells *applied* from
     *sent*, and how it knows which Agents it need not push again. A Runner that has
     applied nothing sends an empty list and is pushed everything it holds.
+
+    ``contract_id`` is the push's own, echoed back: None for a snapshot pushed without one,
+    by a control plane below 3.23.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     agent_id: UUID
     version: Annotated[str, StringConstraints(min_length=8, max_length=64)]
+    contract_id: UUID | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_contract(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A control plane below 3.23 forbids the key, and pushes nothing a Runner would
+        # echo it for.
+        body = handler(self)
+        if isinstance(body, dict) and body.get("contract_id") is None:
+            body.pop("contract_id", None)
+        return body
 
 
 class GrantPush(BaseModel):
-    """One Agent's Grant snapshot, pushed on change (ADR-0011 §11, PRD issue 44).
+    """One Agent's Grant snapshot under one Contract, pushed on change (ADR-0011 §11).
 
     ``snapshot`` is ``services.agents.GrantSnapshotRead`` as JSON -- the same shape the
     ``grant-snapshot`` endpoint serves, because only the *source* changed: the Runner
     parses it with ``GrantSnapshot.from_payload`` and the evaluator is untouched.
+
+    ``contract_id`` is the Work Records' Contract the snapshot decides for (QTS-1706): an
+    Organisation Agent runs under each Owner's Contract, so the Runner holds one snapshot
+    per Agent and Contract and decides a verb on its own Work Record's. None from a
+    control plane below 3.23, which holds one snapshot per Agent.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -506,6 +524,16 @@ class GrantPush(BaseModel):
     agent_id: UUID
     version: Annotated[str, StringConstraints(min_length=8, max_length=64)]
     snapshot: dict[str, object]
+    contract_id: UUID | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_contract(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A Runner below 3.23 forbids the key, so the control plane sends it only to a
+        # Runner whose heartbeat names contracts 3.23 or later.
+        body = handler(self)
+        if isinstance(body, dict) and body.get("contract_id") is None:
+            body.pop("contract_id", None)
+        return body
 
 
 class CeilingPush(BaseModel):
@@ -696,9 +724,10 @@ class HeartbeatEnvelope(BaseModel):
     # still parses.
     attestation: HostAttestation | None = None
     lifecycle: list[LifecycleEvent] = Field(default_factory=list, max_length=32)
-    # What this Runner has applied, per Agent (PRD issue 44). The control plane pushes
-    # exactly what is missing or stale from this list, so a snapshot is pushed once per
-    # change per Runner and an unacknowledged one is pushed again on the next beat.
+    # What this Runner has applied, per Agent and Contract (PRD issue 44, QTS-1706). The
+    # control plane pushes exactly what is missing or stale from this list, so a snapshot
+    # is pushed once per change per Runner and an unacknowledged one is pushed again on
+    # the next beat.
     applied_snapshots: list[AppliedSnapshot] = Field(
         default_factory=list, max_length=SNAPSHOT_PUSH_MAX
     )

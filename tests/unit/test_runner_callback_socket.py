@@ -100,6 +100,7 @@ def _state(*, push: str = "allow", **verbs: str) -> _RuntimeContextState:
         work_branch="agent/work",
         completion_criteria="ship it",
         agent_id=AGENT_ID,
+        contract_id=CONTRACT_ID,
         grant_snapshot=snapshot,
     )
 
@@ -325,7 +326,12 @@ class _FakeStream:
 
     def queue(self, version: str, verbs: Mapping[str, str]) -> None:
         self.queued = [
-            GrantPush(agent_id=UUID(AGENT_ID), version=version, snapshot=_payload(verbs))
+            GrantPush(
+                agent_id=UUID(AGENT_ID),
+                contract_id=UUID(CONTRACT_ID),
+                version=version,
+                snapshot=_payload(verbs),
+            )
         ]
 
     async def exchange(self, applied: Sequence[AppliedSnapshot]) -> HeartbeatAck:
@@ -387,7 +393,7 @@ async def test_a_snapshot_pushed_mid_directive_is_read_by_the_next_verb_callback
     assert [entry.version for entry in stream.acknowledged[-1]] == ["snapshot-0001"]
     assert [entry.version for entry in link.applied()] == ["snapshot-0002"]
     # ...and the previous snapshot is gone rather than standing beside the narrowed one.
-    held = link.snapshot_for(AGENT_ID)
+    held = link.snapshot_for(AGENT_ID, CONTRACT_ID)
     assert held is not None
     assert decide_verb(held, verb="pr.merge", identifier=REPOSITORY).decision is Decision.DENY
 

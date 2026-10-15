@@ -110,6 +110,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `runner_limit` link, also taken by `decide_verb` and `decide_mcp_server`. Additive and
 # omitted while None, but both bodies forbid extra keys, so the control plane moves to
 # 3.21 before a Runner reports a limit. The new Runner compatibility floor.
+# 3.23.0 (QTS-1706): `GrantPush.contract_id` and `AppliedSnapshot.contract_id` -- the
+# Runner holds one Grant snapshot per Agent and Contract, so an Organisation Agent runs
+# under two Owners' Contracts at once. Additive and omitted while None. The ack forbids
+# extra keys, so the control plane keys its pushes only for a Runner whose heartbeat names
+# contracts 3.23 or later; a Runner on 3.23 under an older control plane reads an unkeyed
+# snapshot only for the Contract the snapshot itself names.
 __version__ = "3.22.0"
 
 __all__ = ["__version__"]

@@ -8,9 +8,11 @@ changed.
 
 Three things live together because they are one fact about "may this verb run now":
 
-* **The per-Agent store.** Snapshots are keyed by Agent and read only by that Agent's verb
-  evaluations (17's structural rule): a Runner shared by many Contracts never mixes them,
-  and a push *replaces* an Agent's snapshot rather than merging into it.
+* **The per-Agent, per-Contract store.** Snapshots are keyed by Agent and the Contract
+  they decide for, and read only by that Agent's verb evaluations on a Work Record under
+  that Contract (17's structural rule, QTS-1706): a Runner shared by many Contracts never
+  mixes them -- not even for an Organisation Agent working under two Owners' Contracts at
+  once -- and a push *replaces* a snapshot rather than merging into it.
 * **The acknowledgement.** Each snapshot carries a version, and every heartbeat says which
   versions this Runner holds, which is how the control plane tells "applied" from "sent".
 * **The liveness clock.** Staleness is a property of the *link*, not a per-snapshot TTL
@@ -89,6 +91,10 @@ class HeartbeatStream(Protocol):
     async def exchange(self, applied: Sequence[AppliedSnapshot]) -> HeartbeatAck: ...
 
 
+# (agent_id, contract_id); the Contract is None for a push from a control plane below 3.23.
+_Key = tuple[str, str | None]
+
+
 @dataclass(frozen=True, slots=True)
 class _Held:
     version: str
@@ -120,7 +126,7 @@ class HeartbeatLink:
         # Eviction is by read rather than by push because an Agent whose Work Record
         # finished is never read again, while one under a running Directive is read at
         # every verb -- and `max_concurrent_directives` is itself bounded by this number.
-        self._held: OrderedDict[str, _Held] = OrderedDict()
+        self._held: OrderedDict[_Key, _Held] = OrderedDict()
         self._tags: dict[str, str] | None = None
         self._last_ack: float | None = None
         self._seen_monotonic, self._seen_wall = self._clock()
@@ -128,25 +134,43 @@ class HeartbeatLink:
 
     # ------------------------------------------------------------------ the store
 
-    def snapshot_for(self, agent_id: str | None) -> GrantSnapshot | None:
-        """This Agent's pushed snapshot, or ``None`` if none was ever pushed."""
+    def snapshot_for(self, agent_id: str | None, contract_id: str | None) -> GrantSnapshot | None:
+        """This Agent's pushed snapshot for this Contract, or ``None`` if none was pushed."""
 
-        held = self._touch(agent_id)
+        held = self._touch(agent_id, contract_id)
         return held.snapshot if held else None
 
-    def payload_for(self, agent_id: str | None) -> dict[str, Any]:
+    def payload_for(self, agent_id: str | None, contract_id: str | None) -> dict[str, Any]:
         """The snapshot exactly as the control plane wrote it (ADR-0013 §3)."""
 
-        held = self._touch(agent_id)
+        held = self._touch(agent_id, contract_id)
         return dict(held.payload) if held else {}
 
-    def _touch(self, agent_id: str | None) -> _Held | None:
+    def _touch(self, agent_id: str | None, contract_id: str | None) -> _Held | None:
+        found = self._find(agent_id, contract_id)
+        if found is None:
+            return None
+        key, held = found
+        self._held.move_to_end(key)
+        return held
+
+    def _find(self, agent_id: str | None, contract_id: str | None) -> tuple[_Key, _Held] | None:
+        """The snapshot deciding this Agent's verbs on a Work Record under this Contract.
+
+        Never another Contract's: a snapshot an older control plane pushed without a
+        Contract answers only for the Contract it names itself, or for none when it is the
+        held snapshot that refuses every verb.
+        """
+
         if agent_id is None:
             return None
-        held = self._held.get(agent_id)
-        if held is not None:
-            self._held.move_to_end(agent_id)
-        return held
+        if contract_id is not None and (agent_id, contract_id) in self._held:
+            return (agent_id, contract_id), self._held[(agent_id, contract_id)]
+        unkeyed = self._held.get((agent_id, None))
+        # The payload, not the parsed snapshot: `from_payload` reads a null as "None".
+        if unkeyed is None or unkeyed.payload.get("contract_id") not in (None, contract_id):
+            return None
+        return (agent_id, None), unkeyed
 
     @property
     def tags(self) -> dict[str, str] | None:
@@ -160,28 +184,45 @@ class HeartbeatLink:
 
     def applied(self) -> list[AppliedSnapshot]:
         return [
-            AppliedSnapshot(agent_id=UUID(agent_id), version=held.version)
-            for agent_id, held in sorted(self._held.items())
+            AppliedSnapshot(
+                agent_id=UUID(agent_id),
+                contract_id=None if contract_id is None else UUID(contract_id),
+                version=held.version,
+            )
+            for (agent_id, contract_id), held in sorted(
+                self._held.items(), key=lambda item: (item[0][0], item[0][1] or "")
+            )
         ]
 
     def apply(self, ack: HeartbeatAck) -> None:
-        """Apply one ack's pushes: snapshots per Agent, ceilings per Contract, the Tags.
+        """Apply one ack's pushes: snapshots per Agent and Contract, ceilings per Contract,
+        the Tags.
 
         Replacement, never a merge. A narrowed Grant that merged into what it narrowed
         would leave the wider entry standing, which is the one mistake this whole layer
-        exists to prevent.
+        exists to prevent. For the same reason a push without a Contract, from a control
+        plane below 3.23, replaces every snapshot of its Agent, and a push with one
+        replaces the Agent's snapshot that had none.
         """
 
         if ack.tags is not None:
             self._tags = dict(ack.tags)
         for push in ack.grant_pushes:
             agent_id = str(push.agent_id)
-            self._held[agent_id] = _Held(
+            key: _Key = (agent_id, None if push.contract_id is None else str(push.contract_id))
+            replaced = (
+                [entry for entry in self._held if entry[0] == agent_id]
+                if push.contract_id is None
+                else [(agent_id, None)]
+            )
+            for stale in replaced:
+                self._held.pop(stale, None)
+            self._held[key] = _Held(
                 version=push.version,
                 payload=dict(push.snapshot),
                 snapshot=GrantSnapshot.from_payload(push.snapshot),
             )
-            self._held.move_to_end(agent_id)
+            self._held.move_to_end(key)
         while len(self._held) > SNAPSHOT_PUSH_MAX:
             self._held.popitem(last=False)
         if self._ceilings is None:
@@ -210,13 +251,16 @@ class HeartbeatLink:
         self._woke = False
         return ack
 
-    async def require_ready(self, agent_id: str | None, *, verb: str) -> None:
+    async def require_ready(
+        self, agent_id: str | None, contract_id: str | None, *, verb: str
+    ) -> None:
         """Refuse a privileged verb this Runner is in no position to decide.
 
         Order matters: a wake is answered with a heartbeat *before* staleness is read, so
         a laptop that slept re-hears the control plane instead of acting on a snapshot
         from before the sleep (23 item 4); and a Runner holding no snapshot for an Agent
-        refuses rather than running it unattenuated -- absence is never permission.
+        under this Work Record's Contract refuses rather than running it unattenuated, or
+        on another Contract's chain -- absence is never permission.
         """
 
         if self._observe_wake():
@@ -236,10 +280,11 @@ class HeartbeatLink:
                 f"{'none' if age is None else f'{age:.0f}s'} old, past the "
                 f"{self._stale_after:.0f}s liveness bound",
             )
-        if agent_id is not None and agent_id not in self._held:
+        if agent_id is not None and self._find(agent_id, contract_id) is None:
             raise SeamUnavailableError(
                 SNAPSHOT_MISSING_REASON,
-                f"{verb!r} is refused: no Grant snapshot has been pushed for Agent {agent_id}",
+                f"{verb!r} is refused: no Grant snapshot has been pushed for Agent {agent_id} "
+                f"under Contract {contract_id}",
             )
 
     def _age(self) -> float | None:
