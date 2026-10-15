@@ -13,8 +13,10 @@ replicas against a fake control plane (`charts/agentic-runner/test/run.sh`).
   `temporal-grpc.<zone>:443` over TLS. Both are on the same page.
 - A namespace whose Pod Security level allows a root container with five capabilities,
   or `isolation: none` (see [Isolation](#isolation)).
-- A chart version from the [releases](https://github.com/qtsone/agentic-runner/releases).
-  The chart's `appVersion` is the image tag it installs.
+- The chart version your control plane admits, not the newest release: a release is
+  published before the control plane admits it. Your Organisation's Admin knows it, and a
+  registration refused with `unpublished_runner_build` names it. The chart's `appVersion` is
+  the image tag it installs.
 
 ## Install
 

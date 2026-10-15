@@ -15,8 +15,11 @@ You need two values from your Organisation's Admin, both on the Organisation Con
 
 The Runner learns its Temporal address when it registers.
 
-Pick an image version from the [releases](https://github.com/qtsone/agentic-runner/releases)
-and pin it. `latest` moves.
+Pin the image version your control plane admits, not the newest release. A release is
+published before the control plane admits it, so for a while the newest image is refused at
+registration with `unpublished_runner_build`. Ask your Organisation's Admin for the version,
+or start the Runner: the refusal in its log names the versions the control plane admits and
+the image tag to use. Never use `latest`: it moves.
 
 ## The env file
 
@@ -136,6 +139,7 @@ The Runner appears on the Runners page within one heartbeat (30 seconds).
 | --- | --- |
 | `refusing to start (isolation_unavailable)` | `contract_uid` without the five capabilities. Add them, or use `isolation: none`. |
 | `refusing to start (unsafe_state_dir)` | The state directory or a file in it is a symlink, belongs to another uid, or is open to group or others. A volume made by an earlier release holds a `state` directory the image created `0755` as uid 65532: `chmod 700` it and `chmod 600` its files, keeping the uid the Runner runs as (root for `contract_uid`). |
+| `registration refused (unpublished_runner_build): …` | The control plane does not admit this image version yet. Recreate the container with the image tag the message names (`AGENTIC_RUNNER_VERSION` for Compose). |
 | `registration refused (…)` | The Runner Registration Token is unknown, revoked or expired, the Account is on hold, or the Organisation has reached its Runner limit. |
 | `heartbeat failed before start` | The control plane URL is wrong or unreachable. The Runner retries every 30 seconds. |
 
