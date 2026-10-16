@@ -1092,6 +1092,10 @@ class ControlPlaneStream:
             self.credentials.drop(contract_id, slot)
         self._delivered = set(plaintext)
 
+    @property
+    def llm_contracts(self) -> list[ContractLlmTerms] | None:
+        return None if self._llm_contracts is None else list(self._llm_contracts)
+
     def _take_llm_contracts(self, terms: list[ContractLlmTerms] | None) -> None:
         """Keep the ack's Contract terms, and the copy ``sign-in`` reads when they change.
         An ack without them (a control plane below 3.25) leaves what is held."""
@@ -1626,6 +1630,7 @@ async def _serve_registered(
                 tool_servers=tool_servers,
                 usage_windows=usage_windows,
                 runner_limit=runner_limit,
+                llm_contracts=lambda: stream.llm_contracts,
                 # The wake signal rides the connection this process polls with: one
                 # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
                 signaller=TemporalWorkflowSignaller(client),
@@ -1823,6 +1828,7 @@ def _activities(
     tool_servers: ToolServerHealthLog | None = None,
     usage_windows: UsageWindows | None = None,
     runner_limit: AppliedRunnerLimit | None = None,
+    llm_contracts: Callable[[], list[ContractLlmTerms] | None] | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1872,6 +1878,7 @@ def _activities(
         directives_in_flight=directives_in_flight,
         usage_windows=usage_windows,
         runner_limit=runner_limit,
+        llm_contracts=llm_contracts,
     )
     return [
         *ralph.activity_callables(),
@@ -1879,5 +1886,7 @@ def _activities(
             proxy=proxy,
             model=settings.TRIAGE_MODEL,
             timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
+            host_party=state.host_party,
+            llm_contracts=llm_contracts,
         ).activity_callables(),
     ]

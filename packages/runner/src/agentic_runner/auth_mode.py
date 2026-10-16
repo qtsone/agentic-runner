@@ -30,7 +30,7 @@ from typing import Final
 
 from agentic_runner.workers.agent_runtime import AuthMode
 from agentic_runner_contracts.llm_access import LlmAccess, LlmAccessKind
-from agentic_runner_contracts.runner_registration import SubscriptionState
+from agentic_runner_contracts.runner_registration import SubscriptionRight, SubscriptionState
 
 __all__ = [
     "NO_RUNTIME_SUBSCRIPTION_RULE",
@@ -38,7 +38,9 @@ __all__ = [
     "LLM_ACCESS_UNKNOWN_RULE",
     "LLM_KEY_UNSUPPORTED_RULE",
     "SETUP_TOKEN_REFUSED_RULE",
+    "SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE",
     "SUBSCRIPTION_NOT_SIGNED_IN_RULE",
+    "SUBSCRIPTION_NO_RIGHT_RULE",
     "SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE",
     "SHARED_HOST_PARTIES",
     "SIGN_IN_NEEDS_CONTRACT_UID_RULE",
@@ -64,6 +66,8 @@ SETUP_TOKEN_REFUSED_RULE: Final[str] = "setup_token_refused"
 HOST_KEY_NOT_HELD_RULE: Final[str] = "host_key_not_held"
 SUBSCRIPTION_NOT_SIGNED_IN_RULE: Final[str] = "subscription_not_signed_in"
 SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE: Final[str] = "subscription_off_personal_runner"
+SUBSCRIPTION_NO_RIGHT_RULE: Final[str] = "subscription_no_right"
+SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE: Final[str] = "subscription_not_acknowledged"
 LLM_KEY_UNSUPPORTED_RULE: Final[str] = "llm_key_unsupported"
 LLM_ACCESS_UNKNOWN_RULE: Final[str] = "llm_access_unknown"
 # `claude setup-token` mints an OAuth bearer under this prefix; an Anthropic API key is
@@ -148,6 +152,7 @@ def require_named_access(
     host_party: str | None,
     host_key_held: bool,
     subscription: SubscriptionState,
+    subscription_right: SubscriptionRight | None,
     runtime_modes: Collection[AuthMode],
 ) -> AuthMode:
     """The mode the named access runs in, or a refusal naming what is missing.
@@ -156,6 +161,12 @@ def require_named_access(
     proxy; ``subscription`` the Contract's harness root for the Directive's kind. A
     subscription runs only on its person's own Runner (rev 3: never on a pool Runner),
     and only while it is signed in, unexpired and not at its usage limit.
+
+    ``subscription_right`` is what the last heartbeat ack said of the Contract's own
+    subscription (``llm_contracts``), so a misrouted Directive is refused here as well as
+    at the platform's routing (QTS-1349 controls 4 and 7, QTS-1751). ``None`` while no ack
+    has named the Contracts -- a control plane below 3.25 -- which leaves routing the only
+    check, as before.
     """
 
     if access.kind == LlmAccessKind.HOST_KEY:
@@ -172,6 +183,19 @@ def require_named_access(
                 SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
                 f"this Runner is hosted by {host_party!r}; a subscription runs only on its "
                 "person's own Runner",
+            )
+        if subscription_right == SubscriptionRight.NO_RIGHT:
+            raise AuthModeRefusedError(
+                SUBSCRIPTION_NO_RIGHT_RULE,
+                "this Directive was routed to the person's subscription, and the control plane "
+                "last told this Runner that the Contract does not allow one",
+            )
+        if subscription_right == SubscriptionRight.NOT_ACKNOWLEDGED:
+            raise AuthModeRefusedError(
+                SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE,
+                "this Directive was routed to the person's subscription, and the control plane "
+                "last told this Runner that the person has not acknowledged the subscription "
+                "terms",
             )
         if AuthMode.SUBSCRIPTION not in runtime_modes:
             raise AuthModeRefusedError(

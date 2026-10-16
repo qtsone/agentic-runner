@@ -29,6 +29,8 @@ from agentic_runner.auth_mode import (
     SETUP_TOKEN_REFUSED_RULE,
     SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+    SUBSCRIPTION_NO_RIGHT_RULE,
+    SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE,
     SUBSCRIPTION_NOT_SIGNED_IN_RULE,
     SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
     AuthModeRefusedError,
@@ -49,7 +51,7 @@ from agentic_runner.workers.codex_runtime import CodexRuntime, SubprocessResult
 from agentic_runner.workers.command_policy import CommandPolicy, evaluate_command_policy
 from agentic_runner.workers.settings import WorkerSettings
 from agentic_runner_contracts.llm_access import LlmAccess
-from agentic_runner_contracts.runner_registration import SubscriptionState
+from agentic_runner_contracts.runner_registration import SubscriptionRight, SubscriptionState
 from agentic_runner_contracts.sealed_credential import SealedCredential, delivery_binding
 
 CONTRACT = UUID("11111111-1111-4111-8111-111111111111")
@@ -235,6 +237,7 @@ def test_a_directive_runs_on_exactly_the_access_it_was_routed_with(
             host_party=host_party,
             host_key_held=host_key_held,
             subscription=subscription,
+            subscription_right=SubscriptionRight.ALLOWED,
             runtime_modes=modes,
         )
 
@@ -244,6 +247,40 @@ def test_a_directive_runs_on_exactly_the_access_it_was_routed_with(
     with pytest.raises(AuthModeRefusedError) as refused:
         require()
     assert refused.value.rule == _NAMED_RULES.get(expected, expected)
+
+
+@pytest.mark.parametrize(
+    ("right", "expected"),
+    [
+        (SubscriptionRight.ALLOWED, AuthMode.SUBSCRIPTION),
+        # No ack has named the Contracts (a control plane below 3.25): routing decides.
+        (None, AuthMode.SUBSCRIPTION),
+        (SubscriptionRight.NO_RIGHT, SUBSCRIPTION_NO_RIGHT_RULE),
+        (SubscriptionRight.NOT_ACKNOWLEDGED, SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE),
+    ],
+)
+def test_a_subscription_runs_only_where_the_last_ack_allows_it(
+    right: SubscriptionRight | None, expected: AuthMode | str
+) -> None:
+    """QTS-1751: a subscription Directive the platform's routing let through wrongly is
+    refused here too, on the right the Runner already holds from its heartbeat ack."""
+
+    def require() -> AuthMode:
+        return require_named_access(
+            LlmAccess(kind="subscription"),
+            host_party="user",
+            host_key_held=False,
+            subscription=SIGNED_IN,
+            subscription_right=right,
+            runtime_modes=CODEX_MODES,
+        )
+
+    if isinstance(expected, AuthMode):
+        assert require() == expected
+        return
+    with pytest.raises(AuthModeRefusedError) as refused:
+        require()
+    assert refused.value.rule == expected
 
 
 # ------------------------------------------------------------------ Codex API-key mode
