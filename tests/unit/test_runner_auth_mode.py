@@ -24,8 +24,8 @@ import pytest
 from agentic_runner.auth_mode import (
     HOST_KEY_NOT_HELD_RULE,
     LLM_ACCESS_UNKNOWN_RULE,
-    LLM_KEY_UNSUPPORTED_RULE,
     NO_RUNTIME_SUBSCRIPTION_RULE,
+    POOL_KEY_NOT_HELD_RULE,
     SETUP_TOKEN_REFUSED_RULE,
     SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
@@ -205,14 +205,14 @@ NAMED_TABLE: list[tuple[str, str | None, bool, SubscriptionState, frozenset[Auth
     ("subscription", "user", True, SubscriptionState.NONE, CODEX_MODES, "not_signed_in"),
     ("subscription", "user", True, SubscriptionState.EXPIRED, CODEX_MODES, "not_signed_in"),
     ("subscription", "user", True, SubscriptionState.AT_LIMIT, CODEX_MODES, "not_signed_in"),
-    # llm_key: the pool's stored keys arrive with T7; until then the Runner fails closed.
+    # llm_key: one of the pool's LLM Keys, which a Runner given no Pool Key cannot open.
     ("llm_key", "organisation", True, SubscriptionState.NONE, CODEX_MODES, "llm_key"),
     ("pigeon", "user", True, SIGNED_IN, CODEX_MODES, LLM_ACCESS_UNKNOWN_RULE),
 ]
 _NAMED_RULES = {
     "subscription_off": SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
     "not_signed_in": SUBSCRIPTION_NOT_SIGNED_IN_RULE,
-    "llm_key": LLM_KEY_UNSUPPORTED_RULE,
+    "llm_key": POOL_KEY_NOT_HELD_RULE,
 }
 
 
@@ -281,6 +281,22 @@ def test_a_subscription_runs_only_where_the_last_ack_allows_it(
     with pytest.raises(AuthModeRefusedError) as refused:
         require()
     assert refused.value.rule == expected
+
+
+def test_an_llm_key_directive_runs_on_the_proxy_on_a_runner_holding_a_pool_key() -> None:
+    """The key itself is released and opened at Directive start; here only the mode."""
+
+    mode = require_named_access(
+        LlmAccess(kind="llm_key", llm_key_id="key-1"),
+        host_party="organisation",
+        host_key_held=False,
+        subscription=SubscriptionState.NONE,
+        subscription_right=None,
+        runtime_modes=CODEX_MODES,
+        pool_key_held=True,
+    )
+
+    assert mode == AuthMode.API_KEY
 
 
 # ------------------------------------------------------------------ Codex API-key mode

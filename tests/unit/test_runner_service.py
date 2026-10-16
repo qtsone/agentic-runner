@@ -49,6 +49,7 @@ from agentic_runner_contracts.runner_registration import (
     EgressPosture,
     IsolationMode,
     LifecycleKind,
+    PoolTerms,
     RecipientKey,
 )
 
@@ -602,3 +603,70 @@ async def test_registration_and_every_heartbeat_carry_the_limit_and_its_posture(
     assert bootstrap.runner_limit.posture.networks is EgressPosture.UNENFORCED
     for beat in plane.heartbeats[:2]:
         assert beat.runner_limit == bootstrap.runner_limit
+
+
+async def _beats(plane: FakeControlPlane, count: int) -> list[Any]:
+    harness = Harness(plane)
+
+    async def stop_after_beats() -> None:
+        await plane.wait_for(lambda: len(plane.heartbeats) >= count)
+        harness.stop.set()
+
+    stopper = asyncio.create_task(stop_after_beats())
+    assert await harness.run(can_change_uid=False) == 0
+    await stopper
+    return [beat.model_dump(mode="json") for beat in plane.heartbeats]
+
+
+@pytest.mark.asyncio
+async def test_a_pool_runner_reports_the_pool_key_it_holds_once_the_ack_names_the_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rev 3: the fingerprint, never the key, and only to a control plane that asked."""
+
+    _environment(monkeypatch, tmp_path, isolation="none")
+    pool_key = generate_recipient_key()
+    monkeypatch.setenv("AGENTIC_RUNNER_POOL_KEY", pool_key.private_key)
+    current = generate_recipient_key().fingerprint
+    plane = FakeControlPlane(pool=PoolTerms(pool_key_fingerprint=current))
+
+    first, second = (await _beats(plane, 2))[:2]
+
+    assert "pool_key_fingerprint" not in first, "the first beat precedes any ack"
+    assert second["pool_key_fingerprint"] == pool_key.fingerprint
+    assert pool_key.private_key not in json.dumps([first, second])
+    assert "AGENTIC_RUNNER_POOL_KEY" not in os.environ
+
+
+@pytest.mark.parametrize("pool", [None, PoolTerms()])
+@pytest.mark.asyncio
+async def test_a_runner_reports_no_pool_key_when_it_holds_none_or_was_not_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pool: PoolTerms | None
+) -> None:
+    """No Pool Key, or a personal Runner / a control plane below 3.26 (no `pool`): the
+    envelope is the body a 3.25 control plane parses."""
+
+    _environment(monkeypatch, tmp_path, isolation="none")
+    if pool is None:
+        monkeypatch.setenv("AGENTIC_RUNNER_POOL_KEY", generate_recipient_key().private_key)
+    else:
+        monkeypatch.delenv("AGENTIC_RUNNER_POOL_KEY", raising=False)
+
+    beats = await _beats(FakeControlPlane(pool=pool), 2)
+
+    assert all("pool_key_fingerprint" not in beat for beat in beats)
+
+
+@pytest.mark.asyncio
+async def test_the_runner_refuses_to_start_on_a_pool_key_that_is_not_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _environment(monkeypatch, tmp_path, isolation="none")
+    monkeypatch.setenv("AGENTIC_RUNNER_POOL_KEY", "not-a-pool-key")
+    plane = FakeControlPlane()
+
+    exit_code = await Harness(plane).run(can_change_uid=False)
+
+    assert exit_code == 1
+    assert "refusing to start (pool_key_invalid)" in capsys.readouterr().out
+    assert plane.bootstraps == []

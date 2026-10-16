@@ -26,6 +26,9 @@ Contracts 3.25 (Spec: Runners rev 3): every ack names the one Contract this fake
 ``llm_contracts``, with ``subscription`` as its right, so a Runner reports the LLM access it
 holds for it; :attr:`FakeControlPlane.llm_access` keeps each report. ``subscription``
 ``None`` answers as a control plane below 3.25 does: no Contract terms at all.
+
+Contracts 3.26: :attr:`FakeControlPlane.pool` is the ack's pool and its current Pool Key;
+None, the default, answers for a personal Runner or a control plane below 3.26.
 """
 
 from __future__ import annotations
@@ -69,6 +72,7 @@ from agentic_runner_contracts.runner_registration import (
     FloorState,
     HeartbeatAck,
     HeartbeatEnvelope,
+    PoolTerms,
     RunnerIdentityMaterial,
     SubscriptionRight,
 )
@@ -179,6 +183,7 @@ class FakeControlPlane:
     # The ack's word on whether the person may sign this Contract in with their own
     # subscription; None leaves `llm_contracts` out, as a control plane below 3.25 does.
     subscription: SubscriptionRight | None = SubscriptionRight.NO_RIGHT
+    pool: PoolTerms | None = None
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)
     runner_ids: list[UUID] = field(default_factory=list)
@@ -459,6 +464,7 @@ class FakeControlPlane:
                     ContractLlmTerms(contract_id=self.contract_id, subscription=self.subscription)
                 ]
             ),
+            pool=self.pool,
         )
         return _Answer(200, ack.model_dump(mode="json"))
 

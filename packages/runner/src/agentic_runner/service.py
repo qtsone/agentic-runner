@@ -85,6 +85,13 @@ from agentic_runner.llm_proxy import (
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
 from agentic_runner.oauth_connectors import OAuthConnectors
+from agentic_runner.pool_key import (
+    POOL_KEY_ENV,
+    LlmKeyOpener,
+    PoolKey,
+    PoolKeyError,
+    load_pool_key,
+)
 from agentic_runner.private_state import (
     UnsafeStateError,
     ensure_private_dir,
@@ -160,6 +167,7 @@ from agentic_runner_contracts.runner_registration import (
     HostAttestation,
     IsolationMode,
     LifecycleKind,
+    PoolTerms,
     ProviderKeyReport,
     RecipientKey,
     ResourcePressure,
@@ -819,6 +827,10 @@ class ControlPlaneStream:
     # kept for `agentic-runner sign-in`.
     install: RunnerInstall | None = None
     state_dir: Path | None = None
+    # Rev 3: the fingerprint of the Pool Key this Runner was given; None when it was given
+    # none. Reported only once an ack named the pool (`_pool`), which a control plane on
+    # 3.26 or later does.
+    pool_key_fingerprint: str | None = None
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
     # ADR-0022 §57: the Runner Limit read at start and its posture; None while it is empty.
@@ -834,6 +846,7 @@ class ControlPlaneStream:
     # Rev 3: the Contracts the last ack said this Runner serves; None until an ack from a
     # control plane on 3.25 named them, and the LLM access report is sent only after.
     _llm_contracts: list[ContractLlmTerms] | None = None
+    _pool: PoolTerms | None = None
     _last_seen: tuple[float, datetime] | None = None
 
     def _observe_sleep(self, now: datetime) -> None:
@@ -1023,6 +1036,7 @@ class ControlPlaneStream:
             runner_limit=self.runner_limit,
             llm_access=self._llm_access_report(),
             install=self.install if self._llm_contracts is not None else None,
+            pool_key_fingerprint=self.pool_key_fingerprint if self._pool is not None else None,
         )
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
@@ -1048,6 +1062,7 @@ class ControlPlaneStream:
         self._sync_delivered()
         self._manifests = list(ack.credential_manifests)
         self._take_llm_contracts(ack.llm_contracts)
+        self._take_pool(ack.pool)
         await self._sync_llm_slots()
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token
@@ -1105,6 +1120,25 @@ class ControlPlaneStream:
         self._llm_contracts = list(terms)
         if self.state_dir is not None:
             save_llm_contracts(self.state_dir, terms)
+
+    def _take_pool(self, pool: PoolTerms | None) -> None:
+        """Keep the ack's pool. An ack without one (a personal Runner, or a control plane
+        below 3.26) leaves what is held."""
+
+        if pool is None or pool == self._pool:
+            return
+        self._pool = pool
+        current = pool.pool_key_fingerprint
+        if current is not None and current != self.pool_key_fingerprint:
+            # The operator's signal: this Runner opens none of the pool's LLM Keys until
+            # its install carries the Pool Key now on the Runners page.
+            _logger.warning(
+                "this Runner holds Pool Key %s, not the pool's current %s; it opens none of "
+                "the pool's LLM Keys until %s is updated",
+                self.pool_key_fingerprint or "none",
+                current,
+                POOL_KEY_ENV,
+            )
 
     async def _sync_host_keys(self) -> None:
         """The host store's keys, by the provider's key name, become the proxy's host slots
@@ -1367,6 +1401,13 @@ async def _run(
         print(f"refusing to start (runner_limit): {error}", flush=True)
         return 1
     state_dir = config.state_dir
+    try:
+        pool_key = load_pool_key(state_dir)
+    except PoolKeyError as error:
+        # Refused rather than started without it: the pool's LLM Keys would then fail
+        # every Directive routed to them, far from the typo that caused it.
+        print(f"refusing to start (pool_key_invalid): {error}", flush=True)
+        return 1
 
     readiness = readiness or Readiness(int(os.environ.get(READINESS_PORT_ENV, "").strip() or 0))
     await readiness.start()
@@ -1388,6 +1429,7 @@ async def _run(
             attestation=attestation,
             install=install,
             runner_limit=runner_limit,
+            pool_key=pool_key,
         )
     finally:
         await readiness.close()
@@ -1411,6 +1453,7 @@ async def _serve(
     attestation: HostAttestation | None,
     install: RunnerInstall | None = None,
     runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
+    pool_key: PoolKey | None = None,
 ) -> int:
     limit_report = runner_limit_report(
         runner_limit,
@@ -1480,6 +1523,7 @@ async def _serve(
             install=install,
             lifecycle=lifecycle,
             runner_limit=runner_limit,
+            pool_key=pool_key,
         )
     except _StoppedBeforeStartError:
         # No beat with a 10 s timeout on the way out (`_report_stop`): the control plane
@@ -1512,6 +1556,7 @@ async def _serve_registered(
     lifecycle: LifecycleOutbox,
     install: RunnerInstall | None = None,
     runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
+    pool_key: PoolKey | None = None,
 ) -> int:
     load = _LoadInterceptor()
     proxy = LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox())
@@ -1535,23 +1580,28 @@ async def _serve_registered(
     usage_windows = build_usage_windows(
         host_party=state.host_party, runtimes=runtimes, isolation=isolation, in_flight=in_flight
     )
+    # One store for both: it caches the key file, and a renewal through the stream must
+    # be the key the LLM Key opener reads too.
+    recipient_keys = RecipientKeyStore(state_dir)
+    llm_slots = llm_slot_references(
+        {
+            name: url
+            for name, url in (
+                ("openai", config.openai_base_url),
+                ("anthropic", config.anthropic_base_url),
+            )
+            if url
+        }
+    )
+    llm_keys = LlmKeyOpener(pool_key=pool_key, recipient_keys=recipient_keys, endpoints=llm_slots)
     stream = ControlPlaneStream(
         client=RunnerRegistrationClient(base_url=control_plane, client=http_client),
         state=state,
         isolation=mode,
         proxy=proxy,
-        sealed=SealedCredentialStream(RecipientKeyStore(state_dir)),
+        sealed=SealedCredentialStream(recipient_keys),
         credentials=credentials,
-        llm_slots=llm_slot_references(
-            {
-                name: url
-                for name, url in (
-                    ("openai", config.openai_base_url),
-                    ("anthropic", config.anthropic_base_url),
-                )
-                if url
-            }
-        ),
+        llm_slots=llm_slots,
         load=load,
         egress_posture=egress_posture,
         attestation=attestation,
@@ -1564,6 +1614,7 @@ async def _serve_registered(
         runner_limit=runner_limit_report(runner_limit, runtimes, egress_posture=egress_posture),
         install=install,
         state_dir=state_dir,
+        pool_key_fingerprint=llm_keys.fingerprint,
     )
     stream.sources = UserSourcePoller(
         stream=SignedIntakeStream(stream.client, state),
@@ -1631,6 +1682,7 @@ async def _serve_registered(
                 usage_windows=usage_windows,
                 runner_limit=runner_limit,
                 llm_contracts=lambda: stream.llm_contracts,
+                llm_keys=llm_keys,
                 # The wake signal rides the connection this process polls with: one
                 # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
                 signaller=TemporalWorkflowSignaller(client),
@@ -1829,6 +1881,7 @@ def _activities(
     usage_windows: UsageWindows | None = None,
     runner_limit: AppliedRunnerLimit | None = None,
     llm_contracts: Callable[[], list[ContractLlmTerms] | None] | None = None,
+    llm_keys: LlmKeyOpener | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1879,6 +1932,7 @@ def _activities(
         usage_windows=usage_windows,
         runner_limit=runner_limit,
         llm_contracts=llm_contracts,
+        llm_keys=llm_keys,
     )
     return [
         *ralph.activity_callables(),

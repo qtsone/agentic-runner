@@ -36,7 +36,9 @@ __all__ = [
     "NO_RUNTIME_SUBSCRIPTION_RULE",
     "HOST_KEY_NOT_HELD_RULE",
     "LLM_ACCESS_UNKNOWN_RULE",
-    "LLM_KEY_UNSUPPORTED_RULE",
+    "LLM_KEY_RELEASE_REFUSED_RULE",
+    "LLM_KEY_UNOPENABLE_RULE",
+    "POOL_KEY_NOT_HELD_RULE",
     "SETUP_TOKEN_REFUSED_RULE",
     "SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE",
     "SUBSCRIPTION_NOT_SIGNED_IN_RULE",
@@ -68,7 +70,11 @@ SUBSCRIPTION_NOT_SIGNED_IN_RULE: Final[str] = "subscription_not_signed_in"
 SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE: Final[str] = "subscription_off_personal_runner"
 SUBSCRIPTION_NO_RIGHT_RULE: Final[str] = "subscription_no_right"
 SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE: Final[str] = "subscription_not_acknowledged"
-LLM_KEY_UNSUPPORTED_RULE: Final[str] = "llm_key_unsupported"
+# An `llm_key` Directive on a Runner given no Pool Key; one whose release QTS refused; and
+# one whose release does not open here (an old Pool Key, or a share bound to another key).
+POOL_KEY_NOT_HELD_RULE: Final[str] = "pool_key_not_held"
+LLM_KEY_RELEASE_REFUSED_RULE: Final[str] = "llm_key_release_refused"
+LLM_KEY_UNOPENABLE_RULE: Final[str] = "llm_key_unopenable"
 LLM_ACCESS_UNKNOWN_RULE: Final[str] = "llm_access_unknown"
 # `claude setup-token` mints an OAuth bearer under this prefix; an Anthropic API key is
 # `sk-ant-api…`. The sealed wire carries no mode, so the value's own shape is what the
@@ -154,11 +160,14 @@ def require_named_access(
     subscription: SubscriptionState,
     subscription_right: SubscriptionRight | None,
     runtime_modes: Collection[AuthMode],
+    pool_key_held: bool = False,
 ) -> AuthMode:
     """The mode the named access runs in, or a refusal naming what is missing.
 
     ``host_key_held`` is the provider's key in this Runner's own store, serving in the
-    proxy; ``subscription`` the Contract's harness root for the Directive's kind. A
+    proxy; ``subscription`` the Contract's harness root for the Directive's kind;
+    ``pool_key_held`` whether this Runner was given a Pool Key, without which none of the
+    pool's LLM Keys opens here. A
     subscription runs only on its person's own Runner (rev 3: never on a pool Runner),
     and only while it is signed in, unexpired and not at its usage limit.
 
@@ -210,11 +219,14 @@ def require_named_access(
             )
         return AuthMode.SUBSCRIPTION
     if access.kind == LlmAccessKind.LLM_KEY:
-        raise AuthModeRefusedError(
-            LLM_KEY_UNSUPPORTED_RULE,
-            "this Directive was routed to one of the pool's LLM Keys, which this Runner "
-            "release cannot open; update the Runner",
-        )
+        if not pool_key_held:
+            raise AuthModeRefusedError(
+                POOL_KEY_NOT_HELD_RULE,
+                "this Directive was routed to one of the pool's LLM Keys, and this Runner "
+                "holds no Pool Key; give it the one on the Runners page as "
+                "AGENTIC_RUNNER_POOL_KEY",
+            )
+        return AuthMode.API_KEY
     raise AuthModeRefusedError(
         LLM_ACCESS_UNKNOWN_RULE, f"this Runner does not know the LLM access {access.kind!r}"
     )
