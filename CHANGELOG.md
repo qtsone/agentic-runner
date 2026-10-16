@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.25.1](https://github.com/qtsone/agentic-runner/compare/v3.25.0...v3.25.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **security:** the Runner refuses a subscription Directive its ack does not allow (QTS-1751) ([#72](https://github.com/qtsone/agentic-runner/issues/72)) ([fbcb8ca](https://github.com/qtsone/agentic-runner/commit/fbcb8caffbd8b1a0640f7f53372e646c1130968f)), closes [#71](https://github.com/qtsone/agentic-runner/issues/71)
+
 # [3.25.0](https://github.com/qtsone/agentic-runner/compare/v3.24.0...v3.25.0) (2026-10-16)
 
 
