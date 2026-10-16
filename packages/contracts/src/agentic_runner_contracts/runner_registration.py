@@ -46,6 +46,7 @@ from pydantic import (
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
 from agentic_runner_contracts.llm_access import LlmProvider
+from agentic_runner_contracts.llm_key import Fingerprint
 from agentic_runner_contracts.llm_usage import UsageRecord
 from agentic_runner_contracts.oauth_connector import (
     OAuthAuthorizeUrl,
@@ -675,6 +676,18 @@ class ContractLlmTerms(BaseModel):
     subscription: SubscriptionRight
 
 
+class PoolTerms(BaseModel):
+    """The pool a Runner belongs to, as the ack names it (Spec: Runners rev 3).
+
+    ``pool_key_fingerprint`` is the pool's current Pool Key, None while the pool has
+    none. A Runner holding another one opens none of the pool's LLM Keys.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pool_key_fingerprint: Fingerprint | None = None
+
+
 class InstallChannel(StrEnum):
     """How this Runner was installed, as it says so itself (23 item 5)."""
 
@@ -877,6 +890,10 @@ class HeartbeatEnvelope(BaseModel):
         default=None, max_length=CREDENTIAL_MANIFESTS_MAX
     )
     install: RunnerInstall | None = None
+    # Spec: Runners rev 3: the fingerprint of the Pool Key this Runner holds, None when it
+    # holds none. Sent only once an ack carried `pool`, which a control plane on 3.26 or
+    # later sends; an older one refuses the field.
+    pool_key_fingerprint: Fingerprint | None = None
 
     @model_serializer(mode="wrap")
     def _omit_empty_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -895,7 +912,7 @@ class HeartbeatEnvelope(BaseModel):
                 if not body.get(name):
                     body.pop(name, None)
             # An empty report is still sent: it says the Runner holds no LLM access.
-            for name in ("llm_access", "install"):
+            for name in ("llm_access", "install", "pool_key_fingerprint"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body
@@ -987,18 +1004,24 @@ class HeartbeatAck(BaseModel):
     llm_contracts: list[ContractLlmTerms] | None = Field(
         default=None, max_length=CREDENTIAL_MANIFESTS_MAX
     )
+    # Spec: Runners rev 3: the pool this Runner belongs to, and its current Pool Key. None
+    # from a control plane below 3.26 and for a personal Runner, which belongs to no pool;
+    # the Runner reports the fingerprint it holds only once an ack carried this. The ack
+    # forbids extra keys, so the control plane sends it only to a Runner whose heartbeat
+    # names contracts 3.26 or later.
+    pool: PoolTerms | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
-        # body that Runner already parses; likewise `tags` for a Runner on 3.19 and
-        # `llm_contracts` for one on 3.24. An empty tag set or Contract list is still sent:
-        # it says the Runner has no Tags, or serves no Contract.
+        # body that Runner already parses; likewise `tags` for a Runner on 3.19,
+        # `llm_contracts` for one on 3.24 and `pool` for one on 3.25. An empty tag set or
+        # Contract list is still sent: it says the Runner has no Tags, or serves no Contract.
         body = handler(self)
         if isinstance(body, dict):
             if not body.get("credential_manifests"):
                 body.pop("credential_manifests", None)
-            for name in ("tags", "llm_contracts"):
+            for name in ("tags", "llm_contracts", "pool"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body

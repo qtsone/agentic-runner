@@ -71,7 +71,7 @@ class LlmAccessKind(StrEnum):
     # The provider's key in the Runner's own store: the person's on a personal Runner,
     # the pool's on a pool Runner.
     HOST_KEY = "host_key"
-    # One of the pool's stored LLM Keys, by id, opened with the Pool Key (T7).
+    # One of the pool's stored LLM Keys, by id, opened with the Pool Key (`.llm_key`).
     LLM_KEY = "llm_key"
 
 
