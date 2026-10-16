@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Final
 
+from agentic_runner.llm_proxy import PROXY_ENV_NAMES
 from agentic_runner.workers._runtime_support import (
     SubprocessResult,
     apply_extra_env,
@@ -27,6 +29,7 @@ from agentic_runner.workers.agent_runtime import (
     ResumableAgentRuntime,
     RuntimeCapabilities,
 )
+from agentic_runner.workers.claude_sign_in import launcher_argv
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import claude_mcp_config
 from agentic_runner.workers.settings import WorkerSettings
@@ -56,17 +59,17 @@ _SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
 class ClaudeRuntime(ResumableAgentRuntime):
     """Worker-local Claude Code CLI runtime.
 
-    Runs against the attempt's LLM proxy endpoint rather than a device-login session, so an
-    unattended Persona can run without an expiring browser session (ADR-0006), and the
-    subprocess holds only the attempt's bearer, never a provider key (QTS-1520). Like the
-    Codex runtime it confines execution to the supplied workspace, refuses fail-closed unless
-    the autonomous-permission guard is configured or the proxy endpoint is missing, and
-    returns bounded, redacted evidence safe for control-plane storage.
+    An ``api_key`` Directive runs against the attempt's LLM proxy endpoint, so the
+    subprocess holds only the attempt's bearer, never a provider key (QTS-1520). A
+    ``subscription`` one (local-agents 07) runs on the sign-in in the Contract's harness
+    root, behind the sign-in launcher, so the token is read by the Contract's own process
+    and never by the Runner's. Like the Codex runtime it confines execution to the supplied
+    workspace, refuses fail-closed unless the autonomous-permission guard is configured and
+    the mode's credential is in place, and returns bounded, redacted evidence safe for
+    control-plane storage.
     """
 
-    # Subscription mode for Claude Code is local-agents 07; until then a Contract with no
-    # delivered key has nothing this runtime may run on.
-    auth_modes = frozenset({AuthMode.API_KEY})
+    auth_modes = frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION})
     host_api_key = False
 
     def __init__(
@@ -95,7 +98,8 @@ class ClaudeRuntime(ResumableAgentRuntime):
             raise ValueError("workspace_path must be under WORKSPACE_ROOT")
 
         directive_workspace_id = workspace_id(workspace_path, workspace_root)
-        guard_mode = _guard_mode(self._settings)
+        subscription = request.auth_mode == AuthMode.SUBSCRIPTION
+        guard_mode = _guard_mode(self._settings, subscription=subscription)
         if guard_mode is None:
             return _refused_result(
                 workspace_id=directive_workspace_id,
@@ -103,7 +107,28 @@ class ClaudeRuntime(ResumableAgentRuntime):
                 work_branch=request.work_branch,
                 evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
             )
-        if not dict(request.extra_env).get("ANTHROPIC_BASE_URL"):
+        sandbox = request.sandbox
+        extra_env = request.extra_env
+        if subscription:
+            if sandbox is None:
+                # Without the Contract's harness root the CLI would read whatever login the
+                # Runner's own user holds: someone else's subscription, or none.
+                return _refused_result(
+                    workspace_id=directive_workspace_id,
+                    base_branch=request.base_branch,
+                    work_branch=request.work_branch,
+                    evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
+                    guard_mode="refused: subscription mode without a Contract harness root",
+                    error=(
+                        "a subscription Claude Code Directive needs its Contract's harness root"
+                    ),
+                )
+            # A proxy pair here would send the sign-in's bearer to the proxy, which would
+            # then hold it; the activity sets none in this mode, and none gets through.
+            extra_env = tuple(
+                (name, value) for name, value in extra_env if name not in PROXY_ENV_NAMES
+            )
+        elif not dict(extra_env).get("ANTHROPIC_BASE_URL"):
             # The proxy pair is the only credential this runtime hands the harness; without
             # it the harness would fall back to whatever login or key it finds itself.
             return _refused_result(
@@ -116,10 +141,12 @@ class ClaudeRuntime(ResumableAgentRuntime):
             )
 
         model = request.model or self._settings.CLAUDE_MODEL
-        argv = _claude_argv(model)
-        if request.mcp_servers is not None:
+        argv = _claude_argv(model, subscription=subscription)
+        if request.mcp_servers is not None or subscription:
             # Only what the Grant let through: `--strict-mcp-config` ignores every other
-            # MCP source, so nothing in the harness root can add an ungranted server.
+            # MCP source, so nothing in the harness root can add an ungranted server. A
+            # subscription turn always pins it: without `--bare` the CLI would otherwise
+            # read the Workspace's `.mcp.json` when the Grant names no server.
             if request.mcp_servers:
                 argv += ["--mcp-config", claude_mcp_config(request.mcp_servers)]
             argv.append("--strict-mcp-config")
@@ -150,14 +177,18 @@ class ClaudeRuntime(ResumableAgentRuntime):
                 evidence_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
                 guard_mode=f"refused: command policy ({floor_refusal})",
             )
-        # Per-Contract CLAUDE_CONFIG_DIR, never a fleet-wide one (ADR-0015 §4).
-        sandbox = request.sandbox
-        env: dict[str, str] = {}
+        if subscription:
+            assert sandbox is not None  # refused above
+            argv = launcher_argv(sandbox.harness_config_dir, argv)
+        # Per-Contract CLAUDE_CONFIG_DIR, never a fleet-wide one (ADR-0015 §4). PATH is the
+        # Runner's own, as for the other runtimes: without it `claude` (in /usr/local/bin in
+        # the image) and its node shebang resolve against `os.defpath` only.
+        env: dict[str, str] = {"PATH": os.environ.get("PATH") or os.defpath}
         if sandbox is not None:
             env["CLAUDE_CONFIG_DIR"] = str(sandbox.harness_config_dir)
             env["HOME"] = str(sandbox.home_dir)
             env["TMPDIR"] = str(sandbox.tmp_dir)
-        apply_extra_env(env, request.extra_env)
+        apply_extra_env(env, extra_env)
         notes: list[str] = []
         if started_session is not None and request.on_session_started is not None:
             request.on_session_started(started_session)
@@ -218,17 +249,27 @@ class ClaudeRuntime(ResumableAgentRuntime):
         return any(projects.glob(f"*/{session_id}.jsonl"))
 
 
-def _guard_mode(settings: WorkerSettings) -> str | None:
+def _guard_mode(settings: WorkerSettings, *, subscription: bool = False) -> str | None:
     if settings.CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS:
-        return "auth=api-key; permission=skip-in-sandbox; output=json"
+        auth = "subscription" if subscription else "api-key"
+        return f"auth={auth}; permission=skip-in-sandbox; output=json"
     return None
 
 
-def _claude_argv(model: str) -> list[str]:
+def _claude_argv(model: str, *, subscription: bool = False) -> list[str]:
+    """``--bare`` reads no OAuth login and no keychain, so a subscription turn cannot use
+    it. In its place, as the ACP runtime's ``settingSources: []`` (LA-12d item 2), no setting
+    source loads: the Workspace's and harness root's settings, hooks and ``CLAUDE.md`` stay
+    out, so neither can set ``env``, ``apiKeyHelper`` or a base URL that would swap the
+    sign-in for a key or send its bearer elsewhere. The login itself is not a setting and
+    still signs the requests.
+    """
+
+    settings_flags = ["--setting-sources", ""] if subscription else ["--bare"]
     return [
         "claude",
         "--print",
-        "--bare",
+        *settings_flags,
         "--output-format",
         "json",
         "--model",
