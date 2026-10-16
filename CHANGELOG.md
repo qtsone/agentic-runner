@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.26.0](https://github.com/qtsone/agentic-runner/compare/v3.25.1...v3.26.0) (2026-10-16)
+
+
+### Features
+
+* **llm-keys:** open the pool's LLM Keys on its Runners with the Pool Key (QTS-1745) ([#73](https://github.com/qtsone/agentic-runner/issues/73)) ([5dfbbf4](https://github.com/qtsone/agentic-runner/commit/5dfbbf451fda4e8c2007988e701b4d7c337a6322))
+
 ## [3.25.1](https://github.com/qtsone/agentic-runner/compare/v3.25.0...v3.25.1) (2026-10-16)
 
 

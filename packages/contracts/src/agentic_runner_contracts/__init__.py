@@ -136,6 +136,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose heartbeat names contracts 3.26 or later, and the Runner reports its fingerprint
 # only once an ack carried `pool`. Raises the floor for pool Runners in practice: one
 # below 3.26 cannot open an LLM Key, so routing sends it no `llm_key` Directive.
-__version__ = "3.25.1"
+__version__ = "3.26.0"
 
 __all__ = ["__version__"]
