@@ -127,6 +127,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose heartbeat names contracts 3.25 or later; the Runner sends its report only once an
 # ack carried it. Raises the floor in practice: once the control plane is on 3.25, a
 # Runner that reports no LLM access gets no work.
-__version__ = "3.24.0"
+__version__ = "3.25.0"
 
 __all__ = ["__version__"]

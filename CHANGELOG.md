@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.25.0](https://github.com/qtsone/agentic-runner/compare/v3.24.0...v3.25.0) (2026-10-16)
+
+
+### Features
+
+* **llm:** the Runner uses and reports its host's own LLM access (QTS-1736) ([#71](https://github.com/qtsone/agentic-runner/issues/71)) ([b2462e0](https://github.com/qtsone/agentic-runner/commit/b2462e06bd74920c37cf0534b15ee2c85444243c))
+
 # [3.24.0](https://github.com/qtsone/agentic-runner/compare/v3.23.1...v3.24.0) (2026-10-16)
 
 
