@@ -144,7 +144,7 @@ class SignIn:
             self.say(
                 "refusing a subscription: this Runner has not yet been told its Contract. "
                 "Start it, wait for its first heartbeat, and run this again (the control "
-                "plane must be on contracts 3.24 or later)"
+                "plane must be on contracts 3.25 or later)"
             )
             return None
         if len(self.contracts) != 1:

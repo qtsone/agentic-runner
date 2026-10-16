@@ -30,7 +30,7 @@ def save_llm_contracts(state_dir: Path, terms: Sequence[ContractLlmTerms]) -> No
 
 def load_llm_contracts(state_dir: Path) -> list[ContractLlmTerms] | None:
     """None while no ack has named them: the Runner has not beaten yet, or its control
-    plane is below contracts 3.24."""
+    plane is below contracts 3.25."""
 
     raw = private_read(state_dir / LLM_CONTRACTS_FILENAME)
     if raw is None:

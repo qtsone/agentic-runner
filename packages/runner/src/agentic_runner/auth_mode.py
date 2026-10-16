@@ -16,7 +16,7 @@ The platform decides who may use a subscription at the door (the Subscription Pr
 and the Organisation's opt-in, QTS-1350); this module is the backstop, so it decides from
 what the Runner itself can check and never from the payload.
 
-From contracts 3.24 the platform names the access in the Directive's routing
+From contracts 3.25 the platform names the access in the Directive's routing
 (``DirectiveRouting.llm_access``, Spec: Runners rev 3). :func:`require_named_access` then
 replaces the choice: the Runner runs on exactly the named access or refuses, and never
 falls back to another. A Directive without it, from a control plane on an older pin, keeps

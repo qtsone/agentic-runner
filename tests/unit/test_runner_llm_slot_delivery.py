@@ -60,7 +60,7 @@ class _Registration:
     def __init__(self) -> None:
         self.rows: list[SealedCredential] = []
         self.sent: list[HeartbeatEnvelope] = []
-        # None is a control plane below 3.24, which names no Contract terms.
+        # None is a control plane below 3.25, which names no Contract terms.
         self.llm_contracts: list[ContractLlmTerms] | None = None
 
     async def heartbeat(self, state: Any, envelope: HeartbeatEnvelope) -> HeartbeatAck:
@@ -375,7 +375,7 @@ async def test_the_llm_access_report_names_the_stores_keys_for_each_contract_ser
 
 @pytest.mark.asyncio
 async def test_no_report_and_no_install_until_an_ack_names_the_contracts(tmp_path: Path) -> None:
-    """A control plane below 3.24 refuses the two fields, so the Runner waits for an ack
+    """A control plane below 3.25 refuses the two fields, so the Runner waits for an ack
     that carries `llm_contracts` -- the sign that its control plane parses them."""
 
     registration, probe = _Registration(), _Probe()

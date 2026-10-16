@@ -5,7 +5,7 @@ What this pins:
 * the Runner's own store serves every Contract it runs, whatever host it is and whoever
   pays: ADR-0022 §36's funding limit went with `funding` (Spec: Runners rev 3), and a
   sealed value still wins over the store;
-* an ack from a control plane on 3.23, whose manifests still say `funding_party`, is read
+* an ack from a control plane on 3.24, whose manifests still say `funding_party`, is read
   rather than refused;
 * the heartbeat lists each Contract the last ack named, every reference with
   usable/unusable, read through the same resolver a Directive uses.
@@ -191,9 +191,9 @@ def test_an_ack_with_nothing_to_ask_omits_the_key_a_318_runner_refuses() -> None
     ]
 
 
-def test_a_323_ack_naming_who_funds_a_contract_is_still_read() -> None:
-    """A control plane on 3.23 still sends `funding_party`; the Runner drops it rather
-    than refusing every beat until the control plane is on 3.24."""
+def test_a_324_ack_naming_who_funds_a_contract_is_still_read() -> None:
+    """A control plane on 3.24 still sends `funding_party`; the Runner drops it rather
+    than refusing every beat until the control plane is on 3.25."""
 
     ack = HeartbeatAck.model_validate(
         {

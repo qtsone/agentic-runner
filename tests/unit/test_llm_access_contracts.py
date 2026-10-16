@@ -1,7 +1,7 @@
-"""The contracts 3.24 wire for LLM access (QTS-1736, Spec: Runners rev 3).
+"""The contracts 3.25 wire for LLM access (QTS-1736, Spec: Runners rev 3).
 
-What each side must agree on, and how a Runner on 3.24 still talks to a control plane on
-3.23: the key-name table, the ack's Contract terms, the envelope's report and install,
+What each side must agree on, and how a Runner on 3.25 still talks to a control plane on
+3.24: the key-name table, the ack's Contract terms, the envelope's report and install,
 and the two retired fields an older control plane still sends.
 """
 
@@ -64,7 +64,7 @@ def _ack(**fields: Any) -> dict[str, Any]:
 
 
 def test_an_ack_names_the_contracts_only_when_it_has_them_to_name() -> None:
-    """A Runner on 3.23 forbids the key; None is a control plane below 3.24, and an empty
+    """A Runner on 3.24 forbids the key; None is a control plane below 3.25, and an empty
     list -- still sent -- says the Runner serves no Contract yet."""
 
     assert "llm_contracts" not in HeartbeatAck.model_validate(_ack()).model_dump(mode="json")
@@ -82,8 +82,8 @@ def test_an_ack_names_the_contracts_only_when_it_has_them_to_name() -> None:
 def test_a_323_ceiling_push_is_read_the_way_it_was_meant(
     org_funded: bool, organisation_limit: int | None
 ) -> None:
-    """3.23 pushed the Organisation's ceiling for every Contract and said with `org_funded`
-    whether it applied; 3.24 pushes it only where it applies."""
+    """3.24 pushed the Organisation's ceiling for every Contract and said with `org_funded`
+    whether it applied; 3.25 pushes it only where it applies."""
 
     push = CeilingPush.model_validate(
         {

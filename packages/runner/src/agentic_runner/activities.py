@@ -3126,7 +3126,7 @@ class RunnerRalphActivities:
 
         ``access`` is the LLM access the control plane routed the Directive with (rev 3):
         the Runner runs on exactly that, or refuses and never falls back to other access.
-        None, from a control plane below contracts 3.24, keeps the Runner's own choice.
+        None, from a control plane below contracts 3.25, keeps the Runner's own choice.
 
         Decided from what this process can check -- the host party it was registered with,
         whether a key is present for the Contract, whether the Contract runs under its own

@@ -593,7 +593,7 @@ async def test_the_heartbeat_carries_the_windows_after_a_probe(tmp_path: Path) -
     [row] = registration.sent[-1].harnesses
     assert (row.contract_id, row.auth_mode, row.usage_windows) == (
         UUID(CONTRACT),
-        # The root holds no login file here; 3.23 said `login`, 3.24 says `none`.
+        # The root holds no login file here; 3.24 said `login`, 3.25 says `none`.
         "none",
         [FIVE_HOUR],
     )

@@ -199,7 +199,7 @@ NAMED_TABLE: list[tuple[str, str | None, bool, SubscriptionState, frozenset[Auth
     ("subscription", "user", True, SIGNED_IN, CODEX_MODES, AuthMode.SUBSCRIPTION),
     ("subscription", "organisation", True, SIGNED_IN, CODEX_MODES, "subscription_off"),
     ("subscription", "account", False, SIGNED_IN, CODEX_MODES, "subscription_off"),
-    ("subscription", "user", True, SIGNED_IN, CLAUDE_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
+    ("subscription", "user", True, SIGNED_IN, KEY_ONLY_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
     ("subscription", "user", True, SubscriptionState.NONE, CODEX_MODES, "not_signed_in"),
     ("subscription", "user", True, SubscriptionState.EXPIRED, CODEX_MODES, "not_signed_in"),
     ("subscription", "user", True, SubscriptionState.AT_LIMIT, CODEX_MODES, "not_signed_in"),

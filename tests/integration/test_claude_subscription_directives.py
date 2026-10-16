@@ -141,7 +141,7 @@ class _ClaudeProxy:
     """Holds a key for the Contract; hands each attempt Claude Code's proxy pair."""
 
     def __init__(self) -> None:
-        self.slots = SimpleNamespace(holds=lambda _contract_id: True)
+        self.slots = SimpleNamespace(holds=lambda _contract_id, _provider: True)
 
     @contextlib.asynccontextmanager
     async def attempt(self, **_admitted: Any) -> AsyncIterator[Any]:

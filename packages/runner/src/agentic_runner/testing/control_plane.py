@@ -22,10 +22,10 @@ context and usage routes answer for one Contract, and ``/v1`` -- also outside th
 -- is the LLM provider a Runner is pointed at, recording the credential each call
 presented, so a test sees the proxy spent the delivered key and not the attempt bearer.
 
-Contracts 3.24 (Spec: Runners rev 3): every ack names the one Contract this fake serves in
+Contracts 3.25 (Spec: Runners rev 3): every ack names the one Contract this fake serves in
 ``llm_contracts``, with ``subscription`` as its right, so a Runner reports the LLM access it
 holds for it; :attr:`FakeControlPlane.llm_access` keeps each report. ``subscription``
-``None`` answers as a control plane below 3.24 does: no Contract terms at all.
+``None`` answers as a control plane below 3.25 does: no Contract terms at all.
 """
 
 from __future__ import annotations
@@ -177,7 +177,7 @@ class FakeControlPlane:
     # Blank answers as a control plane from before ADR-0022 §4 does: no address at all.
     temporal_address: str = ""
     # The ack's word on whether the person may sign this Contract in with their own
-    # subscription; None leaves `llm_contracts` out, as a control plane below 3.24 does.
+    # subscription; None leaves `llm_contracts` out, as a control plane below 3.25 does.
     subscription: SubscriptionRight | None = SubscriptionRight.NO_RIGHT
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)

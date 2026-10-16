@@ -448,10 +448,10 @@ class CredentialManifest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _drop_retired_funding_party(cls, data: Any) -> Any:
-        # A control plane below 3.24 still names who funds the Contract. The Runner's own
+        # A control plane below 3.25 still names who funds the Contract. The Runner's own
         # store now serves every Contract it runs (ADR-0022 §36 went with `funding`), so
-        # the key says nothing a Runner on 3.24 reads. Remove once the control plane is
-        # on 3.24.
+        # the key says nothing a Runner on 3.25 reads. Remove once the control plane is
+        # on 3.25.
         if isinstance(data, dict) and "funding_party" in data:
             return {key: value for key, value in data.items() if key != "funding_party"}
         return data
@@ -558,11 +558,11 @@ class CeilingPush(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _read_retired_org_funded(cls, data: Any) -> Any:
-        # A control plane below 3.24 pushes the Organisation's ceiling for every Contract
-        # and says with `org_funded` whether it applies. From 3.24 the control plane
+        # A control plane below 3.25 pushes the Organisation's ceiling for every Contract
+        # and says with `org_funded` whether it applies. From 3.25 the control plane
         # pushes it only where it applies (the Organisation's ceiling counts the usage on
         # the Organisation's Runners), so an old push that said "not org-funded" is read
-        # as no Organisation ceiling. Remove once the control plane is on 3.24.
+        # as no Organisation ceiling. Remove once the control plane is on 3.25.
         if isinstance(data, dict) and "org_funded" in data:
             org_funded = data["org_funded"] is True
             data = {key: value for key, value in data.items() if key != "org_funded"}
@@ -872,7 +872,7 @@ class HeartbeatEnvelope(BaseModel):
     # Spec: Runners rev 3: the LLM access held for each Contract the last ack's
     # `llm_contracts` named, and where a command reaches this Runner. Both None until an
     # ack has carried `llm_contracts`: that is how the Runner knows the control plane is on
-    # 3.24 and parses them. From 3.24 a Runner that reports no LLM access gets no work.
+    # 3.25 and parses them. From 3.25 a Runner that reports no LLM access gets no work.
     llm_access: list[ContractLlmAccess] | None = Field(
         default=None, max_length=CREDENTIAL_MANIFESTS_MAX
     )
@@ -981,9 +981,9 @@ class HeartbeatAck(BaseModel):
     # Spec: Runners rev 3: every Contract this Runner serves, with whether its person may
     # sign it in with their own subscription. Authoritative, like `credential_manifests`:
     # the next envelope reports LLM access for exactly these, and `agentic-runner sign-in`
-    # reads it. A personal Runner serves one. None from a control plane below 3.24; an
+    # reads it. A personal Runner serves one. None from a control plane below 3.25; an
     # empty list says the Runner serves no Contract yet. The ack forbids extra keys, so the
-    # control plane sends it only to a Runner whose heartbeat names contracts 3.24 or later.
+    # control plane sends it only to a Runner whose heartbeat names contracts 3.25 or later.
     llm_contracts: list[ContractLlmTerms] | None = Field(
         default=None, max_length=CREDENTIAL_MANIFESTS_MAX
     )
@@ -992,7 +992,7 @@ class HeartbeatAck(BaseModel):
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
         # body that Runner already parses; likewise `tags` for a Runner on 3.19 and
-        # `llm_contracts` for one on 3.23. An empty tag set or Contract list is still sent:
+        # `llm_contracts` for one on 3.24. An empty tag set or Contract list is still sent:
         # it says the Runner has no Tags, or serves no Contract.
         body = handler(self)
         if isinstance(body, dict):

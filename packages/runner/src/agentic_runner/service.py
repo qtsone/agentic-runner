@@ -829,7 +829,7 @@ class ControlPlaneStream:
     # value is probed again, an unchanged one is not.
     _offered_host: dict[str, str] = field(default_factory=dict)
     # Rev 3: the Contracts the last ack said this Runner serves; None until an ack from a
-    # control plane on 3.24 named them, and the LLM access report is sent only after.
+    # control plane on 3.25 named them, and the LLM access report is sent only after.
     _llm_contracts: list[ContractLlmTerms] | None = None
     _last_seen: tuple[float, datetime] | None = None
 
@@ -929,7 +929,7 @@ class ControlPlaneStream:
 
         The store's keys are the host's and serve every Contract, so they repeat; a
         subscription is one Contract's harness root's. Sent only once an ack named the
-        Contracts -- a control plane below 3.24 refuses the field.
+        Contracts -- a control plane below 3.25 refuses the field.
         """
 
         if self._llm_contracts is None:
@@ -1091,7 +1091,7 @@ class ControlPlaneStream:
 
     def _take_llm_contracts(self, terms: list[ContractLlmTerms] | None) -> None:
         """Keep the ack's Contract terms, and the copy ``sign-in`` reads when they change.
-        An ack without them (a control plane below 3.24) leaves what is held."""
+        An ack without them (a control plane below 3.25) leaves what is held."""
 
         if terms is None or terms == self._llm_contracts:
             return
