@@ -282,3 +282,28 @@ def test_the_runner_limit_value_reaches_the_runner_as_the_limit_it_reads(tmp_pat
     )
     assert read.limits == RunnerLimit.model_validate(limits)
     assert "AGENTIC_RUNNER_LIMITS" not in unset
+
+
+def test_the_pool_key_reaches_every_replica_from_one_secret_and_only_when_given() -> None:
+    """Spec: Runners rev 3: one Secret for all replicas, pasted or an existing one."""
+
+    def env(objects: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+        return _env(_runner(objects)["spec"]["template"]["spec"]["containers"][0])
+
+    none = _render()
+    assert "AGENTIC_RUNNER_POOL_KEY" not in env(none)
+    assert ("Secret", "rel-agentic-runner-pool-key") not in none
+
+    pasted = _render("--set", "poolKey.value=pool-key-base64", "--set", "replicas=3")
+    assert pasted[("Secret", "rel-agentic-runner-pool-key")]["stringData"] == {
+        "poolKey": "pool-key-base64"
+    }
+    assert env(pasted)["AGENTIC_RUNNER_POOL_KEY"] == {
+        "secretKeyRef": {"name": "rel-agentic-runner-pool-key", "key": "poolKey"}
+    }
+
+    existing = _render("--set", "poolKey.existingSecret=org-pool-key")
+    assert ("Secret", "rel-agentic-runner-pool-key") not in existing
+    assert env(existing)["AGENTIC_RUNNER_POOL_KEY"] == {
+        "secretKeyRef": {"name": "org-pool-key", "key": "poolKey"}
+    }

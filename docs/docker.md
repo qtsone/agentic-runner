@@ -37,6 +37,12 @@ page, delete the `AGENTIC_RUNNER_REGISTRATION_TOKEN` line. An env file from an e
 release that sets `AGENTIC_AGENT_TOKEN` still works; the Runner logs that the name is
 deprecated.
 
+If your Organisation stores LLM Keys, set `AGENTIC_RUNNER_POOL_KEY` to the Pool Key the
+Runners page showed you, in the same file. Keep that line: the Runner reads the Pool Key on
+every start and opens the Organisation's LLM Keys with it, one Directive at a time, in
+memory only. The Runners page shows which Runners hold the current Pool Key. After the
+Organisation creates a new one, update the line and restart the container.
+
 ## `docker run`
 
 ```sh

@@ -54,6 +54,7 @@ from agentic_runner.callback import (
 )
 from agentic_runner.config import load as load_config
 from agentic_runner.host_store import open_workstation_store
+from agentic_runner.pool_key import POOL_KEY_ENV, PoolKeyError
 from agentic_runner.recipient_key_secret import ensure_recipient_key, in_cluster
 from agentic_runner.registration import RunnerRegistrationError, can_separate_uids, load_state
 from agentic_runner.sealed_box import RECIPIENT_KEY_FILENAME
@@ -183,6 +184,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="comma-separated cli_kinds served through the pinned ACP bridge (codex_cli, "
         "claude_code); omitted keeps the previous install's, '' turns ACP off",
+    )
+    install.add_argument(
+        "--pool-key",
+        action="store_true",
+        help=f"ask for the Organisation's Pool Key (or set {POOL_KEY_ENV}), for a Runner of its "
+        "pool that opens the pool's LLM Keys",
     )
     install.add_argument("--no-start", action="store_true", help="write the agent, do not start")
     install.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
@@ -503,6 +510,13 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
         "Runner Registration Token (yours from /me/runners, or the Organisation Admin's for "
         "an Organisation Runner): "
     )
+    # Pasted too, never a flag value, for the token's reason. Taken out of the environment so
+    # the Runner this install starts reads it from the state directory, where it is kept.
+    pool_key = os.environ.pop(POOL_KEY_ENV, "").strip() or (
+        getpass.getpass("Pool Key (shown once on the Organisation's Runners page): ")
+        if arguments.pool_key
+        else None
+    )
     settings = workstation.WorkstationSettings(
         org=paths.org,
         control_plane_url=arguments.control_plane,
@@ -515,10 +529,19 @@ def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:
     try:
         lines = asyncio.run(
             workstation.install(
-                paths, settings, registration_token=token, start_service=not arguments.no_start
+                paths,
+                settings,
+                registration_token=token,
+                pool_key=pool_key,
+                start_service=not arguments.no_start,
             )
         )
-    except (workstation.CliMissingError, RunnerRegistrationError, RuntimeError) as error:
+    except (
+        workstation.CliMissingError,
+        RunnerRegistrationError,
+        PoolKeyError,
+        RuntimeError,
+    ) as error:
         print(f"install refused: {error}", file=sys.stderr)
         return 1
     for line in lines:

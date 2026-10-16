@@ -43,6 +43,17 @@ helm upgrade --install runner oci://ghcr.io/qtsone/charts/agentic-runner \
 installed with `agentToken` before 3.16 upgrades unchanged: the chart reads `agentToken`
 whenever `registrationToken` is empty.
 
+If your Organisation stores LLM Keys, give the release its Pool Key the same way, from the
+Runners page, which shows it once. Every replica reads the one Secret:
+
+```sh
+read -rs POOL_KEY   # paste the Pool Key, then Enter
+printf %s "$POOL_KEY" | kubectl -n agentic-runner create secret generic agentic-runner-pool-key \
+  --from-file=poolKey=/dev/stdin
+unset POOL_KEY
+# then add to the helm command:  --set poolKey.existingSecret=agentic-runner-pool-key
+```
+
 Verify the release before you install it, if you like:
 
 ```sh
@@ -63,6 +74,7 @@ cosign verify ghcr.io/qtsone/charts/agentic-runner:<version> \
 | `limits` | The Runner Limit: the tools, network destinations and folders no Agent on these Runners may use. See below. |
 | `hooks` | Runner Hooks: script bodies by catalogue name, mounted `0755`. |
 | `credentials.existingSecret` | Credential References: one key per reference name, mounted `0400`. |
+| `poolKey.existingSecret`, `poolKey.value` | The Organisation's Pool Key, under the key `poolKey`, for every replica. Only for a pool that stores LLM Keys. |
 | `extraEnvFrom` | A Secret with the GitHub App values (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_PEM`) and anything else the Runner reads from its environment. |
 | `image.tag` | Your own image built `FROM ghcr.io/qtsone/agentic-runner` with your toolchain. Name the same tag in your Agent Runtime Profile. |
 | `storage.size`, `storage.storageClassName` | Each replica's `state` volume: identity, Workspaces, harness roots. |
@@ -147,6 +159,13 @@ from its LLM proxy to every Contract it runs. The heartbeat reports whether the 
 each key and what the check said; never the value. The key never reaches an Agent Runtime.
 To spend it at a gateway rather than at the vendor, set
 `AGENTIC_RUNNER_OPENAI_BASE_URL` / `AGENTIC_RUNNER_ANTHROPIC_BASE_URL` in `extraEnv`.
+
+**The Organisation's LLM Keys.** With `poolKey` set, a Runner opens one of the keys the
+Organisation stored on its Connectors page when a Directive is routed to it: it asks the
+control plane for the key's two shares, opens one with the Pool Key and the other with its
+Recipient Key, and holds the key in memory for that Directive only. It never writes it to
+disk or gives it to the Agent Runtime. The heartbeat reports the fingerprint of the Pool Key
+the Runner holds. A Runner with no Pool Key, or an old one, opens none of them.
 
 A value a funder sealed under one of those names is still served, to that Contract only,
 until the control plane stops delivering it.

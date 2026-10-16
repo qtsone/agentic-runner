@@ -52,6 +52,10 @@ release installed before ADR-0021 upgrades without an edit to its values.
 {{- default (printf "%s-registration-token" (include "agentic-runner.fullname" .)) $token.existingSecret -}}
 {{- end -}}
 
+{{- define "agentic-runner.poolKeySecret" -}}
+{{- default (printf "%s-pool-key" (include "agentic-runner.fullname" .)) .Values.poolKey.existingSecret -}}
+{{- end -}}
+
 {{- define "agentic-runner.recipientKeySecret" -}}
 {{- default (printf "%s-recipient-key" (include "agentic-runner.fullname" .)) .Values.recipientKey.secretName -}}
 {{- end -}}

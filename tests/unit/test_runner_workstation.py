@@ -45,10 +45,12 @@ from agentic_runner.host_store import (
     open_workstation_store,
 )
 from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.pool_key import POOL_KEY_ENV, PoolKeyError, load_pool_key
 from agentic_runner.registration import load_state
 from agentic_runner.sealed_box import (
     RecipientKeyStore,
     SealedCredentialError,
+    generate_recipient_key,
     open_sealed,
     seal,
 )
@@ -831,3 +833,72 @@ def test_the_state_root_follows_each_os_per_user_convention() -> None:
     assert workstation.default_root(
         platform="win32", environ={**home, "LOCALAPPDATA": "C:/Users/dev/AppData/Local"}
     ) == Path("C:/Users/dev/AppData/Local/agentic-runner")
+
+
+@pytest.mark.asyncio
+async def test_a_pool_runner_install_keeps_the_pool_key_private_and_out_of_the_agent(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    """Spec: Runners rev 3: every start of the Runner needs the Pool Key, so the install
+    keeps it -- 0600 beside the identity, never in the login agent's definition."""
+
+    home = tmp_path / "home"
+    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    pool_key = generate_recipient_key()
+
+    async with httpx.AsyncClient(transport=FakeControlPlane().transport()) as http:
+        await workstation.install(
+            paths,
+            _settings(paths, str(bin_dir)),
+            registration_token="registration-token-of-sixteen-plus",
+            pool_key=pool_key.private_key,
+            platform="darwin",
+            home=home,
+            run=Commands(),
+            http_client=http,
+        )
+
+    held = load_pool_key(paths.state_dir, {})
+    assert held is not None and held.fingerprint == pool_key.fingerprint
+    plist = home / "Library/LaunchAgents/agentic-runner.acme.plist"
+    assert pool_key.private_key not in plist.read_text()
+    assert POOL_KEY_ENV not in workstation.run_environment(
+        paths, workstation.WorkstationSettings.load(paths)
+    )
+
+
+@pytest.mark.parametrize("given", ["flag", "environment", "neither", "not_a_key"])
+def test_install_takes_the_pool_key_from_its_prompt_or_its_install_line(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch, given: str
+) -> None:
+    pool_key = generate_recipient_key().private_key
+    installed: list[str | None] = []
+    prompts: list[str] = []
+
+    async def install(*_: Any, pool_key: str | None = None, **__: Any) -> list[str]:
+        if pool_key == "not-a-key":
+            raise PoolKeyError("not a Pool Key")
+        installed.append(pool_key)
+        return []
+
+    def prompt(text: str) -> str:
+        prompts.append(text)
+        return pool_key
+
+    monkeypatch.setenv(cli.REGISTRATION_TOKEN_ENV, "registration-token-of-sixteen-plus")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(cli.workstation, "install", install)
+    monkeypatch.setattr(cli.getpass, "getpass", prompt)
+    if given in {"environment", "not_a_key"}:
+        monkeypatch.setenv(POOL_KEY_ENV, pool_key if given == "environment" else "not-a-key")
+    flags = ["install", "acme", "--control-plane", CONTROL_PLANE, "--root", str(tmp_path)]
+
+    exit_code = cli.main([*flags, "--pool-key"] if given == "flag" else flags)
+
+    if given == "not_a_key":
+        assert (exit_code, installed) == (1, [])
+        return
+    assert exit_code == 0
+    assert installed == [None if given == "neither" else pool_key]
+    assert len(prompts) == (1 if given == "flag" else 0), "never a flag value"
+    assert POOL_KEY_ENV not in os.environ

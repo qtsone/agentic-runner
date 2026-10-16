@@ -49,6 +49,7 @@ from agentic_runner.cli_floor import CLI_FLOORS, CLI_NAMES, meets_floor, parse_c
 from agentic_runner.config import CONFIG_FILE_ENV
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.pool_key import save_pool_key
 from agentic_runner.registration import load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES
@@ -637,6 +638,7 @@ async def install(
     settings: WorkstationSettings,
     *,
     registration_token: str,
+    pool_key: str | None = None,
     platform: str = sys.platform,
     home: Path | None = None,
     start_service: bool = True,
@@ -650,10 +652,16 @@ async def install(
     prompt, never stored: the identity bootstrap hands back is what every later start uses,
     and a lost state directory means a reinstall and a re-delivery of any sealed value
     (22 A4), by design.
+
+    ``pool_key`` is the Organisation's Pool Key, for a Runner of its pool that opens the
+    pool's LLM Keys (Spec: Runners rev 3). Unlike the token it is kept, 0600 in the state
+    directory, because every start of the Runner needs it.
     """
 
     require_any_cli(settings.path)
     paths.create()
+    if pool_key:
+        save_pool_key(paths.state_dir, pool_key)
     settings.save(paths)
     already_registered = load_state(paths.state_dir) is not None
     state, outcome = await service.register(

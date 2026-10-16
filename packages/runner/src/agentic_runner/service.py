@@ -87,6 +87,7 @@ from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWor
 from agentic_runner.oauth_connectors import OAuthConnectors
 from agentic_runner.pool_key import (
     POOL_KEY_ENV,
+    POOL_KEY_FILENAME,
     LlmKeyOpener,
     PoolKey,
     PoolKeyError,
@@ -266,6 +267,7 @@ _PRIVATE_STATE_FILES = (
     LIFECYCLE_FILENAME,
     UID_MAP_FILENAME,
     LLM_CONTRACTS_FILENAME,
+    POOL_KEY_FILENAME,
 )
 
 
