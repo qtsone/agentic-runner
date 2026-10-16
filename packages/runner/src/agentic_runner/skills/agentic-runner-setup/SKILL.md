@@ -1,6 +1,6 @@
 ---
 name: agentic-runner-setup
-description: Install and register an Agentic OS Runner on this machine, a Docker host or a Kubernetes cluster, put the Contract's LLM credential in place, and confirm the Runner is online. Use when the person asks to set up, install or connect a Runner, or pastes the prompt from the console's welcome page.
+description: Install and register an Agentic OS Runner on this machine, a Docker host or a Kubernetes cluster, give it the person's LLM access, and confirm the Runner is online. Use when the person asks to set up, install or connect a Runner, or pastes the prompt from the console's welcome page.
 license: AGPL-3.0-only
 ---
 
@@ -102,31 +102,28 @@ command.
 or the Organisation has reached its Runner limit: the person mints a new token in the
 console. Other errors: the "Check it" section of the same document.
 
-### 4. Put the Contract's LLM credential in place
+### 4. Give the Runner the person's LLM access
 
-A **Contract** is the agreement under which the person works for the Organisation. It says
-whose LLM key or subscription the Agents spend. Ask which of the two the Contract uses.
+A Runner uses only its host's own LLM access. On a Runner the person hosts, that is their
+own Claude or ChatGPT subscription, or their own API key. Ask the person to run, in their
+own terminal, the one command for their way of installing. On this machine:
 
-- **An API key (a Credential Reference).** A Credential Reference is the name of a secret
-  whose value lives only on the Runner. On this machine, ask the person to run, in their own
-  terminal, the line from
-  https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#operate:
+```sh
+agentic-runner sign-in claude
+```
 
-  ```sh
-  printf %s "$VALUE" | agentic-runner credential set <org> <reference>
-  ```
+`codex` in place of `claude` for Codex; with no argument it asks about each. Add
+`--org <org>` only if this machine runs Runners for several Organisations. On Docker it is
+`docker exec -it <container> agentic-runner sign-in claude`, on Kubernetes
+`kubectl exec -it <pod> -c runner -- agentic-runner sign-in claude`.
 
-  For Docker and Kubernetes the value is delivered from the console, sealed to the Runner:
-  https://github.com/qtsone/agentic-runner/blob/main/docs/helm.md#the-recipient-key.
-- **A Codex or Claude Code subscription.** This works only on a Runner the person hosts
-  themselves. For Codex, send them to the Contract's page in the console and its
-  **Connect** button. For Claude Code, ask the person to run, in their own terminal, the
-  sign-in line for their way of installing: `agentic-runner sign-in --org <org> --contract
-  <contract-id>` on this machine, or the `docker exec -it` / `kubectl exec -it` line in
-  docker.md or helm.md. See
-  https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#sign-in-to-codex-and-claude-code.
-  The sign-in is the person's own, with their own Anthropic account: you never run it, and
-  you do not run `codex login` or `claude auth login`.
+It asks whether to sign in with the subscription, through the vendor's own sign-in in the
+terminal, or to store an API key, typed without echo. See
+https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#sign-in-to-codex-and-claude-code.
+The command is the person's own: you never run it, you never ask for or handle the key,
+and you do not run `codex login` or `claude auth login`. An Organisation's Runner refuses
+it: it uses the Organisation's keys, which its admin puts in the Runner's own store
+(https://github.com/qtsone/agentic-runner/blob/main/docs/helm.md#llm-access).
 
 ### 5. Wait for the Runner to come online
 

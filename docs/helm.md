@@ -133,42 +133,47 @@ To rotate it, delete the Secret and restart the pods
 (`kubectl rollout restart statefulset/<release>-agentic-runner`). Each funder then delivers
 their credentials again, as after a reinstall.
 
-A value delivered under **`OPENAI_API_KEY`** or **`ANTHROPIC_API_KEY`** is also the
-Contract's LLM key. The Runner checks it with one models-list call and, if the provider
-accepts it, spends it on every Codex or Claude Code Directive of that Contract. Without a
-key, a Runner hosted by an Organisation or an Account runs the Directive on a subscription
-only if the Runner runs that Contract as its own user (`isolation: contract_uid`, the
-chart's default) and the Contract is signed in on this pod (below). Otherwise the
-Directive is refused, and the refusal names what is missing:
-`subscription_needs_contract_uid` or `subscription_needs_harness_login`. The heartbeat
-reports the key as `<reference>@v<version>`. To spend it at a gateway rather than at the vendor, set
+## LLM access
+
+A Runner uses only its host's own LLM access, and its heartbeat tells the control plane
+which access it holds for each Contract it serves. The control plane names the access each
+Directive uses; if the Runner no longer holds it, the Directive fails with the reason and
+runs on nothing else.
+
+**A key in the Runner's own store.** Put the provider's key in the `credentials` Secret
+under its key name: `ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex. The
+Runner reads it within one heartbeat, checks it with one models-list call, and serves it
+from its LLM proxy to every Contract it runs. The heartbeat reports whether the store holds
+each key and what the check said; never the value. The key never reaches an Agent Runtime.
+To spend it at a gateway rather than at the vendor, set
 `AGENTIC_RUNNER_OPENAI_BASE_URL` / `AGENTIC_RUNNER_ANTHROPIC_BASE_URL` in `extraEnv`.
 
-## Sign in to Claude Code
+A value a funder sealed under one of those names is still served, to that Contract only,
+until the control plane stops delivering it.
 
-A Contract that runs Claude Code on a subscription signs in on the pod, in your terminal,
-with Anthropic's own sign-in:
+## Sign in on a person's own Runner
+
+A person who runs their own Runner gives it their access with one command, in the pod:
 
 ```sh
 kubectl -n agentic-runner exec -it runner-agentic-runner-0 -c runner -- \
-  agentic-runner sign-in --contract <contract-id>
+  agentic-runner sign-in claude
 ```
 
-It runs `claude` as the Contract's own user, in the Contract's harness root on that pod's
-volume. Open the link it prints, approve in your browser, and paste the code the browser
-shows you into the terminal. Nothing goes through the console, which only shows whether the
-Contract is signed in. `--method oauth_token` (the default) is a long-lived token, valid
-for a year, that the Runner saves in the harness root, readable by that Contract only.
-`--method claude_ai` is a Claude.ai login that renews itself.
+`sign-in codex` does the same for Codex; with no argument it asks about each one the
+Runner serves. It takes no ids: a personal Runner serves one Contract. For each it offers:
 
-If the pod holds no Claude Code harness root for that Contract yet, the command asks you to
-confirm the id first, so
-a mistyped one does not get a signed-in harness root of its own. On a Runner that does not
-run each Contract as its own user (`isolation: none`), the command refuses
-(`sign_in_needs_contract_uid`), because no Directive there would use the sign-in.
+- **Your subscription.** It runs the vendor's own sign-in, unmodified, as the Contract's
+  own user in its harness root on that pod's volume: Claude Code's login (`--method
+  oauth_token`, the default, is a token valid for a year; `--method claude_ai` a Claude.ai
+  login that renews itself), or `codex login --device-auth`, which shows a code in the
+  terminal. Nothing goes through the console. It is refused when the Contract does not
+  allow your own subscription, or you have not acknowledged the subscription terms, and the
+  refusal says which.
+- **An API key.** Typed without echo and kept in the Runner's own store on the pod's
+  volume, under the provider's key name.
 
-Each replica is its own Runner with its own volume, so sign in on every pod that runs the
-Contract's Directives. Codex signs in from the console, on the Contract's page.
+An Organisation's or an Account's Runner refuses `sign-in`: it uses only its pool's keys.
 
 ## Check it
 

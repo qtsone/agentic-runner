@@ -20,18 +20,21 @@ from uuid import UUID
 
 import httpx
 import pytest
-from temporalio.exceptions import ApplicationError
 
 from agentic_runner.auth_mode import (
+    HOST_KEY_NOT_HELD_RULE,
+    LLM_ACCESS_UNKNOWN_RULE,
+    LLM_KEY_UNSUPPORTED_RULE,
     NO_RUNTIME_SUBSCRIPTION_RULE,
     SETUP_TOKEN_REFUSED_RULE,
-    SIGN_IN_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+    SUBSCRIPTION_NOT_SIGNED_IN_RULE,
+    SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
     AuthModeRefusedError,
     choose_auth_mode,
+    require_named_access,
 )
-from agentic_runner.device_login_activities import ContractDeviceLoginActivities
 from agentic_runner.llm_proxy import CredentialSlot, LlmProxy, SlotStore
 from agentic_runner.sealed_box import (
     RecipientKeyStore,
@@ -42,16 +45,11 @@ from agentic_runner.workers._runtime_support import RESERVED_DIRECTIVE_ENV, appl
 from agentic_runner.workers.acp_runtime import AcpRuntime
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
-from agentic_runner.workers.claude_sign_in import ClaudeAuthStatus
 from agentic_runner.workers.codex_runtime import CodexRuntime, SubprocessResult
 from agentic_runner.workers.command_policy import CommandPolicy, evaluate_command_policy
-from agentic_runner.workers.contract_device_login import DeviceLoginPrompt
-from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner.workers.settings import WorkerSettings
-from agentic_runner_contracts.activity_io import (
-    ContractDeviceLoginInput,
-    ContractDeviceLoginStatusInput,
-)
+from agentic_runner_contracts.llm_access import LlmAccess
+from agentic_runner_contracts.runner_registration import SubscriptionState
 from agentic_runner_contracts.sealed_credential import SealedCredential, delivery_binding
 
 CONTRACT = UUID("11111111-1111-4111-8111-111111111111")
@@ -186,6 +184,66 @@ def test_a_shared_runner_never_chooses_a_subscription_it_cannot_verify() -> None
             except AuthModeRefusedError:
                 continue
             assert mode == AuthMode.API_KEY
+
+
+# ------------------------------------------------------------------ the named access (rev 3)
+
+SIGNED_IN = SubscriptionState.SIGNED_IN
+
+NAMED_TABLE: list[tuple[str, str | None, bool, SubscriptionState, frozenset[AuthMode], Any]] = [
+    # host_key: the store's key, on any host, or a refusal -- never a subscription instead.
+    ("host_key", "organisation", True, SubscriptionState.NONE, CODEX_MODES, AuthMode.API_KEY),
+    ("host_key", "user", True, SIGNED_IN, CODEX_MODES, AuthMode.API_KEY),
+    ("host_key", "user", False, SIGNED_IN, CODEX_MODES, HOST_KEY_NOT_HELD_RULE),
+    # subscription: the person's own Runner, signed in, on a runtime that runs one.
+    ("subscription", "user", True, SIGNED_IN, CODEX_MODES, AuthMode.SUBSCRIPTION),
+    ("subscription", "organisation", True, SIGNED_IN, CODEX_MODES, "subscription_off"),
+    ("subscription", "account", False, SIGNED_IN, CODEX_MODES, "subscription_off"),
+    ("subscription", "user", True, SIGNED_IN, KEY_ONLY_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
+    ("subscription", "user", True, SubscriptionState.NONE, CODEX_MODES, "not_signed_in"),
+    ("subscription", "user", True, SubscriptionState.EXPIRED, CODEX_MODES, "not_signed_in"),
+    ("subscription", "user", True, SubscriptionState.AT_LIMIT, CODEX_MODES, "not_signed_in"),
+    # llm_key: the pool's stored keys arrive with T7; until then the Runner fails closed.
+    ("llm_key", "organisation", True, SubscriptionState.NONE, CODEX_MODES, "llm_key"),
+    ("pigeon", "user", True, SIGNED_IN, CODEX_MODES, LLM_ACCESS_UNKNOWN_RULE),
+]
+_NAMED_RULES = {
+    "subscription_off": SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
+    "not_signed_in": SUBSCRIPTION_NOT_SIGNED_IN_RULE,
+    "llm_key": LLM_KEY_UNSUPPORTED_RULE,
+}
+
+
+@pytest.mark.parametrize(
+    ("kind", "host_party", "host_key_held", "subscription", "modes", "expected"), NAMED_TABLE
+)
+def test_a_directive_runs_on_exactly_the_access_it_was_routed_with(
+    kind: str,
+    host_party: str | None,
+    host_key_held: bool,
+    subscription: SubscriptionState,
+    modes: frozenset[AuthMode],
+    expected: AuthMode | str,
+) -> None:
+    """Rev 3: the Runner uses only the access `llm_access` names and fails the Directive
+    closed when it no longer holds it -- a held key never stands in for a lost sign-in,
+    nor a sign-in for a lost key."""
+
+    def require() -> AuthMode:
+        return require_named_access(
+            LlmAccess(kind=kind, llm_key_id="key-1" if kind == "llm_key" else ""),
+            host_party=host_party,
+            host_key_held=host_key_held,
+            subscription=subscription,
+            runtime_modes=modes,
+        )
+
+    if isinstance(expected, AuthMode):
+        assert require() == expected
+        return
+    with pytest.raises(AuthModeRefusedError) as refused:
+        require()
+    assert refused.value.rule == _NAMED_RULES.get(expected, expected)
 
 
 # ------------------------------------------------------------------ Codex API-key mode
@@ -387,143 +445,6 @@ def test_the_command_floor_admits_the_ephemeral_store_and_nothing_shaped_like_it
 
 
 # ------------------------------------------------------------------ refusals
-
-
-class _FakeClaudeSignIns:
-    def __init__(self, login: _FakeDeviceLogin) -> None:
-        self._login = login
-
-    async def status(self, contract_id: str) -> ClaudeAuthStatus:
-        self._login.calls += 1
-        return ClaudeAuthStatus(logged_in=True, auth_method="oauth_token", subscription_type="max")
-
-
-class _FakeDeviceLogin:
-    def __init__(self) -> None:
-        self.calls = 0
-        self.claude = _FakeClaudeSignIns(self)
-
-    async def sign_in(self, contract_id: str, *, runtime_kind: str) -> DeviceLoginPrompt:
-        from datetime import UTC, datetime
-
-        self.calls += 1
-        return DeviceLoginPrompt(
-            contract_id=contract_id,
-            runtime_kind=runtime_kind,
-            verification_uri="https://auth.example.test/device",
-            user_code="ABCD-1234",
-            expires_at=datetime(2026, 10, 8, tzinfo=UTC),
-        )
-
-    def token_present(self, contract_id: str, *, runtime_kind: str) -> bool:
-        self.calls += 1
-        return False
-
-    def token_delivered_at(self, contract_id: str, *, runtime_kind: str) -> float | None:
-        return None
-
-
-def _device_login_activities(
-    tmp_path: Path, host_party: str | None, *, can_separate_uids: bool = False
-) -> tuple[ContractDeviceLoginActivities, _FakeDeviceLogin]:
-    login = _FakeDeviceLogin()
-    isolation = ContractIsolation(
-        workspace_root=tmp_path / "workspaces",
-        state_dir=tmp_path / "state",
-        uid_min=20_000,
-        uid_max=20_100,
-        max_processes=64,
-        memory_limit_bytes=1 << 30,
-        can_separate_uids=can_separate_uids,
-    )
-    return (
-        ContractDeviceLoginActivities(
-            contract_isolation=isolation,
-            device_login=login,  # type: ignore[arg-type]
-            host_party=host_party,
-        ),
-        login,
-    )
-
-
-def _sign_in_calls(activities: ContractDeviceLoginActivities) -> list[Any]:
-    return [
-        activities.sign_in_contract_device_login(
-            ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
-        ),
-        activities.check_contract_device_login_status(
-            ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
-        ),
-        activities.check_contract_device_login_status(
-            ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
-        ),
-    ]
-
-
-@pytest.mark.parametrize("host_party", ["organisation", "account", None])
-@pytest.mark.asyncio
-async def test_a_runner_no_subscription_runs_on_refuses_sign_in_and_its_status(
-    tmp_path: Path, host_party: str | None
-) -> None:
-    activities, login = _device_login_activities(tmp_path, host_party)
-
-    for call in _sign_in_calls(activities):
-        with pytest.raises(ApplicationError) as refused:
-            await call
-        assert refused.value.type == SIGN_IN_NEEDS_CONTRACT_UID_RULE
-        assert refused.value.non_retryable is True
-    assert login.calls == 0, "the harness root is never touched where no subscription runs"
-
-
-@pytest.mark.asyncio
-async def test_an_unregistered_runner_refuses_sign_in_even_with_contract_uids(
-    tmp_path: Path,
-) -> None:
-    activities, login = _device_login_activities(tmp_path, None, can_separate_uids=True)
-
-    for call in _sign_in_calls(activities):
-        with pytest.raises(ApplicationError) as refused:
-            await call
-        assert refused.value.type == SIGN_IN_NEEDS_CONTRACT_UID_RULE
-    assert login.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_the_persons_own_runner_still_signs_in(tmp_path: Path) -> None:
-    activities, login = _device_login_activities(tmp_path, "user")
-
-    result = await activities.sign_in_contract_device_login(
-        ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
-    )
-
-    assert result.user_code == "ABCD-1234"
-    assert login.calls == 1
-
-
-@pytest.mark.parametrize("host_party", ["organisation", "account"])
-@pytest.mark.asyncio
-async def test_a_shared_runner_with_contract_uids_signs_in_and_reads_status(
-    tmp_path: Path, host_party: str
-) -> None:
-    """QTS-1450: a customer-operated cluster Runner runs each Contract as its own uid, so a
-    subscription can run there, and its sign-in and status are served."""
-
-    activities, login = _device_login_activities(tmp_path, host_party, can_separate_uids=True)
-
-    started = await activities.sign_in_contract_device_login(
-        ContractDeviceLoginInput(contract_id=str(CONTRACT), runtime_kind="codex_cli")
-    )
-    claude = await activities.check_contract_device_login_status(
-        ContractDeviceLoginStatusInput(contract_id=str(CONTRACT), runtime_kind="claude_code")
-    )
-
-    assert started.user_code == "ABCD-1234"
-    assert (claude.token_present, claude.auth_method, claude.subscription_type) == (
-        True,
-        "oauth_token",
-        "max",
-    )
-    assert login.calls == 2
 
 
 def _sealed(store: RecipientKeyStore, value: str, *, slot: str = "llm_key") -> SealedCredential:

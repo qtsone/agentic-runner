@@ -116,6 +116,17 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # extra keys, so the control plane keys its pushes only for a Runner whose heartbeat names
 # contracts 3.23 or later; a Runner on 3.23 under an older control plane reads an unkeyed
 # snapshot only for the Contract the snapshot itself names.
+# 3.25.0 (QTS-1736, Spec: Runners rev 3): a Runner uses and reports its host's own LLM
+# access. `llm_access` -- the key-name table (`RUNTIME_PROVIDERS`, `PROVIDER_KEY_NAMES`)
+# and `LlmAccess`; `DirectiveRouting.llm_access` in place of `funding_party`;
+# `HeartbeatEnvelope.llm_access` (`ContractLlmAccess`) and `.install` (`RunnerInstall`);
+# `HeartbeatAck.llm_contracts` (`ContractLlmTerms`, `SubscriptionRight`). Removed:
+# `CredentialManifest.funding_party` and `CeilingPush.org_funded`, both still read from a
+# control plane on 3.24 (an `org_funded: false` push carries no Organisation ceiling).
+# The ack forbids extra keys, so the control plane sends `llm_contracts` only to a Runner
+# whose heartbeat names contracts 3.25 or later; the Runner sends its report only once an
+# ack carried it. Raises the floor in practice: once the control plane is on 3.25, a
+# Runner that reports no LLM access gets no work.
 __version__ = "3.24.0"
 
 __all__ = ["__version__"]

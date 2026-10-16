@@ -13,7 +13,7 @@ What this pins, per acceptance criterion:
 from __future__ import annotations
 
 import asyncio
-import io
+import os
 import re
 import shlex
 import subprocess
@@ -139,7 +139,7 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     commands = _skill_commands()
-    assert [words[:1] for words in commands] == [["install"], ["credential"], ["status"]]
+    assert [words[:1] for words in commands] == [["install"], ["sign-in"], ["status"]]
 
     root = tmp_path / "state"
     paths = workstation.OrgPaths(root=root, org="acme")
@@ -168,14 +168,22 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
         cli, "open_workstation_store", lambda _org, *, fallback: FileCredentialStore(fallback)
     )
 
-    install, credential, status = (_fill(words, root) for words in commands)
+    install, sign_in, status = (_fill(words, root) for words in commands)
     # What the person types at the Runner's own prompt, in their terminal.
     monkeypatch.setenv(cli.AGENT_TOKEN_ENV, AGENT_TOKEN)
     assert await asyncio.to_thread(cli.main, install) == 0
     monkeypatch.delenv(cli.AGENT_TOKEN_ENV)
-    monkeypatch.setattr("sys.stdin", io.StringIO(SECRET_VALUE))
-    assert cli.main(credential) == 0
-    assert FileCredentialStore(paths.credentials).get("OPENAI_API_KEY") == SECRET_VALUE
+    # The person answers `sign-in` at its own prompts: an API key, typed without echo. The
+    # fake control plane registered this Runner as the person's own (`host_party="user"`).
+    # `sign-in` takes on the Runner's environment; registered here so teardown restores it.
+    for name in workstation.run_environment(paths, workstation.WorkstationSettings.load(paths)):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "k")
+    monkeypatch.setattr(service.getpass, "getpass", lambda _prompt: SECRET_VALUE)
+    monkeypatch.setattr(cli, "_in_container", lambda: False)
+    assert await asyncio.to_thread(cli.main, sign_in) == 0
+    assert FileCredentialStore(paths.credentials).get("ANTHROPIC_API_KEY") == SECRET_VALUE
 
     assert await _start_the_login_agent(paths, plane, monkeypatch=monkeypatch) == (
         "temporal-grpc.test:443"

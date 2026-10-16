@@ -44,6 +44,7 @@ __all__ = [
     "EmptyCredentialStore",
     "FakeCredentialStore",
     "HostCredentialStore",
+    "LayeredCredentialStore",
     "UnresolvableCredentialReferenceError",
 ]
 
@@ -112,6 +113,25 @@ class EmptyCredentialStore:
     """
 
     def get(self, reference: str) -> str | None:
+        return None
+
+
+class LayeredCredentialStore:
+    """Several host stores read as one, the first that holds a value winning.
+
+    A container Runner's store is a mounted Secret, read-only, so a key the person types
+    into ``agentic-runner sign-in`` goes to a store in the state directory, read first:
+    it is the person's later act on their own Runner.
+    """
+
+    def __init__(self, *stores: HostCredentialStore) -> None:
+        self._stores = stores
+
+    def get(self, reference: str) -> str | None:
+        for store in self._stores:
+            value = store.get(reference)
+            if value is not None:
+                return value
         return None
 
 
@@ -205,12 +225,9 @@ class CredentialResolver:
     value is stating it is theirs to state; the host's own install is the fallback, which
     is exactly the hand-over default.
 
-    The fallback is a loan of the host's own values, so it is made only to work the host
-    pays for (ADR-0022 §36): an Organisation or Account Runner lends its store to a
-    Contract whose ``funding_party`` is its own ``host_party``, and a contractor-funded
-    Contract in that pool brings sealed values or finds the reference unusable. A
-    personal Runner lends to every Contract it runs, because it runs only its person's
-    own (§2, §42). A blank ``host_party`` -- a Runner not yet registered -- lends nothing.
+    The host's store serves every Contract the Runner runs (Spec: Runners rev 3): the
+    Contract's hosts already say whose Runners, and so whose secrets, its work may use.
+    ADR-0022 §36's limit to the Contracts its host funds went with `funding`.
     """
 
     def __init__(
@@ -218,14 +235,9 @@ class CredentialResolver:
         *,
         store: HostCredentialStore,
         delivered: Mapping[tuple[str, str], str] | None = None,
-        host_party: str | None = None,
     ) -> None:
         self._store = store
         self._delivered = dict(delivered or {})
-        self._host_party = host_party
-        # The funding party the last ack named per Contract, for the readers that have no
-        # Directive to carry one: the heartbeat's report and an OAuth Connector's secret.
-        self._funding: dict[str, str] = {}
 
     @property
     def host_store(self) -> HostCredentialStore:
@@ -243,33 +255,22 @@ class CredentialResolver:
 
         self._delivered.pop((str(contract_id), slot), None)
 
-    def fund(self, funding: Mapping[str, str]) -> None:
-        """Replace the per-Contract funding parties with the last ack's (ADR-0022 §7)."""
-
-        self._funding = dict(funding)
-
     def resolve(
         self,
         *,
         contract_id: str | None,
         manifest: Iterable[str],
-        funding_party: str | None = None,
     ) -> DirectiveCredentials:
         """Every reference the Contract declares, or the first failure, named.
-
-        ``funding_party`` is the Directive's own (``DirectiveRouting.funding_party``); a
-        reader without a Directive leaves it out and the last ack's word for the Contract
-        stands in, and with neither the host store is not lent.
 
         Fails on the *first* unresolvable reference rather than collecting them: a
         Directive that cannot have one of its credentials is not going to run, and a
         partial resolution left lying around is a value held for no reason.
         """
 
-        lends = self._lends_host_store(contract_id, funding_party)
         values: dict[str, str] = {}
         for reference in manifest:
-            value = self._value(contract_id, reference, lends=lends)
+            value = self._value(contract_id, reference)
             if value is None:
                 raise UnresolvableCredentialReferenceError(
                     reference, contract_id=contract_id, reason="not_installed"
@@ -280,18 +281,8 @@ class CredentialResolver:
     def usable(self, contract_id: str, reference: str) -> bool:
         """Whether a Directive of this Contract would resolve ``reference`` now (§7)."""
 
-        lends = self._lends_host_store(contract_id, None)
-        return self._value(contract_id, reference, lends=lends) is not None
+        return self._value(contract_id, reference) is not None
 
-    def _value(self, contract_id: str | None, reference: str, *, lends: bool) -> str | None:
+    def _value(self, contract_id: str | None, reference: str) -> str | None:
         value = self._delivered.get((str(contract_id), reference))
-        if value is None and lends:
-            value = self._store.get(reference)
-        return value
-
-    def _lends_host_store(self, contract_id: str | None, funding_party: str | None) -> bool:
-        if self._host_party == "user":
-            return True
-        if funding_party is None:
-            funding_party = self._funding.get(str(contract_id), "")
-        return bool(self._host_party) and funding_party == self._host_party
+        return value if value is not None else self._store.get(reference)

@@ -49,6 +49,7 @@ from agentic_runner.auth_mode import (
     AuthModeRefusedError,
     choose_auth_mode,
     is_shared_runner,
+    require_named_access,
 )
 from agentic_runner.callback import (
     CALLBACK_TOKEN_ENV,
@@ -149,7 +150,6 @@ from agentic_runner.workers.agent_runtime import (
     PermissionFallback,
     ResumableAgentRuntime,
 )
-from agentic_runner.workers.contract_device_login import holds_login, login_file_counts
 from agentic_runner.workers.contract_isolation import (
     NO_CONTRACT,
     ContractIsolation,
@@ -160,6 +160,11 @@ from agentic_runner.workers.fastapi_client import (
     DirectiveTokenSource,
     WorkerFastApiClientError,
     directive_token,
+)
+from agentic_runner.workers.harness_logins import (
+    holds_login,
+    login_file_counts,
+    subscription_report,
 )
 from agentic_runner.workers.harness_outcome import classify_harness_outcome
 from agentic_runner.workers.harness_usage import extract_claude_result, extract_codex_turn_usage
@@ -277,6 +282,7 @@ from agentic_runner_contracts.grants import (
     GrantSnapshot,
 )
 from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
+from agentic_runner_contracts.llm_access import LlmAccess, LlmAccessKind, provider_for
 from agentic_runner_contracts.questions import WORK_ASK_VERB
 from agentic_runner_contracts.redaction import redact_secret_like_text
 from agentic_runner_contracts.routing import (
@@ -286,6 +292,7 @@ from agentic_runner_contracts.routing import (
     assert_routed,
     selector_satisfied,
 )
+from agentic_runner_contracts.runner_registration import SubscriptionState
 from agentic_runner_contracts.runtime_context import (
     EGRESS_ALLOW_LIST_KEY,
     McpServerSpec,
@@ -2650,7 +2657,8 @@ class RunnerRalphActivities:
         the bearer defensible under ADR-0011 §9.
         """
 
-        auth_mode = await self._directive_auth_mode(work_record_id, state)
+        access = routing.llm_access if routing is not None else None
+        auth_mode = await self._directive_auth_mode(work_record_id, state, access)
         await self._report_login_residue(work_record_id, state)
         facts = AttemptFacts(
             work_record_id=work_record_id,
@@ -2669,9 +2677,7 @@ class RunnerRalphActivities:
             )
 
         await self._refuse_skill_digest_mismatch(work_record_id, state)
-        credentials = await self._resolve_credentials(
-            work_record_id, state, funding_party=routing.funding_party if routing else None
-        )
+        credentials = await self._resolve_credentials(work_record_id, state)
         if credentials is not None:
             # Names only, at the moment they resolved (22 A1's Evidence): a support read
             # of "which credentials did this Directive have" must not be answerable by
@@ -2716,7 +2722,8 @@ class RunnerRalphActivities:
             if self._llm_proxy is not None and auth_mode == AuthMode.API_KEY:
                 # API-key mode only (issue 43): a subscription Directive never has a slot
                 # to resolve, and issue 31 meters it from the harness's own output. One
-                # bearer serves the callback socket and the proxy alike.
+                # bearer serves the callback socket and the proxy alike. The attempt spends
+                # its own provider's slot, and a `host_key` Directive the store's alone.
                 proxy_attempt = await stack.enter_async_context(
                     self._llm_proxy.attempt(
                         directive_id=facts.directive_id,
@@ -2725,6 +2732,11 @@ class RunnerRalphActivities:
                         work_record_id=_optional_uuid(work_record_id),
                         token=callback_env.get(CALLBACK_TOKEN_ENV),
                         reserve_max_tokens=reserve_max_tokens,
+                        provider=provider_for(state.cli_kind),
+                        host_key_only=(
+                            access is not None and access.kind == LlmAccessKind.HOST_KEY
+                        ),
+                        delivered_only=access is None and not self._personal_runner(),
                     )
                 )
                 callback_env.update(proxy_attempt.env(state.cli_kind))
@@ -3081,8 +3093,6 @@ class RunnerRalphActivities:
         self,
         work_record_id: str,
         state: _RuntimeContextState,
-        *,
-        funding_party: str | None = None,
     ) -> DirectiveCredentials | None:
         """Resolve this Contract's Credential References, or fail the Directive closed.
 
@@ -3100,7 +3110,6 @@ class RunnerRalphActivities:
             return resolver.resolve(
                 contract_id=state.contract_id,
                 manifest=state.credential_references,
-                funding_party=funding_party,
             )
         except UnresolvableCredentialReferenceError as error:
             await self._fastapi_client.append_evidence(
@@ -3111,10 +3120,14 @@ class RunnerRalphActivities:
             raise
 
     async def _directive_auth_mode(
-        self, work_record_id: str, state: _RuntimeContextState
+        self, work_record_id: str, state: _RuntimeContextState, access: LlmAccess | None = None
     ) -> AuthMode:
         """This Directive's auth mode, or a non-retryable refusal with Evidence naming the
         rule (local-agents 04).
+
+        ``access`` is the LLM access the control plane routed the Directive with (rev 3):
+        the Runner runs on exactly that, or refuses and never falls back to other access.
+        None, from a control plane below contracts 3.25, keeps the Runner's own choice.
 
         Decided from what this process can check -- the host party it was registered with,
         whether a key is present for the Contract, whether the Contract runs under its own
@@ -3129,6 +3142,14 @@ class RunnerRalphActivities:
         host_party = self._routing_identity.host_party if self._routing_identity else None
         contract_uid = self._runs_under_contract_uid(state)
         try:
+            if access is not None:
+                return require_named_access(
+                    access,
+                    host_party=host_party,
+                    host_key_held=self._host_key_held(state),
+                    subscription=self._subscription_state(state),
+                    runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
+                )
             return choose_auth_mode(
                 host_party=host_party,
                 key_present=self._api_key_present(state, runtime),
@@ -3148,11 +3169,16 @@ class RunnerRalphActivities:
                 source=AGENT_RUNTIME_EVIDENCE_SOURCE,
                 actor=self._actor(),
                 payload={
-                    "event": "directive.auth_mode_refused",
+                    "event": (
+                        "directive.auth_mode_refused"
+                        if access is None
+                        else "directive.llm_access_refused"
+                    ),
                     "rule": refusal.rule,
                     "cli_kind": state.cli_kind,
                     "host_party": host_party,
                     "contract_id": state.contract_id,
+                    **({} if access is None else {"llm_access": access.kind}),
                 },
             )
 
@@ -3167,16 +3193,47 @@ class RunnerRalphActivities:
         )
 
     def _api_key_present(self, state: _RuntimeContextState, runtime: AgentRuntime | None) -> bool:
-        """A delivered slot for the Contract (or its funder), or the host operator's key."""
+        """A slot the attempt's provider would resolve: delivered for the Contract, or the
+        host store's key (rev 3); or a key the host configured on the runtime itself."""
 
         if bool(getattr(runtime, "host_api_key", False)):
             return True
-        contract_id = _optional_uuid(state.contract_id)
+        return self._llm_proxy is not None and self._llm_proxy.slots.holds(
+            _optional_uuid(state.contract_id),
+            provider_for(state.cli_kind),
+            delivered_only=not self._personal_runner(),
+        )
+
+    def _personal_runner(self) -> bool:
+        """Hosted by its person. Only such a Runner spends its store's key on a Directive
+        that names no access (a control plane below 3.25): a pool Runner's key never
+        reached the proxy before, and that control plane caps none of its spend."""
+
+        return self._routing_identity is not None and self._routing_identity.host_party == "user"
+
+    def _host_key_held(self, state: _RuntimeContextState) -> bool:
+        provider = provider_for(state.cli_kind)
         return (
             self._llm_proxy is not None
-            and contract_id is not None
-            and self._llm_proxy.slots.holds(contract_id)
+            and provider is not None
+            and self._llm_proxy.slots.holds_host(provider.value)
         )
+
+    def _subscription_state(self, state: _RuntimeContextState) -> SubscriptionState:
+        if self._contract_isolation is None or not state.contract_id:
+            return SubscriptionState.NONE
+        windows = (
+            self._usage_windows.windows(state.contract_id, state.cli_kind)
+            if self._usage_windows is not None
+            else None
+        )
+        return subscription_report(
+            self._contract_isolation,
+            state.contract_id,
+            state.cli_kind,
+            windows=windows,
+            now=datetime.now(UTC),
+        ).state
 
     async def _report_login_residue(self, work_record_id: str, state: _RuntimeContextState) -> None:
         """On a shared Runner that cannot run a subscription, say once that a Contract's

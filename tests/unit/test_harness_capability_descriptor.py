@@ -453,7 +453,8 @@ async def test_the_heartbeat_carries_each_contracts_descriptor_and_self_test(
         contract_id=UUID(CONTRACT),
         cli_kind="codex_cli",
         version="0.141.0",
-        auth_mode="login",
+        # No key and no sign-in in the root: `none`, where 3.24 said `login` (rev 3).
+        auth_mode="none",
         auth_modes=["api_key", "subscription"],
         permission_mode="sandbox=workspace-write;approval=never",
         self_test=HarnessSelfTest(ok=True, at=NOW),

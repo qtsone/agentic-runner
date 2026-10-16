@@ -31,8 +31,12 @@ from agentic_runner.activities import (
     RunnerRalphActivities,
 )
 from agentic_runner.auth_mode import (
+    HOST_KEY_NOT_HELD_RULE,
+    LLM_KEY_UNSUPPORTED_RULE,
     SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+    SUBSCRIPTION_NOT_SIGNED_IN_RULE,
+    SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
 )
 from agentic_runner.credentials import CredentialResolver, EmptyCredentialStore
 from agentic_runner.harness_self_test import DirectivesInFlight
@@ -56,6 +60,7 @@ from agentic_runner_contracts.activity_io import (
     HarnessHold,
     HarnessHoldKind,
 )
+from agentic_runner_contracts.llm_access import LlmAccess
 from agentic_runner_contracts.routing import DirectiveRouting, RunnerRoutingIdentity
 from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
 from agentic_runner_contracts.runtime_context import work_branch_name
@@ -149,15 +154,23 @@ class _Codex:
 
 
 class _Proxy:
-    """Holds a slot for the Contract or not; hands each attempt the proxy pair."""
+    """Holds a slot for the Contract or not, and the host store's key or not; hands each
+    attempt the proxy pair and remembers what it was admitted with."""
 
-    def __init__(self, *, holds: bool) -> None:
-        self.slots = SimpleNamespace(holds=lambda _contract_id: holds)
+    def __init__(self, *, holds: bool, host_key: bool = False) -> None:
+        self.slots = SimpleNamespace(
+            holds=lambda _contract_id, _provider, delivered_only=False: (
+                holds or (host_key and not delivered_only)
+            ),
+            holds_host=lambda _provider: host_key,
+        )
         self.attempts = 0
+        self.admitted: list[dict[str, Any]] = []
 
     @contextlib.asynccontextmanager
-    async def attempt(self, **_admitted: Any) -> AsyncIterator[Any]:
+    async def attempt(self, **admitted: Any) -> AsyncIterator[Any]:
         self.attempts += 1
+        self.admitted.append(admitted)
         yield SimpleNamespace(
             env=lambda _cli_kind: {
                 "OPENAI_BASE_URL": "http://127.0.0.1:1/a/x/v1",
@@ -223,7 +236,7 @@ def _activities(
     )
 
 
-def _branch_pr_input(host_party: str) -> BranchPullRequestInput:
+def _branch_pr_input(host_party: str, access: LlmAccess | None = None) -> BranchPullRequestInput:
     return BranchPullRequestInput(
         work_record_id=WORK_RECORD_ID,
         repository="qts/agentic-os",
@@ -231,8 +244,127 @@ def _branch_pr_input(host_party: str) -> BranchPullRequestInput:
         branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
-        routing=DirectiveRouting(runner_id=RUNNER_ID, host_party=host_party),
+        routing=DirectiveRouting(runner_id=RUNNER_ID, host_party=host_party, llm_access=access),
     )
+
+
+# ------------------------------------------------------------------ the named access (rev 3)
+
+
+@pytest.mark.asyncio
+async def test_without_named_access_a_pool_runner_never_spends_its_stores_key(
+    tmp_path: Path,
+) -> None:
+    """A control plane below 3.25 names no access and caps none of a pool's store spend,
+    so a pool Runner keeps today's choice: its store's key is not a key present."""
+
+    client = _Client()
+    runtime = _Codex()
+    proxy = _Proxy(holds=False, host_key=True)
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            client, runtime, tmp_path=tmp_path, host_party="organisation", proxy=proxy
+        ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+
+    assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
+    assert (runtime.requests, proxy.attempts) == ([], 0)
+
+
+@pytest.mark.asyncio
+async def test_without_named_access_a_personal_runner_spends_its_stores_key(
+    tmp_path: Path,
+) -> None:
+    runtime = _Codex()
+    proxy = _Proxy(holds=False, host_key=True)
+
+    await _activities(
+        _Client(), runtime, tmp_path=tmp_path, host_party="user", proxy=proxy
+    ).create_or_update_branch_pr(_branch_pr_input("user"))
+
+    [request] = runtime.requests
+    assert request.auth_mode == AuthMode.API_KEY
+    [admitted] = proxy.admitted
+    assert (admitted["host_key_only"], admitted["delivered_only"]) == (False, False)
+
+
+@pytest.mark.asyncio
+async def test_a_host_key_directive_spends_only_the_stores_key(tmp_path: Path) -> None:
+    runtime = _Codex()
+    proxy = _Proxy(holds=False, host_key=True)
+
+    await _activities(
+        _Client(), runtime, tmp_path=tmp_path, host_party="organisation", proxy=proxy
+    ).create_or_update_branch_pr(_branch_pr_input("organisation", LlmAccess(kind="host_key")))
+
+    [request] = runtime.requests
+    assert request.auth_mode == AuthMode.API_KEY
+    [admitted] = proxy.admitted
+    assert (admitted["provider"], admitted["host_key_only"]) == ("openai", True)
+
+
+@pytest.mark.asyncio
+async def test_a_signed_in_subscription_runs_although_a_key_is_held(tmp_path: Path) -> None:
+    """Routed to the subscription, the Runner runs it: a key it also holds is not a
+    reason to switch, any more than a sign-in is a reason to leave a key."""
+
+    isolation = _isolation(tmp_path)
+    _sign_in(isolation)
+    runtime = _Codex()
+    proxy = _Proxy(holds=True, host_key=True)
+
+    await _activities(
+        _Client(), runtime, tmp_path=tmp_path, host_party="user", proxy=proxy, isolation=isolation
+    ).create_or_update_branch_pr(_branch_pr_input("user", LlmAccess(kind="subscription")))
+
+    [request] = runtime.requests
+    assert request.auth_mode == AuthMode.SUBSCRIPTION
+    assert proxy.attempts == 0
+
+
+@pytest.mark.parametrize(
+    ("access", "host_party", "signed_in", "rule"),
+    [
+        # A delivered key and a sign-in are both still here; neither stands in.
+        (LlmAccess(kind="host_key"), "user", True, HOST_KEY_NOT_HELD_RULE),
+        (LlmAccess(kind="subscription"), "user", False, SUBSCRIPTION_NOT_SIGNED_IN_RULE),
+        (
+            LlmAccess(kind="subscription"),
+            "organisation",
+            True,
+            SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
+        ),
+        (LlmAccess(kind="llm_key", llm_key_id="key-7"), "organisation", True, "llm_key"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_access_the_runner_no_longer_holds_fails_the_directive_closed(
+    tmp_path: Path, access: LlmAccess, host_party: str, signed_in: bool, rule: str
+) -> None:
+    isolation = _isolation(tmp_path)
+    if signed_in:
+        _sign_in(isolation)
+    client = _Client()
+    runtime = _Codex()
+    proxy = _Proxy(holds=True, host_key=False)
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            client,
+            runtime,
+            tmp_path=tmp_path,
+            host_party=host_party,
+            proxy=proxy,
+            isolation=isolation,
+        ).create_or_update_branch_pr(_branch_pr_input(host_party, access))
+
+    expected = LLM_KEY_UNSUPPORTED_RULE if rule == "llm_key" else rule
+    assert refused.value.non_retryable is True
+    assert refused.value.type == expected
+    assert (runtime.requests, proxy.attempts) == ([], 0), "nothing runs on other access"
+    [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
+    assert evidence["event"] == "directive.llm_access_refused"
+    assert (evidence["rule"], evidence["llm_access"]) == (expected, access.kind)
 
 
 @pytest.mark.parametrize("install_channel", ["helm", "workstation", "docker"])

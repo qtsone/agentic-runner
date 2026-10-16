@@ -21,6 +21,7 @@ from temporalio.converter import DataConverter
 
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner_contracts import activity_io as contracts
+from agentic_runner_contracts.llm_access import LlmAccess
 from agentic_runner_contracts.routing import (
     DirectiveRouting,
     RoutingRefusedError,
@@ -101,24 +102,30 @@ def _fix_directive_input(routing: dict[str, Any]) -> contracts.FixDirectiveInput
     return decoded
 
 
-def test_the_directive_input_carries_the_contracts_funding_party() -> None:
-    # ADR-0022 §36: the Runner lends its host's own secrets only to a Contract its host pays
-    # for, so it must be told who pays.
+def test_the_directive_input_carries_the_llm_access_it_was_routed_with() -> None:
+    # Rev 3: the control plane chooses the host's access and the Runner uses only that.
+    decoded = _fix_directive_input(
+        {
+            "runner_id": IDENTITY.runner_id,
+            "host_party": "organisation",
+            "llm_access": {"kind": "llm_key", "llm_key_id": "key-7"},
+        }
+    )
+
+    assert decoded.routing is not None
+    assert decoded.routing.llm_access == LlmAccess(kind="llm_key", llm_key_id="key-7")
+
+
+def test_a_directive_input_from_a_323_control_plane_still_decodes() -> None:
+    """No `llm_access`, and the retired `funding_party`: the Runner keeps its own choice
+    of access, and drops the key its dataclass no longer has."""
+
     decoded = _fix_directive_input(
         {"runner_id": IDENTITY.runner_id, "host_party": "organisation", "funding_party": "user"}
     )
 
     assert decoded.routing is not None
-    assert decoded.routing.funding_party == "user"
-
-
-def test_a_directive_input_from_before_the_funding_party_still_decodes() -> None:
-    decoded = _fix_directive_input(
-        {"runner_id": IDENTITY.runner_id, "host_party": "organisation", "selector": {}}
-    )
-
-    assert decoded.routing is not None
-    assert decoded.routing.funding_party == ""
+    assert decoded.routing.llm_access is None
     assert decoded.routing.requirements == ()
 
 

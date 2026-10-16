@@ -9,7 +9,7 @@ A party that owns Products and contracts User Profiles to deploy Agents into it.
 _Avoid_: Tenant, Company, Customer, Client, OU (an Enterprise's organisational unit is simply an Organisation)
 
 **Contract**:
-The agreement between one Organisation and one contractor — a User Profile, or an Account acting through its own people — under which Agents are deployed into the Organisation; at most one is active per pair. Proposed by either side by direct action and negotiated as versions until one side accepts as it stands, it fixes the Products in scope, the ceilings the Agents work under, the Experience promotion policy, which Account pays its seat, which party funds the LLM usage (the funder holds the key, pays the provider and sets the ceiling) and who hosts the Runner (the Organisation or the contractor). It holds policy, never credentials; its authority is issued as Approval Mandates.
+The agreement between one Organisation and one contractor — a User Profile, or an Account acting through its own people — under which Agents are deployed into the Organisation; at most one is active per pair. Proposed by either side by direct action and negotiated as versions until one side accepts as it stands, it fixes the Products in scope, the ceilings the Agents work under, the Experience promotion policy, which Account pays its seat and whose Runners may run its work (the Organisation's, the contractor's, or both). A Runner uses only its host's own LLM access, so the Runners a Contract allows also decide whose access its work uses. It holds policy, never credentials; its authority is issued as Approval Mandates.
 _Avoid_: Engagement, Employment, Agreement, Persona Contract, Offer (that is a Proposal)
 
 **Work Record**:
@@ -65,7 +65,7 @@ The name, held by the control plane on a Contract's credential manifest, of a se
 _Avoid_: Secret (that is the value), Credential (ambiguous between name and value), Env var
 
 **Credential Delivery**:
-How a credential value reaches a Runner when its holder is not the Runner's host operator: the holder seals it in their browser to the installation's Recipient Key, the control plane stores and relays ciphertext it cannot open, and the Runner opens it on the host. Carries API keys only: a long-lived subscription bearer (`setup_token`) is never delivered and is refused on every Contract, and a subscription sign-in (device login) is never delivered either — it is created in place by the funder signing in inside the Contract's harness root on the person's own Runner (ADR-0015 §4 amendment, local-agents 03).
+How a credential value reaches a Runner when its holder is not the Runner's host operator: the holder seals it in their browser to the installation's Recipient Key, the control plane stores and relays ciphertext it cannot open, and the Runner opens it on the host. Carries API keys only: a long-lived subscription bearer (`setup_token`) is never delivered and is refused on every Contract, and a subscription sign-in (device login) is never delivered either — it is created in place by the person running `agentic-runner sign-in` on their own Runner, inside the Contract's harness root (ADR-0015 §4 amendment, local-agents 03, Spec: Runners rev 3).
 _Avoid_: Key upload, Secret sync, Relay, Key slot (that is the Credential Reference the delivery fills)
 
 **Recipient Key**:

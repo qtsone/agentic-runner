@@ -40,7 +40,7 @@ import struct
 import sys
 import termios
 import tty
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -61,6 +61,7 @@ __all__ = [
     "ClaudeSignIns",
     "UnknownSignInMethodError",
     "launcher_argv",
+    "run_attached",
 ]
 
 RUNTIME_KIND: Final[str] = "claude_code"
@@ -200,9 +201,10 @@ class ClaudeSignIns:
             await self._ensure_keychain(sandbox)
         output = bytearray()
         try:
-            returncode = await _run_attached(
+            returncode = await run_attached(
                 launcher_argv(sandbox.harness_config_dir, argv),
                 sandbox,
+                env=_harness_env(sandbox),
                 output=output,
                 stdin_fd=stdin_fd,
                 stdout_fd=stdout_fd,
@@ -291,16 +293,18 @@ class ClaudeSignIns:
                 raise ClaudeSignInError(f"security {argv[1]} failed (exit {result.exit_code})")
 
 
-async def _run_attached(
+async def run_attached(
     argv: Sequence[str],
     sandbox: DirectiveSandbox,
     *,
+    env: Mapping[str, str],
     output: bytearray,
     stdin_fd: int,
     stdout_fd: int,
 ) -> int:
     """Run ``argv`` on a pseudo-terminal relayed to the caller's; its output's tail lands
-    in ``output``. Returns once the CLI has exited and its last output is relayed."""
+    in ``output``. Returns once the CLI has exited and its last output is relayed. Codex's
+    sign-in runs through it too (``harness_logins.CodexSignIns``)."""
 
     master_fd, slave_fd = pty.openpty()
     try:
@@ -310,7 +314,7 @@ async def _run_attached(
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=sandbox.home_dir,
-                env=_harness_env(sandbox) | {"TERM": os.environ.get("TERM") or "xterm-256color"},
+                env={**env, "TERM": os.environ.get("TERM") or "xterm-256color"},
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
@@ -318,7 +322,9 @@ async def _run_attached(
                 **sandbox.spawn_kwargs(),
             )
         except OSError as error:
-            raise ClaudeSignInError(f"claude failed to start: {error.__class__.__name__}") from None
+            raise ClaudeSignInError(
+                f"the sign-in failed to start: {error.__class__.__name__}"
+            ) from None
     except BaseException:
         os.close(master_fd)
         raise

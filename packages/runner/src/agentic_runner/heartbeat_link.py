@@ -235,7 +235,6 @@ class HeartbeatLink:
                     contract_used=ceiling.contract_used,
                     organisation_limit=ceiling.organisation_limit,
                     organisation_used=ceiling.organisation_used,
-                    org_funded=ceiling.org_funded,
                 ),
             )
 

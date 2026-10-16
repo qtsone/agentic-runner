@@ -80,6 +80,14 @@ async def test_a_runner_heartbeats_signed_from_its_own_queue(
     assert plane.refusals == []
     assert {beat.hosted_task_queue for beat in plane.heartbeats} == {runner_task_queue(runner_id)}
     assert {beat.contracts_version for beat in plane.heartbeats} == {contracts_version}
+    # Contracts 3.25: once an ack named the Contract, every beat reports the LLM access held
+    # for it, and where a command reaches the Runner -- here a plain process, so no hostname.
+    reports = [beat.llm_access for beat in plane.heartbeats if beat.llm_access is not None]
+    assert reports and all(
+        [report.contract_id for report in beat] == [plane.contract_id] for beat in reports
+    )
+    assert plane.heartbeats[-1].install is not None
+    assert plane.heartbeats[-1].install.hostname is None
 
 
 @pytest.mark.asyncio

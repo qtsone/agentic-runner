@@ -1,10 +1,12 @@
-"""Whose values a Runner lends, and the heartbeat's report of them (ADR-0022 §7, §36, §42).
+"""Whose values a Runner lends, and the heartbeat's report of them (ADR-0022 §7, rev 3).
 
-What this pins, per acceptance criterion of QTS-1531:
+What this pins:
 
-* an Organisation Runner refuses to lend a key installed on it to a contractor-funded
-  Contract and lends it to an Organisation-funded one, and a sealed value always wins;
-* a personal Runner lends its own values to the Contract it runs, whoever funds it;
+* the Runner's own store serves every Contract it runs, whatever host it is and whoever
+  pays: ADR-0022 §36's funding limit went with `funding` (Spec: Runners rev 3), and a
+  sealed value still wins over the store;
+* an ack from a control plane on 3.24, whose manifests still say `funding_party`, is read
+  rather than refused;
 * the heartbeat lists each Contract the last ack named, every reference with
   usable/unusable, read through the same resolver a Directive uses.
 """
@@ -37,104 +39,52 @@ from agentic_runner_contracts.runner_registration import (
     IsolationMode,
 )
 
-ORG_FUNDED = "0b6c1c2e-4f0a-4d55-9f43-6a1f7c3e2b10"
-CONTRACTOR_FUNDED = "7d2e9a41-1c3b-4e8f-a0d6-5b9c8e7f6a21"
+ORG_CONTRACT = "0b6c1c2e-4f0a-4d55-9f43-6a1f7c3e2b10"
+CONTRACTOR_CONTRACT = "7d2e9a41-1c3b-4e8f-a0d6-5b9c8e7f6a21"
 REFERENCE = "acme_deploy_token"
 INSTALLED = "the-organisations-own-key"
 SEALED = "the-contractors-sealed-key"
 
 
-def _organisation_runner() -> CredentialResolver:
-    return CredentialResolver(
-        store=FakeCredentialStore({REFERENCE: INSTALLED}), host_party="organisation"
-    )
+def _runner() -> CredentialResolver:
+    return CredentialResolver(store=FakeCredentialStore({REFERENCE: INSTALLED}))
 
 
-def test_an_organisation_runner_lends_its_key_only_to_organisation_funded_work() -> None:
-    resolver = _organisation_runner()
+def test_the_runners_own_store_serves_every_contract_it_runs() -> None:
+    resolver = _runner()
 
-    lent = resolver.resolve(
-        contract_id=ORG_FUNDED, manifest=[REFERENCE], funding_party="organisation"
-    )
-    assert lent.for_verb_seam(REFERENCE) == INSTALLED
-
-    with pytest.raises(UnresolvableCredentialReferenceError) as refusal:
-        resolver.resolve(contract_id=CONTRACTOR_FUNDED, manifest=[REFERENCE], funding_party="user")
-    assert refusal.value.reason == "not_installed"
-    assert INSTALLED not in str(refusal.value.evidence())
-
-
-def test_a_sealed_value_wins_whoever_funds_the_contract() -> None:
-    resolver = _organisation_runner()
-    resolver.deliver(CONTRACTOR_FUNDED, REFERENCE, SEALED)
-    resolver.deliver(ORG_FUNDED, REFERENCE, SEALED)
-
-    for contract_id, funding_party in ((CONTRACTOR_FUNDED, "user"), (ORG_FUNDED, "organisation")):
-        resolved = resolver.resolve(
-            contract_id=contract_id, manifest=[REFERENCE], funding_party=funding_party
-        )
-        assert resolved.for_verb_seam(REFERENCE) == SEALED
-
-
-def test_an_organisation_runner_told_no_funding_party_lends_nothing() -> None:
-    """A control plane that predates the field sends it blank; blank is never the host."""
-
-    with pytest.raises(UnresolvableCredentialReferenceError):
-        _organisation_runner().resolve(
-            contract_id=ORG_FUNDED, manifest=[REFERENCE], funding_party=""
-        )
-    with pytest.raises(UnresolvableCredentialReferenceError):
-        _organisation_runner().resolve(contract_id=ORG_FUNDED, manifest=[REFERENCE])
-
-
-def test_an_account_runner_does_not_lend_to_organisation_funded_work() -> None:
-    resolver = CredentialResolver(
-        store=FakeCredentialStore({REFERENCE: INSTALLED}), host_party="account"
-    )
-
-    with pytest.raises(UnresolvableCredentialReferenceError):
-        resolver.resolve(contract_id=ORG_FUNDED, manifest=[REFERENCE], funding_party="organisation")
-
-
-def test_a_personal_runner_lends_its_own_values_to_the_contract_it_runs() -> None:
-    """§42 holds by §2: a personal Runner runs only its person's own Contract."""
-
-    resolver = CredentialResolver(
-        store=FakeCredentialStore({REFERENCE: INSTALLED}), host_party="user"
-    )
-
-    for funding_party in ("user", "organisation"):
-        resolved = resolver.resolve(
-            contract_id=ORG_FUNDED, manifest=[REFERENCE], funding_party=funding_party
-        )
+    for contract_id in (ORG_CONTRACT, CONTRACTOR_CONTRACT):
+        resolved = resolver.resolve(contract_id=contract_id, manifest=[REFERENCE])
         assert resolved.for_verb_seam(REFERENCE) == INSTALLED
+        assert resolver.usable(contract_id, REFERENCE)
 
 
-def test_a_reader_without_a_directive_takes_the_funding_party_from_the_last_ack() -> None:
-    resolver = _organisation_runner()
-    resolver.fund({ORG_FUNDED: "organisation", CONTRACTOR_FUNDED: "user"})
+def test_a_sealed_value_wins_over_the_store() -> None:
+    resolver = _runner()
+    resolver.deliver(CONTRACTOR_CONTRACT, REFERENCE, SEALED)
 
-    assert resolver.usable(ORG_FUNDED, REFERENCE)
-    assert not resolver.usable(CONTRACTOR_FUNDED, REFERENCE)
-    assert (
-        resolver.resolve(contract_id=ORG_FUNDED, manifest=[REFERENCE]).for_verb_seam(REFERENCE)
-        == INSTALLED
-    )
+    sealed = resolver.resolve(contract_id=CONTRACTOR_CONTRACT, manifest=[REFERENCE])
+    installed = resolver.resolve(contract_id=ORG_CONTRACT, manifest=[REFERENCE])
 
-    # Authoritative: a Contract the next ack leaves out is lent nothing.
-    resolver.fund({})
-    assert not resolver.usable(ORG_FUNDED, REFERENCE)
+    assert sealed.for_verb_seam(REFERENCE) == SEALED
+    assert installed.for_verb_seam(REFERENCE) == INSTALLED
+
+
+def test_a_reference_neither_sealed_nor_installed_fails_closed() -> None:
+    with pytest.raises(UnresolvableCredentialReferenceError) as refusal:
+        _runner().resolve(contract_id=ORG_CONTRACT, manifest=["never_installed"])
+    assert refusal.value.reason == "not_installed"
 
 
 @pytest.mark.asyncio
-async def test_a_directive_resolves_with_its_own_funding_party() -> None:
+async def test_a_directive_resolves_from_the_store_whatever_its_contract() -> None:
     class _Evidence:
         async def append_evidence(self, *args: Any, **kwargs: Any) -> None:
             return None
 
     activities = RunnerRalphActivities(
         _Evidence(),  # type: ignore[arg-type]
-        credentials=_organisation_runner(),
+        credentials=_runner(),
     )
     state = _RuntimeContextState(
         reviewer=None,
@@ -142,13 +92,11 @@ async def test_a_directive_resolves_with_its_own_funding_party() -> None:
         verifier_argv=("true",),
         work_branch="agent/work",
         completion_criteria="do the work",
-        contract_id=CONTRACTOR_FUNDED,
+        contract_id=CONTRACTOR_CONTRACT,
         credential_references=(REFERENCE,),
     )
 
-    with pytest.raises(UnresolvableCredentialReferenceError):
-        await activities._resolve_credentials("wr-1", state, funding_party="user")
-    credentials = await activities._resolve_credentials("wr-1", state, funding_party="organisation")
+    credentials = await activities._resolve_credentials("wr-1", state)
     assert credentials is not None
     assert credentials.for_verb_seam(REFERENCE) == INSTALLED
 
@@ -187,7 +135,7 @@ def _stream(tmp_path: Path, registration: _Registration) -> Any:
         isolation=IsolationMode.NONE,
         proxy=LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox()),
         sealed=SealedCredentialStream(RecipientKeyStore(tmp_path)),
-        credentials=_organisation_runner(),
+        credentials=_runner(),
         load=service._LoadInterceptor(),
     )
 
@@ -199,13 +147,9 @@ async def test_the_heartbeat_reports_each_contracts_references_as_usable_or_not(
     registration = _Registration(
         [
             CredentialManifest(
-                contract_id=UUID(ORG_FUNDED),
-                funding_party="organisation",
-                references=[REFERENCE, "never_installed"],
+                contract_id=UUID(ORG_CONTRACT), references=[REFERENCE, "never_installed"]
             ),
-            CredentialManifest(
-                contract_id=UUID(CONTRACTOR_FUNDED), funding_party="user", references=[REFERENCE]
-            ),
+            CredentialManifest(contract_id=UUID(CONTRACTOR_CONTRACT), references=[REFERENCE]),
         ]
     )
     stream = _stream(tmp_path, registration)
@@ -219,34 +163,14 @@ async def test_the_heartbeat_reports_each_contracts_references_as_usable_or_not(
     assert sorted(
         second.credentials, key=lambda entry: (str(entry.contract_id), entry.reference)
     ) == [
-        CredentialValidity(contract_id=UUID(ORG_FUNDED), reference=REFERENCE, valid=True),
-        CredentialValidity(contract_id=UUID(ORG_FUNDED), reference="never_installed", valid=False),
-        CredentialValidity(contract_id=UUID(CONTRACTOR_FUNDED), reference=REFERENCE, valid=False),
+        CredentialValidity(contract_id=UUID(ORG_CONTRACT), reference=REFERENCE, valid=True),
+        CredentialValidity(
+            contract_id=UUID(ORG_CONTRACT), reference="never_installed", valid=False
+        ),
+        CredentialValidity(contract_id=UUID(CONTRACTOR_CONTRACT), reference=REFERENCE, valid=True),
     ]
     # Names and booleans only: the value never rides the stream.
     assert INSTALLED not in second.model_dump_json()
-
-
-@pytest.mark.asyncio
-async def test_a_sealed_value_makes_the_contractor_funded_reference_usable(
-    tmp_path: Path,
-) -> None:
-    registration = _Registration(
-        [
-            CredentialManifest(
-                contract_id=UUID(CONTRACTOR_FUNDED), funding_party="user", references=[REFERENCE]
-            )
-        ]
-    )
-    stream = _stream(tmp_path, registration)
-    stream.credentials.deliver(CONTRACTOR_FUNDED, REFERENCE, SEALED)
-
-    await stream.exchange([])
-    await stream.exchange([])
-
-    assert registration.sent[-1].credentials == [
-        CredentialValidity(contract_id=UUID(CONTRACTOR_FUNDED), reference=REFERENCE, valid=True)
-    ]
 
 
 def test_an_ack_with_nothing_to_ask_omits_the_key_a_318_runner_refuses() -> None:
@@ -261,9 +185,30 @@ def test_an_ack_with_nothing_to_ask_omits_the_key_a_318_runner_refuses() -> None
         ).model_dump(mode="json")
 
     assert "credential_manifests" not in ack([])
-    manifest = CredentialManifest(
-        contract_id=UUID(ORG_FUNDED), funding_party="organisation", references=[REFERENCE]
-    )
+    manifest = CredentialManifest(contract_id=UUID(ORG_CONTRACT), references=[REFERENCE])
     assert ack([manifest])["credential_manifests"] == [
-        {"contract_id": ORG_FUNDED, "funding_party": "organisation", "references": [REFERENCE]}
+        {"contract_id": ORG_CONTRACT, "references": [REFERENCE]}
     ]
+
+
+def test_a_324_ack_naming_who_funds_a_contract_is_still_read() -> None:
+    """A control plane on 3.24 still sends `funding_party`; the Runner drops it rather
+    than refusing every beat until the control plane is on 3.25."""
+
+    ack = HeartbeatAck.model_validate(
+        {
+            "runner_id": str(uuid4()),
+            "floor_state": "ok",
+            "contracts_floor": contracts_version,
+            "tag_set_version": 1,
+            "accepts_new_directives": True,
+            "credential_manifests": [
+                {"contract_id": ORG_CONTRACT, "funding_party": "user", "references": [REFERENCE]}
+            ],
+        }
+    )
+
+    assert ack.credential_manifests == [
+        CredentialManifest(contract_id=UUID(ORG_CONTRACT), references=[REFERENCE])
+    ]
+    assert ack.llm_contracts is None
