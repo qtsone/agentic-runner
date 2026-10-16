@@ -301,6 +301,17 @@ async def test_a_host_key_directive_never_falls_back_to_a_delivered_key(
     assert provider.keys_seen == ["Bearer sk-host"]
 
 
+def test_a_delivered_only_call_never_reaches_the_stores_key() -> None:
+    """A pool Runner's Directive that names no access, from a control plane below 3.25."""
+
+    slots = SlotStore()
+    slots._host["openai"] = provider_slot("sk-host", "openai")
+
+    assert slots.resolve(CONTRACT, "openai", delivered_only=True) is None
+    assert not slots.holds(CONTRACT, "openai", delivered_only=True)
+    assert slots.holds(CONTRACT, "openai")
+
+
 @pytest.mark.asyncio
 async def test_a_host_key_the_provider_refuses_is_reported_and_not_served(
     provider: FakeProvider,

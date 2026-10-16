@@ -364,19 +364,26 @@ class SlotStore:
         self._host_probes.pop(provider, None)
 
     def resolve(
-        self, contract_id: UUID | None, provider: str | None, *, host_key_only: bool = False
+        self,
+        contract_id: UUID | None,
+        provider: str | None,
+        *,
+        host_key_only: bool = False,
+        delivered_only: bool = False,
     ) -> CredentialSlot | None:
         """The slot this call spends, read at the call (22 A8).
 
         ``host_key_only`` is a Directive routed to ``host_key``: the store's key or
-        nothing, never a delivered one. ``provider`` None is a caller with no Agent
-        Runtime (the triage turn), which speaks the OpenAI-compatible wire and takes the
-        first key held, OpenAI's first.
+        nothing, never a delivered one. ``delivered_only`` is a pool Runner's Directive
+        from a control plane below 3.25, which names no access: such a Runner never spent
+        its store's key before, and the old control plane caps none of that spend.
+        ``provider`` None is a caller with no Agent Runtime (the triage turn), which speaks
+        the OpenAI-compatible wire and takes the first key held, OpenAI's first.
         """
 
         for candidate in self._candidates(contract_id, provider):
             slot = None if host_key_only else self._delivered(contract_id, candidate)
-            if slot is None:
+            if slot is None and not delivered_only:
                 slot = self._host.get(candidate)
             if slot is not None:
                 if contract_id is not None:
@@ -384,13 +391,16 @@ class SlotStore:
                 return slot
         return None
 
-    def holds(self, contract_id: UUID | None, provider: str | None) -> bool:
+    def holds(
+        self, contract_id: UUID | None, provider: str | None, *, delivered_only: bool = False
+    ) -> bool:
         """Whether a call for this Contract and provider would find a slot -- without the
         use stamp :meth:`resolve` leaves, because choosing a Directive's mode spends
         nothing."""
 
         return any(
-            self._delivered(contract_id, candidate) is not None or candidate in self._host
+            self._delivered(contract_id, candidate) is not None
+            or (not delivered_only and candidate in self._host)
             for candidate in self._candidates(contract_id, provider)
         )
 
@@ -568,6 +578,8 @@ class AttemptHandle:
     # A Directive routed to `host_key`: the store's key only, so a key that leaves the
     # store mid-Directive fails its next call rather than falling back to another.
     host_key_only: bool = False
+    # A pool Runner's Directive that names no access (`SlotStore.resolve`).
+    delivered_only: bool = False
 
     def env(self, cli_kind: str) -> dict[str, str]:
         return attempt_env(cli_kind, base_url=self.base_url, token=self.token)
@@ -663,6 +675,7 @@ class LlmProxy:
         reserve_max_tokens: int | None = None,
         provider: str | None = None,
         host_key_only: bool = False,
+        delivered_only: bool = False,
     ) -> AsyncIterator[AttemptHandle]:
         """Admit one Directive attempt for as long as it runs, and no longer.
 
@@ -683,6 +696,7 @@ class LlmProxy:
             reserve_max_tokens=reserve_max_tokens,
             provider=provider,
             host_key_only=host_key_only,
+            delivered_only=delivered_only,
         )
         self._attempts[attempt_id] = handle
         try:
@@ -725,7 +739,10 @@ class LlmProxy:
             return
 
         slot = self.slots.resolve(
-            attempt.contract_id, attempt.provider, host_key_only=attempt.host_key_only
+            attempt.contract_id,
+            attempt.provider,
+            host_key_only=attempt.host_key_only,
+            delivered_only=attempt.delivered_only,
         )
         if slot is None:
             await self._refused(attempt, reason="slot_missing")

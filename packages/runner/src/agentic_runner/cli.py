@@ -38,6 +38,7 @@ import asyncio
 import getpass
 import json
 import os
+import re
 import socket
 import sys
 from collections.abc import Sequence
@@ -411,15 +412,30 @@ def _image_attestation() -> HostAttestation:
 
 
 def _run_install() -> RunnerInstall:
-    """Where a command reaches this ``run``: Helm or Docker with the hostname -- the pod
-    name under Helm, the container id under Docker -- and anything else as a workstation,
-    whose hostname can name its person and is never reported (rev 3)."""
+    """Where a command reaches this ``run``: Helm with the pod name, Docker with the
+    container id, and anything else as a workstation, whose hostname can name its person
+    and is never reported (rev 3).
+
+    Docker's hostname is sent only in the container-id shape Docker gives it: with
+    ``--network host`` it is the machine's own name, and with ``--hostname`` whatever the
+    operator chose. A name the schema refuses is sent as none rather than stop the start.
+    """
 
     if os.environ.get("KUBERNETES_SERVICE_HOST"):
-        return RunnerInstall(target=InstallTarget.HELM, hostname=socket.gethostname() or None)
-    if _in_docker():
-        return RunnerInstall(target=InstallTarget.DOCKER, hostname=socket.gethostname() or None)
-    return RunnerInstall(target=InstallTarget.WORKSTATION)
+        target, hostname = InstallTarget.HELM, socket.gethostname()
+    elif _in_docker():
+        target, hostname = InstallTarget.DOCKER, socket.gethostname()
+        if not _CONTAINER_ID.fullmatch(hostname):
+            hostname = ""
+    else:
+        return RunnerInstall(target=InstallTarget.WORKSTATION)
+    try:
+        return RunnerInstall(target=target, hostname=hostname or None)
+    except ValueError:
+        return RunnerInstall(target=target)
+
+
+_CONTAINER_ID = re.compile(r"[0-9a-f]{12}")
 
 
 def _in_docker() -> bool:

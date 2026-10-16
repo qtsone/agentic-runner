@@ -247,6 +247,8 @@ PIDFILE_NAME = "runner.pid"
 HEARTBEAT_STAMP_NAME = "last-heartbeat"
 # The keys `agentic-runner sign-in` stores on a container Runner (`own_store`).
 OWN_STORE_DIR = "credentials"
+# How long a store key the provider refused waits before it is probed again.
+HOST_KEY_REPROBE_SECONDS = 300.0
 # Every top-level state file the Runner reads back. A workstation's state directory also
 # holds files the Runner only writes or the OS service manager owns (`runner.log`), so the
 # start check names these rather than refusing whatever else sits beside them.
@@ -828,6 +830,7 @@ class ControlPlaneStream:
     # The host store's keys offered to the proxy, by key name, as a digest: a changed
     # value is probed again, an unchanged one is not.
     _offered_host: dict[str, str] = field(default_factory=dict)
+    _host_probed_at: dict[str, float] = field(default_factory=dict)
     # Rev 3: the Contracts the last ack said this Runner serves; None until an ack from a
     # control plane on 3.25 named them, and the LLM access report is sent only after.
     _llm_contracts: list[ContractLlmTerms] | None = None
@@ -1105,19 +1108,28 @@ class ControlPlaneStream:
 
         Read every beat, so a key put straight into the store (``credential set``, the
         chart's Secret, a mounted folder, ``sign-in``) reaches the proxy within one beat.
-        Probed only when the value changed; a removed key stops serving at once.
+        Read on a thread: a workstation's store is the OS keychain, one subprocess per key.
+        Probed when the value changed, and a refused one again after
+        ``HOST_KEY_REPROBE_SECONDS`` -- the probe also answers no on a network fault, and
+        nobody re-delivers a store key. A removed key stops serving at once.
         """
 
         for key_name, endpoint in sorted(self.llm_slots.items()):
-            value = self.credentials.host_store.get(key_name)
+            value = await asyncio.to_thread(self.credentials.host_store.get, key_name)
             if value is None:
                 if self._offered_host.pop(key_name, None) is not None:
+                    self._host_probed_at.pop(key_name, None)
                     self.proxy.slots.drop_host(endpoint.name)
                 continue
             digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-            if self._offered_host.get(key_name) == digest:
+            refused = self.proxy.slots.host_probe(endpoint.name) == SlotProbe.INVALID
+            due = self.monotonic() - self._host_probed_at.get(key_name, 0.0)
+            if self._offered_host.get(key_name) == digest and not (
+                refused and due >= HOST_KEY_REPROBE_SECONDS
+            ):
                 continue
             self._offered_host[key_name] = digest
+            self._host_probed_at[key_name] = self.monotonic()
             await self.proxy.slots.put_host(
                 endpoint.slot(reference=key_name, key_id=f"{key_name}@host", value=value)
             )

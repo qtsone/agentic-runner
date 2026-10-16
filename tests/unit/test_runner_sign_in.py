@@ -459,23 +459,41 @@ async def _unexpected(*_args: Any, **_kwargs: Any) -> int:
 
 
 @pytest.mark.parametrize(
-    ("kubernetes", "docker", "expected"),
+    ("kubernetes", "docker", "hostname", "expected"),
     [
-        ("10.0.0.1", False, RunnerInstall(target=InstallTarget.HELM, hostname="runner-0")),
-        (None, True, RunnerInstall(target=InstallTarget.DOCKER, hostname="runner-0")),
+        (
+            "10.0.0.1",
+            False,
+            "runner-0",
+            RunnerInstall(target=InstallTarget.HELM, hostname="runner-0"),
+        ),
+        (
+            None,
+            True,
+            "3f2a1b4c5d6e",
+            RunnerInstall(target=InstallTarget.DOCKER, hostname="3f2a1b4c5d6e"),
+        ),
+        # `--network host` gives the machine's own name, `--hostname` the operator's: not sent.
+        (None, True, "alices-laptop", RunnerInstall(target=InstallTarget.DOCKER)),
+        # A name the schema refuses is sent as none rather than stop the Runner starting.
+        ("10.0.0.1", False, "bad_name", RunnerInstall(target=InstallTarget.HELM)),
         # A bare `run` outside a container: a person's machine, whose name is never sent.
-        (None, False, RunnerInstall(target=InstallTarget.WORKSTATION)),
+        (None, False, "alices-laptop", RunnerInstall(target=InstallTarget.WORKSTATION)),
     ],
 )
 def test_the_hostname_is_reported_only_in_a_container(
-    monkeypatch: pytest.MonkeyPatch, kubernetes: str | None, docker: bool, expected: RunnerInstall
+    monkeypatch: pytest.MonkeyPatch,
+    kubernetes: str | None,
+    docker: bool,
+    hostname: str,
+    expected: RunnerInstall,
 ) -> None:
     if kubernetes is None:
         monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     else:
         monkeypatch.setenv("KUBERNETES_SERVICE_HOST", kubernetes)
     monkeypatch.setattr(cli, "_in_docker", lambda: docker)
-    monkeypatch.setattr(cli.socket, "gethostname", lambda: "runner-0")
+    monkeypatch.setattr(cli.socket, "gethostname", lambda: hostname)
 
     assert cli._run_install() == expected
 

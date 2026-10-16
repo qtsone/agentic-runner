@@ -102,7 +102,12 @@ def subscription_report(
         return RuntimeSubscriptionReport(cli_kind=cli_kind, state=SubscriptionState.NONE)
     if cli_kind == "claude_code" and _expired(root / OAUTH_TOKEN_FILE, now):
         return RuntimeSubscriptionReport(cli_kind=cli_kind, state=SubscriptionState.EXPIRED)
-    used_up = [window for window in windows or () if window.used_percent >= 100.0]
+    # A window whose reset has passed holds nothing, even before the next read says so.
+    used_up = [
+        window
+        for window in windows or ()
+        if window.used_percent >= 100.0 and (window.resets_at is None or window.resets_at > now)
+    ]
     if used_up:
         resets = [window.resets_at for window in used_up if window.resets_at is not None]
         return RuntimeSubscriptionReport(

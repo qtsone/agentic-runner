@@ -2736,6 +2736,7 @@ class RunnerRalphActivities:
                         host_key_only=(
                             access is not None and access.kind == LlmAccessKind.HOST_KEY
                         ),
+                        delivered_only=access is None and not self._personal_runner(),
                     )
                 )
                 callback_env.update(proxy_attempt.env(state.cli_kind))
@@ -3198,8 +3199,17 @@ class RunnerRalphActivities:
         if bool(getattr(runtime, "host_api_key", False)):
             return True
         return self._llm_proxy is not None and self._llm_proxy.slots.holds(
-            _optional_uuid(state.contract_id), provider_for(state.cli_kind)
+            _optional_uuid(state.contract_id),
+            provider_for(state.cli_kind),
+            delivered_only=not self._personal_runner(),
         )
+
+    def _personal_runner(self) -> bool:
+        """Hosted by its person. Only such a Runner spends its store's key on a Directive
+        that names no access (a control plane below 3.25): a pool Runner's key never
+        reached the proxy before, and that control plane caps none of its spend."""
+
+        return self._routing_identity is not None and self._routing_identity.host_party == "user"
 
     def _host_key_held(self, state: _RuntimeContextState) -> bool:
         provider = provider_for(state.cli_kind)

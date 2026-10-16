@@ -159,7 +159,9 @@ class _Proxy:
 
     def __init__(self, *, holds: bool, host_key: bool = False) -> None:
         self.slots = SimpleNamespace(
-            holds=lambda _contract_id, _provider: holds or host_key,
+            holds=lambda _contract_id, _provider, delivered_only=False: (
+                holds or (host_key and not delivered_only)
+            ),
             holds_host=lambda _provider: host_key,
         )
         self.attempts = 0
@@ -247,6 +249,43 @@ def _branch_pr_input(host_party: str, access: LlmAccess | None = None) -> Branch
 
 
 # ------------------------------------------------------------------ the named access (rev 3)
+
+
+@pytest.mark.asyncio
+async def test_without_named_access_a_pool_runner_never_spends_its_stores_key(
+    tmp_path: Path,
+) -> None:
+    """A control plane below 3.25 names no access and caps none of a pool's store spend,
+    so a pool Runner keeps today's choice: its store's key is not a key present."""
+
+    client = _Client()
+    runtime = _Codex()
+    proxy = _Proxy(holds=False, host_key=True)
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            client, runtime, tmp_path=tmp_path, host_party="organisation", proxy=proxy
+        ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+
+    assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
+    assert (runtime.requests, proxy.attempts) == ([], 0)
+
+
+@pytest.mark.asyncio
+async def test_without_named_access_a_personal_runner_spends_its_stores_key(
+    tmp_path: Path,
+) -> None:
+    runtime = _Codex()
+    proxy = _Proxy(holds=False, host_key=True)
+
+    await _activities(
+        _Client(), runtime, tmp_path=tmp_path, host_party="user", proxy=proxy
+    ).create_or_update_branch_pr(_branch_pr_input("user"))
+
+    [request] = runtime.requests
+    assert request.auth_mode == AuthMode.API_KEY
+    [admitted] = proxy.admitted
+    assert (admitted["host_key_only"], admitted["delivered_only"]) == (False, False)
 
 
 @pytest.mark.asyncio

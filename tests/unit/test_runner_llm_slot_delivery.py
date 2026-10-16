@@ -322,6 +322,32 @@ async def test_a_key_put_straight_into_the_store_reaches_the_proxy_for_every_con
 
 
 @pytest.mark.asyncio
+async def test_a_refused_store_key_is_probed_again_after_a_while(tmp_path: Path) -> None:
+    """The probe says no on a network fault too, and nobody re-delivers a store key: a
+    refused one is retried after `HOST_KEY_REPROBE_SECONDS`, not left out until restart."""
+
+    registration, probe = _Registration(), _Probe(valid=False)
+    now = [1_000.0]
+    store = FakeCredentialStore({"OPENAI_API_KEY": "sk-host"})
+    stream = _stream(tmp_path, registration, probe, store=store, monotonic=lambda: now[0])
+
+    await stream.exchange([])
+    await stream.exchange([])
+    assert len(probe.probed) == 1
+    assert not stream.proxy.slots.holds_host("openai")
+
+    probe.valid = True
+    now[0] += service.HOST_KEY_REPROBE_SECONDS
+    await stream.exchange([])
+
+    assert len(probe.probed) == 2
+    assert stream.proxy.slots.holds_host("openai")
+    now[0] += service.HOST_KEY_REPROBE_SECONDS
+    await stream.exchange([])
+    assert len(probe.probed) == 2, "a key in service is not probed again"
+
+
+@pytest.mark.asyncio
 async def test_a_key_taken_out_of_the_store_stops_serving(tmp_path: Path) -> None:
     registration, probe = _Registration(), _Probe()
     store = FakeCredentialStore({"OPENAI_API_KEY": "sk-host"})
