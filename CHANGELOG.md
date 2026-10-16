@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.24.0](https://github.com/qtsone/agentic-runner/compare/v3.23.1...v3.24.0) (2026-10-16)
+
+
+### Features
+
+* **claude:** run a Claude subscription on the default Claude Code runtime (QTS-1737) ([#70](https://github.com/qtsone/agentic-runner/issues/70)) ([57677c9](https://github.com/qtsone/agentic-runner/commit/57677c92c264ead881b1d436f9f13d9984e476db))
+
 ## [3.23.1](https://github.com/qtsone/agentic-runner/compare/v3.23.0...v3.23.1) (2026-10-15)
 
 
