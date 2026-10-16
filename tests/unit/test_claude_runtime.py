@@ -256,6 +256,9 @@ async def test_a_subscription_directive_runs_behind_the_sign_in_launcher_without
     assert claude[:2] == ["claude", "--print"]
     assert "--bare" not in claude
     assert claude[claude.index("--setting-sources") + 1] == ""
+    # With no `--bare` and no granted server, only this keeps the Workspace's `.mcp.json` out.
+    assert "--strict-mcp-config" in claude
+    assert "--mcp-config" not in claude
     # The proxy pair never reaches a subscription turn, so its bearer goes nowhere else.
     assert call.env == {
         "PATH": os.environ["PATH"],

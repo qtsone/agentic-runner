@@ -142,9 +142,11 @@ class ClaudeRuntime(ResumableAgentRuntime):
 
         model = request.model or self._settings.CLAUDE_MODEL
         argv = _claude_argv(model, subscription=subscription)
-        if request.mcp_servers is not None:
+        if request.mcp_servers is not None or subscription:
             # Only what the Grant let through: `--strict-mcp-config` ignores every other
-            # MCP source, so nothing in the harness root can add an ungranted server.
+            # MCP source, so nothing in the harness root can add an ungranted server. A
+            # subscription turn always pins it: without `--bare` the CLI would otherwise
+            # read the Workspace's `.mcp.json` when the Grant names no server.
             if request.mcp_servers:
                 argv += ["--mcp-config", claude_mcp_config(request.mcp_servers)]
             argv.append("--strict-mcp-config")
