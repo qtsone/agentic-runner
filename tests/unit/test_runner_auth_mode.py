@@ -239,6 +239,7 @@ def test_a_directive_runs_on_exactly_the_access_it_was_routed_with(
             subscription=subscription,
             subscription_right=SubscriptionRight.ALLOWED,
             runtime_modes=modes,
+            pool_key_held=False,
         )
 
     if isinstance(expected, AuthMode):
@@ -273,6 +274,7 @@ def test_a_subscription_runs_only_where_the_last_ack_allows_it(
             subscription=SIGNED_IN,
             subscription_right=right,
             runtime_modes=CODEX_MODES,
+            pool_key_held=False,
         )
 
     if isinstance(expected, AuthMode):

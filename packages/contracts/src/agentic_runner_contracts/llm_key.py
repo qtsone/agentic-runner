@@ -3,16 +3,17 @@
 An Organisation (or an Account) stores a provider's API key once for its pool of Runners.
 The admin's browser splits it into two shares -- a random share and the key XOR that
 share -- and seals the random one to the pool's **Pool Key**, an X25519 key pair whose
-private half only the pool's Runners hold. QTS keeps the sealed share and the other share,
-which it encrypts with a platform secret held outside its database. Neither share alone
-says anything about the key.
+private half only the pool's Runners hold. The control plane keeps the sealed share and
+the other share, which it encrypts with a platform secret held outside its database.
+Neither share alone says anything about the key.
 
 At Directive start a pool Runner asks the Runner API for the LLM Key its ``llm_access``
-names. QTS answers with :class:`LlmKeyRelease`: the sealed share as stored, and its own
-share sealed to that Runner's Recipient Key. The Runner opens the first with the Pool Key
-and the second with its Recipient Key, joins them, and holds the key in memory for that
-one Directive. So a copy of QTS's data opens nothing, a leaked Pool Key opens nothing
-without QTS's share, and QTS alone cannot open a key.
+names. The control plane answers with :class:`LlmKeyRelease`: the sealed share as stored,
+and its own share sealed to that Runner's Recipient Key. The Runner opens the first with
+the Pool Key and the second with its Recipient Key, joins them, and holds the key in
+memory for that one Directive. So a copy of the control plane's data opens nothing, a
+leaked Pool Key opens nothing without the control plane's share, and the control plane
+alone cannot open a key.
 
 Both shares travel in the console's existing sealed box (X25519, HKDF-SHA256, AES-GCM:
 ``agentic_runner.sealed_box`` and the console's ``sealed-credential.ts``) unchanged. What
@@ -74,7 +75,8 @@ def pool_share_binding(*, pool_id: str, llm_key_id: str, pool_key_fingerprint: s
 
 
 def platform_share_binding(*, llm_key_id: str, recipient_key_id: str) -> bytes:
-    """The AEAD associated data of QTS's share, sealed to one Runner's Recipient Key."""
+    """The AEAD associated data of the control plane's share, sealed to one Runner's
+    Recipient Key."""
 
     return "|".join((LLM_KEY_DOMAIN, "platform-share", llm_key_id, recipient_key_id)).encode(
         "utf-8"
@@ -99,7 +101,9 @@ def join_llm_key(pool_share: str, platform_share: str) -> str:
 
     pool = _unb64(pool_share)
     platform = _unb64(platform_share)
-    if not pool or len(pool) != len(platform):
+    if not pool:
+        raise ValueError("an LLM Key share is empty")
+    if len(pool) != len(platform):
         raise ValueError("the two shares are not one LLM Key's: their lengths differ")
     try:
         return bytes(left ^ right for left, right in zip(pool, platform, strict=True)).decode(

@@ -70,7 +70,8 @@ SUBSCRIPTION_NOT_SIGNED_IN_RULE: Final[str] = "subscription_not_signed_in"
 SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE: Final[str] = "subscription_off_personal_runner"
 SUBSCRIPTION_NO_RIGHT_RULE: Final[str] = "subscription_no_right"
 SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE: Final[str] = "subscription_not_acknowledged"
-# An `llm_key` Directive on a Runner given no Pool Key; one whose release QTS refused; and
+# An `llm_key` Directive on a Runner given no Pool Key; one whose release the control plane
+# refused; and
 # one whose release does not open here (an old Pool Key, or a share bound to another key).
 POOL_KEY_NOT_HELD_RULE: Final[str] = "pool_key_not_held"
 LLM_KEY_RELEASE_REFUSED_RULE: Final[str] = "llm_key_release_refused"
@@ -160,16 +161,16 @@ def require_named_access(
     subscription: SubscriptionState,
     subscription_right: SubscriptionRight | None,
     runtime_modes: Collection[AuthMode],
-    pool_key_held: bool = False,
+    pool_key_held: bool,
 ) -> AuthMode:
     """The mode the named access runs in, or a refusal naming what is missing.
 
     ``host_key_held`` is the provider's key in this Runner's own store, serving in the
     proxy; ``subscription`` the Contract's harness root for the Directive's kind;
     ``pool_key_held`` whether this Runner was given a Pool Key, without which none of the
-    pool's LLM Keys opens here. A
-    subscription runs only on its person's own Runner (rev 3: never on a pool Runner),
-    and only while it is signed in, unexpired and not at its usage limit.
+    pool's LLM Keys opens here. A subscription runs only on its person's own Runner (rev 3:
+    never on a pool Runner), and only while it is signed in, unexpired and not at its
+    usage limit.
 
     ``subscription_right`` is what the last heartbeat ack said of the Contract's own
     subscription (``llm_contracts``), so a misrouted Directive is refused here as well as

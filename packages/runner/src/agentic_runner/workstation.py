@@ -49,7 +49,7 @@ from agentic_runner.cli_floor import CLI_FLOORS, CLI_NAMES, meets_floor, parse_c
 from agentic_runner.config import CONFIG_FILE_ENV
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
-from agentic_runner.pool_key import save_pool_key
+from agentic_runner.pool_key import parse_pool_key, save_pool_key
 from agentic_runner.registration import load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES
@@ -659,9 +659,10 @@ async def install(
     """
 
     require_any_cli(settings.path)
-    paths.create()
     if pool_key:
-        save_pool_key(paths.state_dir, pool_key)
+        # Checked before anything registers; kept only once something has.
+        parse_pool_key(pool_key)
+    paths.create()
     settings.save(paths)
     already_registered = load_state(paths.state_dir) is not None
     state, outcome = await service.register(
@@ -672,6 +673,8 @@ async def install(
         registration_token=registration_token,
         isolation=IsolationMode.NONE,
     )
+    if pool_key:
+        save_pool_key(paths.state_dir, pool_key)
     LifecycleOutbox(paths.state_dir).add(LifecycleKind.INSTALL, datetime.now(UTC))
     definition = service_definition(paths, settings, platform=platform, home=home)
     definition.path.parent.mkdir(parents=True, exist_ok=True)

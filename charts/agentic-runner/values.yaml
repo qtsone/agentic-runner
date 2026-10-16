@@ -35,8 +35,8 @@ registrationToken:
 agentToken:
   value: ""
   existingSecret: ""
-# The Organisation's Pool Key (Spec: Runners rev 3), shown once on the Runners page: only
-# for a Runner of the pool that opens the pool's LLM Keys. One Secret for every replica.
+# The pool's Pool Key (Spec: Runners rev 3), shown once on the Runners page: only for a
+# Runner of the pool that opens the pool's LLM Keys. One Secret for every replica.
 # Either paste it here (rendered into a Secret) or name a Secret holding it under the key
 # `poolKey`. Empty: the Runner holds no Pool Key and opens no LLM Key.
 poolKey:

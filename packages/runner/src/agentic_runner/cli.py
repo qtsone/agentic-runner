@@ -188,8 +188,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     install.add_argument(
         "--pool-key",
         action="store_true",
-        help=f"ask for the Organisation's Pool Key (or set {POOL_KEY_ENV}), for a Runner of its "
-        "pool that opens the pool's LLM Keys",
+        help=f"ask for the Pool Key of this Runner's pool (or set {POOL_KEY_ENV}), to open the "
+        "pool's LLM Keys",
     )
     install.add_argument("--no-start", action="store_true", help="write the agent, do not start")
     install.add_argument("--root", default=None, type=Path, help="state root (default per OS)")

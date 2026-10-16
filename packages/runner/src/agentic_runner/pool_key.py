@@ -132,6 +132,10 @@ class LlmKeyOpener:
     def fingerprint(self) -> str | None:
         return self._pool_key.fingerprint if self._pool_key is not None else None
 
+    @property
+    def holds_pool_key(self) -> bool:
+        return self._pool_key is not None
+
     def open(self, release: LlmKeyRelease) -> CredentialSlot:
         """The key the two shares make, as a slot for the release's provider.
 
@@ -140,10 +144,9 @@ class LlmKeyOpener:
         the same answer to the holder, and telling them apart would be an oracle.
         """
 
+        unopenable = f"LLM Key {release.llm_key_id} does not open with this Runner's keys"
         if self._pool_key is None or release.pool_key_fingerprint != self._pool_key.fingerprint:
-            raise LlmKeyUnopenableError(
-                f"LLM Key {release.llm_key_id} is sealed to a Pool Key this Runner does not hold"
-            )
+            raise LlmKeyUnopenableError(unopenable)
         try:
             pool_share = open_sealed(
                 private_key=self._pool_key.private_key,
@@ -157,16 +160,15 @@ class LlmKeyOpener:
             )
             value = join_llm_key(pool_share, platform_share)
         except (SealedCredentialError, ValueError) as error:
-            raise LlmKeyUnopenableError(
-                f"LLM Key {release.llm_key_id} does not open with this Runner's keys"
-            ) from error
+            raise LlmKeyUnopenableError(unopenable) from error
         key_name = PROVIDER_KEY_NAMES[release.provider]
         return self._endpoints[key_name].slot(
             reference=key_name, key_id=release.llm_key_id, value=value
         )
 
     def _recipient_private_key(self, recipient_key_id: str) -> str:
-        # The previous key too: QTS may have sealed its share just before a renewal.
+        # The previous key too: the control plane may have sealed its share just before a
+        # renewal.
         for pair in (self._recipient_keys.current(), self._recipient_keys.previous()):
             if pair is not None and pair.key_id == recipient_key_id:
                 return pair.private_key

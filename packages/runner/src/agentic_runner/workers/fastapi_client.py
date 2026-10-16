@@ -181,7 +181,8 @@ class RunnerFastApiClient:
     ) -> dict[str, Any]:
         """The two sealed shares of the LLM Key a Directive's ``llm_access`` names (Spec:
         Runners rev 3). ``payload`` is ``LlmKeyReleaseRequest``'s shape; the Directive
-        token says which Runner and Directive ask, which is what QTS releases against."""
+        token says which Runner and Directive ask, which is what the control plane releases
+        against."""
 
         return await self._post(
             f"{self._prefix}/work-records/{_path_segment(work_record_id)}"

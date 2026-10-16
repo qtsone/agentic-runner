@@ -620,9 +620,10 @@ async def _beats(plane: FakeControlPlane, count: int) -> list[Any]:
 
 @pytest.mark.asyncio
 async def test_a_pool_runner_reports_the_pool_key_it_holds_once_the_ack_names_the_pool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Rev 3: the fingerprint, never the key, and only to a control plane that asked."""
+    """Rev 3: the fingerprint, never the key, and only to a control plane that asked. One
+    other than the pool's current Pool Key is the operator's to replace, and logged."""
 
     _environment(monkeypatch, tmp_path, isolation="none")
     pool_key = generate_recipient_key()
@@ -636,6 +637,11 @@ async def test_a_pool_runner_reports_the_pool_key_it_holds_once_the_ack_names_th
     assert second["pool_key_fingerprint"] == pool_key.fingerprint
     assert pool_key.private_key not in json.dumps([first, second])
     assert "AGENTIC_RUNNER_POOL_KEY" not in os.environ
+    [warning] = [
+        r.getMessage() for r in caplog.records if "not the pool's current" in r.getMessage()
+    ]
+    assert pool_key.fingerprint in warning and current in warning
+    assert pool_key.private_key not in caplog.text
 
 
 @pytest.mark.parametrize("pool", [None, PoolTerms()])

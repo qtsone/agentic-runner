@@ -3181,8 +3181,7 @@ class RunnerRalphActivities:
                     subscription=self._subscription_state(state),
                     subscription_right=self._subscription_right(state),
                     runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
-                    pool_key_held=self._llm_keys is not None
-                    and self._llm_keys.fingerprint is not None,
+                    pool_key_held=self._llm_keys is not None and self._llm_keys.holds_pool_key,
                 )
             return choose_auth_mode(
                 host_party=host_party,
@@ -3207,14 +3206,15 @@ class RunnerRalphActivities:
     ) -> CredentialSlot:
         """The pool's LLM Key this Directive was routed to, opened in memory (rev 3).
 
-        QTS releases it only to a live Runner of the key's pool for a Directive in flight
-        on it, which the Directive token proves. A refusal or a release that does not
-        open fails the Directive closed, like any access the Runner no longer holds: a
-        retry would be refused the same way.
+        The control plane releases it only to a live Runner of the key's pool for a
+        Directive in flight on it, which the Directive token proves. A refusal or a release
+        that does not open fails the Directive closed, like any access the Runner no longer
+        holds: a retry would be refused the same way.
         """
 
         fingerprint = self._llm_keys.fingerprint if self._llm_keys is not None else None
         try:
+            # Refused already by `require_named_access`; this narrows the types.
             if self._llm_keys is None or fingerprint is None:
                 raise LlmKeyUnopenableError("this Runner holds no Pool Key")
             payload = await self._fastapi_client.release_llm_key(
@@ -3227,20 +3227,21 @@ class RunnerRalphActivities:
             try:
                 release = LlmKeyRelease.model_validate(payload)
             except ValidationError as error:
-                unreadable = "QTS released an LLM Key this Runner cannot read"
+                unreadable = "the control plane released an LLM Key this Runner cannot read"
                 raise LlmKeyUnopenableError(unreadable) from error
             if release.llm_key_id != access.llm_key_id or release.provider != provider_for(
                 state.cli_kind
             ):
                 raise LlmKeyUnopenableError(
-                    f"QTS released LLM Key {release.llm_key_id} for {release.provider.value}, "
+                    f"the control plane released LLM Key {release.llm_key_id} for "
+                    f"{release.provider.value}, "
                     f"not {access.llm_key_id} for the Directive's {state.cli_kind}"
                 )
             return self._llm_keys.open(release)
         except WorkerFastApiClientRejectionError as error:
             refusal = AuthModeRefusedError(
                 LLM_KEY_RELEASE_REFUSED_RULE,
-                f"QTS refused to release LLM Key {access.llm_key_id} to this Runner "
+                f"the control plane refused to release LLM Key {access.llm_key_id} to this Runner "
                 f"({error.status_code})",
             )
         except LlmKeyUnopenableError as error:
