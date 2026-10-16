@@ -45,6 +45,7 @@ from pydantic import (
 )
 
 from agentic_runner_contracts.channel_messages import TranscriptRequest
+from agentic_runner_contracts.llm_access import LlmProvider
 from agentic_runner_contracts.llm_usage import UsageRecord
 from agentic_runner_contracts.oauth_connector import (
     OAuthAuthorizeUrl,
@@ -173,7 +174,8 @@ class RunnerLimitReport(BaseModel):
 
 
 class SlotProbe(StrEnum):
-    """The funder-visible probe result for one credential slot (22 A10)."""
+    """The probe result for one LLM key: a delivered slot (22 A10) or the key in the
+    Runner's own store (Spec: Runners rev 3)."""
 
     VALID = "valid"
     INVALID = "invalid"
@@ -428,9 +430,9 @@ class CredentialValidity(BaseModel):
 
     reference: Annotated[str, StringConstraints(max_length=128)]
     valid: bool
-    # ADR-0022 §7: usability is per Contract, because whether a host's own value is lent
-    # depends on who funds the Contract (§36). Required: a Runner on 3.18 or earlier
-    # never filled this list, so no envelope that parsed before carries an entry.
+    # ADR-0022 §7: usability is per Contract, because a value sealed for one Contract
+    # resolves for it alone. Required: a Runner on 3.18 or earlier never filled this
+    # list, so no envelope that parsed before carries an entry.
     contract_id: UUID
 
 
@@ -443,10 +445,18 @@ class CredentialManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_funding_party(cls, data: Any) -> Any:
+        # A control plane below 3.24 still names who funds the Contract. The Runner's own
+        # store now serves every Contract it runs (ADR-0022 §36 went with `funding`), so
+        # the key says nothing a Runner on 3.24 reads. Remove once the control plane is
+        # on 3.24.
+        if isinstance(data, dict) and "funding_party" in data:
+            return {key: value for key, value in data.items() if key != "funding_party"}
+        return data
+
     contract_id: UUID
-    # `organisation` | `user` -- who pays for the Contract, as
-    # `DirectiveRouting.funding_party` says it (§36).
-    funding_party: Annotated[str, StringConstraints(max_length=32)]
     references: list[Annotated[str, StringConstraints(max_length=128)]] = Field(
         default_factory=list, max_length=CREDENTIAL_REFERENCES_MAX
     )
@@ -545,13 +555,124 @@ class CeilingPush(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _read_retired_org_funded(cls, data: Any) -> Any:
+        # A control plane below 3.24 pushes the Organisation's ceiling for every Contract
+        # and says with `org_funded` whether it applies. From 3.24 the control plane
+        # pushes it only where it applies (the Organisation's ceiling counts the usage on
+        # the Organisation's Runners), so an old push that said "not org-funded" is read
+        # as no Organisation ceiling. Remove once the control plane is on 3.24.
+        if isinstance(data, dict) and "org_funded" in data:
+            org_funded = data["org_funded"] is True
+            data = {key: value for key, value in data.items() if key != "org_funded"}
+            if not org_funded:
+                data["organisation_limit"] = None
+        return data
+
     contract_id: UUID
     contract_limit: int | None = None
     contract_used: int = 0
+    # Set only where the Organisation's ceiling applies to this Runner's usage.
     organisation_limit: int | None = None
     organisation_used: int = 0
-    # The Organisation's ceiling covers its org-funded Contracts only (map 12 B3).
-    org_funded: bool = False
+
+
+class SubscriptionState(StrEnum):
+    """One Agent Runtime's subscription sign-in in one Contract's harness root.
+
+    ``NONE``: no sign-in there. ``EXPIRED``: a sign-in whose lifetime the Runner can read
+    has run out. ``AT_LIMIT``: a usage window is used up until its reset. Read from the
+    harness root and the vendor CLI's own usage report; no probe calls a vendor endpoint
+    with the person's bearer.
+    """
+
+    SIGNED_IN = "signed_in"
+    EXPIRED = "expired"
+    AT_LIMIT = "at_limit"
+    NONE = "none"
+
+
+class ProviderKeyReport(BaseModel):
+    """Whether the Runner's own store holds a provider's key, and that key's probe."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: LlmProvider
+    held: bool
+    probe: SlotProbe = SlotProbe.UNPROBED
+
+
+class RuntimeSubscriptionReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cli_kind: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
+    state: SubscriptionState
+    # Set for `at_limit` only: when the used-up window resets.
+    resets_at: datetime | None = None
+
+
+class ContractLlmAccess(BaseModel):
+    """The LLM access this Runner holds for one Contract it serves (Spec: Runners rev 3).
+
+    The one record of LLM access: the Contract gate, routing and the console read this
+    and nothing else. The store's keys are the host's, so on a pool Runner they repeat for
+    every Contract; a subscription lives in one Contract's harness root.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract_id: UUID
+    keys: list[ProviderKeyReport] = Field(default_factory=list, max_length=8)
+    subscriptions: list[RuntimeSubscriptionReport] = Field(default_factory=list, max_length=8)
+
+
+class InstallTarget(StrEnum):
+    """Which of the three install paths this Runner came from, so the console prints the
+    command that reaches it: ``kubectl exec``, ``docker exec``, or none on a workstation."""
+
+    HELM = "helm"
+    DOCKER = "docker"
+    WORKSTATION = "workstation"
+
+
+class RunnerInstall(BaseModel):
+    """Where to run a command on this Runner. ``hostname`` is the pod name under Helm and
+    the container id under Docker; a workstation's, which can name its person, is never
+    sent, and the schema refuses one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: InstallTarget
+    hostname: (
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def _hostname_only_in_a_container(self) -> RunnerInstall:
+        if self.target == InstallTarget.WORKSTATION and self.hostname is not None:
+            raise ValueError("a workstation Runner never reports its hostname")
+        return self
+
+
+class SubscriptionRight(StrEnum):
+    """Whether the person may sign this Contract in with their own subscription, and if
+    not, why -- so ``agentic-runner sign-in`` can say which of the two is missing."""
+
+    ALLOWED = "allowed"
+    # The Contract lacks `allows_own_subscription`.
+    NO_RIGHT = "no_right"
+    # The right is on, and the person has not acknowledged the subscription terms.
+    NOT_ACKNOWLEDGED = "not_acknowledged"
+
+
+class ContractLlmTerms(BaseModel):
+    """One Contract this Runner serves, as the ack names it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    contract_id: UUID
+    subscription: SubscriptionRight
 
 
 class InstallChannel(StrEnum):
@@ -748,6 +869,14 @@ class HeartbeatEnvelope(BaseModel):
     # ADR-0022 §57-§58: the Runner Limit read at start, on every beat. None from a Runner
     # below 3.21, which the console shows as "not reported" rather than as no limit.
     runner_limit: RunnerLimitReport | None = None
+    # Spec: Runners rev 3: the LLM access held for each Contract the last ack's
+    # `llm_contracts` named, and where a command reaches this Runner. Both None until an
+    # ack has carried `llm_contracts`: that is how the Runner knows the control plane is on
+    # 3.24 and parses them. From 3.24 a Runner that reports no LLM access gets no work.
+    llm_access: list[ContractLlmAccess] | None = Field(
+        default=None, max_length=CREDENTIAL_MANIFESTS_MAX
+    )
+    install: RunnerInstall | None = None
 
     @model_serializer(mode="wrap")
     def _omit_empty_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -764,6 +893,10 @@ class HeartbeatEnvelope(BaseModel):
                 "runner_limit",
             ):
                 if not body.get(name):
+                    body.pop(name, None)
+            # An empty report is still sent: it says the Runner holds no LLM access.
+            for name in ("llm_access", "install"):
+                if body.get(name) is None:
                     body.pop(name, None)
         return body
 
@@ -845,18 +978,29 @@ class HeartbeatAck(BaseModel):
     credential_manifests: list[CredentialManifest] = Field(
         default_factory=list, max_length=CREDENTIAL_MANIFESTS_MAX
     )
+    # Spec: Runners rev 3: every Contract this Runner serves, with whether its person may
+    # sign it in with their own subscription. Authoritative, like `credential_manifests`:
+    # the next envelope reports LLM access for exactly these, and `agentic-runner sign-in`
+    # reads it. A personal Runner serves one. None from a control plane below 3.24; an
+    # empty list says the Runner serves no Contract yet. The ack forbids extra keys, so the
+    # control plane sends it only to a Runner whose heartbeat names contracts 3.24 or later.
+    llm_contracts: list[ContractLlmTerms] | None = Field(
+        default=None, max_length=CREDENTIAL_MANIFESTS_MAX
+    )
 
     @model_serializer(mode="wrap")
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
-        # body that Runner already parses; likewise `tags` for a Runner on 3.19. An empty
-        # tag set is still sent: it says the Runner has no Tags.
+        # body that Runner already parses; likewise `tags` for a Runner on 3.19 and
+        # `llm_contracts` for one on 3.23. An empty tag set or Contract list is still sent:
+        # it says the Runner has no Tags, or serves no Contract.
         body = handler(self)
         if isinstance(body, dict):
             if not body.get("credential_manifests"):
                 body.pop("credential_manifests", None)
-            if body.get("tags") is None:
-                body.pop("tags", None)
+            for name in ("tags", "llm_contracts"):
+                if body.get(name) is None:
+                    body.pop(name, None)
         return body
 
 

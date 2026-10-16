@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
+from agentic_runner_contracts.llm_access import LlmAccess
+
 # In a legacy ``{key: value}`` selector, this value demanded the *key*, whatever its value
 # (25 §9's "presence"); :func:`selector_from_legacy` reads it as ``Exists``.
 PRESENT: Final = ""
@@ -178,10 +180,11 @@ class DirectiveRouting:
     contract_id: str = ""
     # ADR-0022 §22: the selector as requirements. It and the legacy map must both hold.
     requirements: tuple[SelectorRequirement, ...] = ()
-    # `organisation` | `user` -- who pays for the Contract. The Runner lends its host's own
-    # secrets only when this is its host (ADR-0022 §36). Blank from a control plane that
-    # predates the field.
-    funding_party: str = ""
+    # Spec: Runners rev 3: the host's LLM access the control plane chose for this
+    # Directive. The Runner uses exactly this and fails closed when it no longer holds it.
+    # None from a control plane below 3.24, whose Directive keeps the Runner's own choice.
+    # It replaces `funding_party`, which a Runner on 3.24 drops from an older payload.
+    llm_access: LlmAccess | None = None
 
     def selector_requirements(self) -> tuple[SelectorRequirement, ...]:
         """Everything this Directive was routed by: the legacy map and the requirements."""
