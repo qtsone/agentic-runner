@@ -1,0 +1,19 @@
+{
+  "note": "One LLM Key split, sealed and bound by agentic_runner_contracts.llm_key (Spec: Runners rev 3), sealed with agentic_runner.sealed_box.seal. tests/unit/test_llm_key_shares.py opens and joins it; the console's tests read the same file, so the browser's split, seal and bindings match the Runner's. Never a real key.",
+  "llm_key": "sk-ant-api03-fixture-llm-key-never-real",
+  "provider": "anthropic",
+  "pool_id": "3b8e2f61-7c4a-4d19-9e05-6a1f0c2d8b47",
+  "llm_key_id": "c41d9a72-5e3b-4f80-8a16-2d7e9b0f3c58",
+  "pool_key_private": "8PJ/E0n82r1i/l5+E2B0P/zXWqVNMm3Xi17Zu36xSX0=",
+  "pool_key_public": "JAV2oD6c+pIr250KsD9yRQyDPYNMJGNupxziXVttfXc=",
+  "pool_key_fingerprint": "a2bc:88ec:6544:5d48:3a60:b018:03d8:87ff",
+  "pool_share_plaintext": "SRjoLI6XbgNcyoqzxN6SKd/eyryzqNU+gorS2oTm9ZW/arE5Re46",
+  "pool_share_binding": "agentic-os/llm-key/v1|pool-share|3b8e2f61-7c4a-4d19-9e05-6a1f0c2d8b47|c41d9a72-5e3b-4f80-8a16-2d7e9b0f3c58|a2bc:88ec:6544:5d48:3a60:b018:03d8:87ff",
+  "pool_share": "y6p7TgN4q/JtTC23gMUZfUSNZtR7iLeUzo/8eKhhzxI50xdwfK8ANfBcd+KrnpRCd3csFEV1AwCpz+diCXNmRN1O5DVVUE4L/szdDfPtI2MMWUPRcazKAyplxF1M87/Qr/aLAg==",
+  "recipient_key_id": "rk_38edc9f0d175d674c3035817daa2856d",
+  "recipient_private_key": "CLmtRkZ4/eZXd8/22KN/Efi8Z4xloccDjLz9p+G4VHg=",
+  "recipient_public_key": "4NIJ/DTl0jovhpWlPLLUGB3qpGWUpDDzBAZ6kShklhA=",
+  "platform_share_plaintext": "OnPFTeDjQ2Iso7qA6bj7UauruNmexLlTr+G3o6mIkOPaGJxLII9W",
+  "platform_share_binding": "agentic-os/llm-key/v1|platform-share|c41d9a72-5e3b-4f80-8a16-2d7e9b0f3c58|rk_38edc9f0d175d674c3035817daa2856d",
+  "platform_share": "W3ay734a3R5zHWngnHZCO/RS8IZV9alyKyBCVkmkg1KdtpmcI/fSX76Igp2yudVDWfVKZiRnytR+bUMU0nlSHCEHSjg7J2nGtQeseI4o5bkIym9bJgDqW5Oca8SDb7kGEO6SAQ=="
+}

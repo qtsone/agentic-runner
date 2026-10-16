@@ -580,6 +580,10 @@ class AttemptHandle:
     host_key_only: bool = False
     # A pool Runner's Directive that names no access (`SlotStore.resolve`).
     delivered_only: bool = False
+    # The pool's LLM Key released for this Directive (Spec: Runners rev 3): held here and
+    # nowhere else, so it is spent by this attempt only and dropped with it. Never in the
+    # slot store, which serves every attempt and is reported on the heartbeat.
+    llm_key: CredentialSlot | None = field(default=None, repr=False)
 
     def env(self, cli_kind: str) -> dict[str, str]:
         return attempt_env(cli_kind, base_url=self.base_url, token=self.token)
@@ -676,6 +680,7 @@ class LlmProxy:
         provider: str | None = None,
         host_key_only: bool = False,
         delivered_only: bool = False,
+        llm_key: CredentialSlot | None = None,
     ) -> AsyncIterator[AttemptHandle]:
         """Admit one Directive attempt for as long as it runs, and no longer.
 
@@ -697,6 +702,7 @@ class LlmProxy:
             provider=provider,
             host_key_only=host_key_only,
             delivered_only=delivered_only,
+            llm_key=llm_key,
         )
         self._attempts[attempt_id] = handle
         try:
@@ -738,7 +744,7 @@ class LlmProxy:
             await write_json(writer, 404, {"detail": "no such proxy route"})
             return
 
-        slot = self.slots.resolve(
+        slot = attempt.llm_key or self.slots.resolve(
             attempt.contract_id,
             attempt.provider,
             host_key_only=attempt.host_key_only,

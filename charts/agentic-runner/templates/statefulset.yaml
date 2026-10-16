@@ -102,6 +102,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "agentic-runner.registrationTokenSecret" . }}
                   key: token
+            {{- if or .Values.poolKey.value .Values.poolKey.existingSecret }}
+            - name: AGENTIC_RUNNER_POOL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentic-runner.poolKeySecret" . }}
+                  key: poolKey
+            {{- end }}
             - name: TEMPORAL_ADDRESS
               value: {{ .Values.temporal.address | quote }}
             - name: AGENTIC_TEMPORAL_TLS

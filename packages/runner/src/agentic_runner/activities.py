@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, NoReturn, Protocol
 from uuid import UUID
 
+from pydantic import ValidationError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -46,6 +47,8 @@ from agentic_runner.attempts import (
     refuse_if_prior_attempt_alive,
 )
 from agentic_runner.auth_mode import (
+    LLM_KEY_RELEASE_REFUSED_RULE,
+    LLM_KEY_UNOPENABLE_RULE,
     AuthModeRefusedError,
     choose_auth_mode,
     is_shared_runner,
@@ -115,7 +118,7 @@ from agentic_runner.integrations.git.workspace import (
     contract_workspace_path,
 )
 from agentic_runner.integrations.github.auth import GitHubAppAuthenticationError
-from agentic_runner.llm_proxy import LlmProxy
+from agentic_runner.llm_proxy import CredentialSlot, LlmProxy
 from agentic_runner.mcp import (
     MCP_ASSEMBLY_SOURCE,
     McpPlan,
@@ -126,6 +129,7 @@ from agentic_runner.mcp import (
     plan_mcp,
 )
 from agentic_runner.message_store import MessageStore, WorkflowSignaller
+from agentic_runner.pool_key import LlmKeyOpener, LlmKeyUnopenableError
 from agentic_runner.registration import RunnerRegistrationError
 from agentic_runner.runner_limit import (
     EMPTY_RUNNER_LIMIT,
@@ -159,6 +163,7 @@ from agentic_runner.workers.contract_isolation import (
 from agentic_runner.workers.fastapi_client import (
     DirectiveTokenSource,
     WorkerFastApiClientError,
+    WorkerFastApiClientRejectionError,
     directive_token,
 )
 from agentic_runner.workers.harness_logins import (
@@ -283,6 +288,7 @@ from agentic_runner_contracts.grants import (
 )
 from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
 from agentic_runner_contracts.llm_access import LlmAccess, LlmAccessKind, provider_for
+from agentic_runner_contracts.llm_key import LlmKeyRelease, LlmKeyReleaseRequest
 from agentic_runner_contracts.questions import WORK_ASK_VERB
 from agentic_runner_contracts.redaction import redact_secret_like_text
 from agentic_runner_contracts.routing import (
@@ -555,6 +561,11 @@ class RunnerRalphFastApiClient(Protocol):
         directive_id: str,
     ) -> dict[str, Any]:
         """Read one Directive's metered token aggregate (PRD issue 13)."""
+
+    async def release_llm_key(
+        self, work_record_id: str, llm_key_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The sealed shares of the pool's LLM Key a Directive was routed to (rev 3)."""
 
     async def report_harness_usage(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         """One Usage Record per model off a harness's own JSON (PRD issue 31, 17 A9)."""
@@ -1725,8 +1736,12 @@ class RunnerRalphActivities:
         usage_windows: UsageWindows | None = None,
         runner_limit: AppliedRunnerLimit | None = None,
         llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
+        llm_keys: LlmKeyOpener | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
+        # Opens the pool's LLM Keys with the Pool Key (Spec: Runners rev 3). None, or one
+        # holding no Pool Key, fails every `llm_key` Directive closed.
+        self._llm_keys = llm_keys
         # What this Runner's host denies every Agent on it, checked at start (ADR-0022
         # §52-§55). Empty by default, which narrows nothing.
         self._runner_limit = runner_limit or EMPTY_RUNNER_LIMIT
@@ -2667,12 +2682,18 @@ class RunnerRalphActivities:
 
         access = routing.llm_access if routing is not None else None
         auth_mode = await self._directive_auth_mode(work_record_id, state, access)
+        attempt_directive_id = directive_id(
+            work_record_id=work_record_id, directive_number=directive_number
+        )
+        llm_key = (
+            await self._release_llm_key(work_record_id, state, access, attempt_directive_id)
+            if access is not None and access.kind == LlmAccessKind.LLM_KEY
+            else None
+        )
         await self._report_login_residue(work_record_id, state)
         facts = AttemptFacts(
             work_record_id=work_record_id,
-            directive_id=directive_id(
-                work_record_id=work_record_id, directive_number=directive_number
-            ),
+            directive_id=attempt_directive_id,
             contract_id=contract_path_segment(state.contract_id),
             agent_id=state.agent_id or "",
             persona=state.persona_slug or "",
@@ -2731,7 +2752,8 @@ class RunnerRalphActivities:
                 # API-key mode only (issue 43): a subscription Directive never has a slot
                 # to resolve, and issue 31 meters it from the harness's own output. One
                 # bearer serves the callback socket and the proxy alike. The attempt spends
-                # its own provider's slot, and a `host_key` Directive the store's alone.
+                # its own provider's slot, a `host_key` Directive the store's alone, and an
+                # `llm_key` Directive the key released for it, which leaves with the attempt.
                 proxy_attempt = await stack.enter_async_context(
                     self._llm_proxy.attempt(
                         directive_id=facts.directive_id,
@@ -2745,6 +2767,7 @@ class RunnerRalphActivities:
                             access is not None and access.kind == LlmAccessKind.HOST_KEY
                         ),
                         delivered_only=access is None and not self._personal_runner(),
+                        llm_key=llm_key,
                     )
                 )
                 callback_env.update(proxy_attempt.env(state.cli_kind))
@@ -3158,6 +3181,7 @@ class RunnerRalphActivities:
                     subscription=self._subscription_state(state),
                     subscription_right=self._subscription_right(state),
                     runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
+                    pool_key_held=self._llm_keys is not None and self._llm_keys.holds_pool_key,
                 )
             return choose_auth_mode(
                 host_party=host_party,
@@ -3171,25 +3195,87 @@ class RunnerRalphActivities:
                 ),
             )
         except AuthModeRefusedError as refusal:
-            await _raise_recorded(
-                ApplicationError(str(refusal), type=refusal.rule, non_retryable=True),
-                self._fastapi_client,
+            await self._refuse_access(work_record_id, state, access, refusal)
+
+    async def _release_llm_key(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        access: LlmAccess,
+        attempt_directive_id: str,
+    ) -> CredentialSlot:
+        """The pool's LLM Key this Directive was routed to, opened in memory (rev 3).
+
+        The control plane releases it only to a live Runner of the key's pool for a
+        Directive in flight on it, which the Directive token proves. A refusal or a release
+        that does not open fails the Directive closed, like any access the Runner no longer
+        holds: a retry would be refused the same way.
+        """
+
+        fingerprint = self._llm_keys.fingerprint if self._llm_keys is not None else None
+        try:
+            # Refused already by `require_named_access`; this narrows the types.
+            if self._llm_keys is None or fingerprint is None:
+                raise LlmKeyUnopenableError("this Runner holds no Pool Key")
+            payload = await self._fastapi_client.release_llm_key(
                 work_record_id,
-                source=AGENT_RUNTIME_EVIDENCE_SOURCE,
-                actor=self._actor(),
-                payload={
-                    "event": (
-                        "directive.auth_mode_refused"
-                        if access is None
-                        else "directive.llm_access_refused"
-                    ),
-                    "rule": refusal.rule,
-                    "cli_kind": state.cli_kind,
-                    "host_party": host_party,
-                    "contract_id": state.contract_id,
-                    **({} if access is None else {"llm_access": access.kind}),
-                },
+                access.llm_key_id,
+                LlmKeyReleaseRequest(
+                    directive_id=attempt_directive_id, pool_key_fingerprint=fingerprint
+                ).model_dump(mode="json"),
             )
+            try:
+                release = LlmKeyRelease.model_validate(payload)
+            except ValidationError as error:
+                unreadable = "the control plane released an LLM Key this Runner cannot read"
+                raise LlmKeyUnopenableError(unreadable) from error
+            if release.llm_key_id != access.llm_key_id or release.provider != provider_for(
+                state.cli_kind
+            ):
+                raise LlmKeyUnopenableError(
+                    f"the control plane released LLM Key {release.llm_key_id} for "
+                    f"{release.provider.value}, "
+                    f"not {access.llm_key_id} for the Directive's {state.cli_kind}"
+                )
+            return self._llm_keys.open(release)
+        except WorkerFastApiClientRejectionError as error:
+            refusal = AuthModeRefusedError(
+                LLM_KEY_RELEASE_REFUSED_RULE,
+                f"the control plane refused to release LLM Key {access.llm_key_id} to this Runner "
+                f"({error.status_code})",
+            )
+        except LlmKeyUnopenableError as error:
+            refusal = AuthModeRefusedError(LLM_KEY_UNOPENABLE_RULE, str(error))
+        await self._refuse_access(work_record_id, state, access, refusal)
+
+    async def _refuse_access(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        access: LlmAccess | None,
+        refusal: AuthModeRefusedError,
+    ) -> NoReturn:
+        await _raise_recorded(
+            ApplicationError(str(refusal), type=refusal.rule, non_retryable=True),
+            self._fastapi_client,
+            work_record_id,
+            source=AGENT_RUNTIME_EVIDENCE_SOURCE,
+            actor=self._actor(),
+            payload={
+                "event": (
+                    "directive.auth_mode_refused"
+                    if access is None
+                    else "directive.llm_access_refused"
+                ),
+                "rule": refusal.rule,
+                "cli_kind": state.cli_kind,
+                "host_party": (
+                    self._routing_identity.host_party if self._routing_identity else None
+                ),
+                "contract_id": state.contract_id,
+                **({} if access is None else {"llm_access": access.kind}),
+            },
+        )
 
     def _runs_under_contract_uid(self, state: _RuntimeContextState) -> bool:
         """Whether this Directive spawns as its own Contract's uid. A Work Record with no

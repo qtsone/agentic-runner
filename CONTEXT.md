@@ -72,6 +72,14 @@ _Avoid_: Key upload, Secret sync, Relay, Key slot (that is the Credential Refere
 The keypair a Runner installation generates on its host and registers at bootstrap so that others may seal values to it; one per installation (a Helm release or a workstation process), shared by its Runners, renewed automatically with the installation re-sealing every delivered value itself. Distinct from the Runner identity, which authenticates the Runner and never encrypts anything.
 _Avoid_: Runner public key, Sealing key, Identity key, Encryption certificate
 
+**Pool Key**:
+The key pair an Organisation or an Account creates once so that its own Runners can open its LLM Keys: generated in an admin's browser, its private half shown once and given to every Runner of the pool at install beside the Runner Registration Token (`AGENTIC_RUNNER_POOL_KEY`), its public half kept by the control plane. A Runner reports the fingerprint of the one it holds. A new Pool Key leaves the stored LLM Keys unopenable until they are stored again.
+_Avoid_: Organisation key, Master key, Runner secret, Recipient Key (that is one Runner's own)
+
+**LLM Key**:
+A model provider's API key that an Organisation or an Account stores once, and that only its own pool's Runners open. It is split into two shares: the control plane keeps one, and the other is sealed to the pool's Pool Key. A Runner of that pool receives the control plane's share, sealed to its own Recipient Key, only for a Directive whose LLM access names the key; it opens and joins both in memory for that Directive and drops the key after.
+_Avoid_: Organisation key (ambiguous with the Pool Key), Shared key, Org secret, Credential Delivery (that seals one value to one Runner)
+
 **Runner Hook**:
 An operator-supplied executable the Runner runs at one of a closed, platform-named set of points around a Directive, the Verifier or its own lifecycle. Operators fill slots; the platform names them.
 _Avoid_: Plugin, Script, Lifecycle callback

@@ -176,6 +176,20 @@ class RunnerFastApiClient:
         records = result.get("records")
         return records if isinstance(records, list) else []
 
+    async def release_llm_key(
+        self, work_record_id: str, llm_key_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The two sealed shares of the LLM Key a Directive's ``llm_access`` names (Spec:
+        Runners rev 3). ``payload`` is ``LlmKeyReleaseRequest``'s shape; the Directive
+        token says which Runner and Directive ask, which is what the control plane releases
+        against."""
+
+        return await self._post(
+            f"{self._prefix}/work-records/{_path_segment(work_record_id)}"
+            f"/llm-keys/{_path_segment(llm_key_id)}/release",
+            payload,
+        )
+
     async def append_evidence(
         self,
         work_record_id: str,

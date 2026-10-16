@@ -66,6 +66,12 @@ You paste the token at the prompt. It is never a flag, because every user on the
 can read the process table, and it is never stored: `install` exchanges it once for this
 Runner's own identity. Revoke the token on **/me/runners** once your Runner shows there.
 
+An Organisation Runner whose Organisation stores LLM Keys also needs the Pool Key from the
+Runners page. Add `--pool-key` and paste it at the second prompt, or set
+`AGENTIC_RUNNER_POOL_KEY` on the install line the console printed. `install` keeps it in the
+Runner's state directory, readable by you only, because the Runner needs it on every start.
+After the Organisation creates a new Pool Key, run `install` again with the new one.
+
 `install` registers the Runner, then installs and starts its login agent:
 
 - **macOS:** `~/Library/LaunchAgents/agentic-runner.acme.plist`, loaded into your

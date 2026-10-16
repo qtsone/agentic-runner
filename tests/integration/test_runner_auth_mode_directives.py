@@ -32,7 +32,9 @@ from agentic_runner.activities import (
 )
 from agentic_runner.auth_mode import (
     HOST_KEY_NOT_HELD_RULE,
-    LLM_KEY_UNSUPPORTED_RULE,
+    LLM_KEY_RELEASE_REFUSED_RULE,
+    LLM_KEY_UNOPENABLE_RULE,
+    POOL_KEY_NOT_HELD_RULE,
     SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
     SUBSCRIPTION_NO_RIGHT_RULE,
@@ -45,8 +47,14 @@ from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.integrations.git.fake_workspace import FakeGitWorkspace
 from agentic_runner.integrations.github.fake_client import FakeGitHubClient
 from agentic_runner.llm_proxy import CredentialSlot, LlmProxy, SlotStore
+from agentic_runner.pool_key import LlmKeyOpener, parse_pool_key
 from agentic_runner.registration import RunnerState
-from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialStream, seal
+from agentic_runner.sealed_box import (
+    RecipientKeyStore,
+    SealedCredentialStream,
+    generate_recipient_key,
+    seal,
+)
 from agentic_runner.usage_windows import UsageWindows
 from agentic_runner.workers.agent_runtime import (
     AuthMode,
@@ -56,6 +64,7 @@ from agentic_runner.workers.agent_runtime import (
     RuntimeCapabilities,
 )
 from agentic_runner.workers.contract_isolation import ContractIsolation, DirectiveSandbox
+from agentic_runner.workers.fastapi_client import WorkerFastApiClientRejectionError
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.activity_io import (
     BranchPullRequestInput,
@@ -63,6 +72,11 @@ from agentic_runner_contracts.activity_io import (
     HarnessHoldKind,
 )
 from agentic_runner_contracts.llm_access import LlmAccess
+from agentic_runner_contracts.llm_key import (
+    platform_share_binding,
+    pool_share_binding,
+    split_llm_key,
+)
 from agentic_runner_contracts.routing import DirectiveRouting, RunnerRoutingIdentity
 from agentic_runner_contracts.runner_registration import (
     ContractLlmTerms,
@@ -227,6 +241,7 @@ def _activities(
     usage_windows: UsageWindows | None = None,
     cli_kind: str = "codex_cli",
     llm_contracts: list[ContractLlmTerms] | None = None,
+    llm_keys: LlmKeyOpener | None = None,
 ) -> RunnerRalphActivities:
     return RunnerRalphActivities(
         client,  # type: ignore[arg-type]
@@ -241,6 +256,7 @@ def _activities(
         contract_isolation=isolation,
         usage_windows=usage_windows,
         llm_contracts=lambda: llm_contracts,
+        llm_keys=llm_keys,
     )
 
 
@@ -366,7 +382,7 @@ async def test_access_the_runner_no_longer_holds_fails_the_directive_closed(
             isolation=isolation,
         ).create_or_update_branch_pr(_branch_pr_input(host_party, access))
 
-    expected = LLM_KEY_UNSUPPORTED_RULE if rule == "llm_key" else rule
+    expected = POOL_KEY_NOT_HELD_RULE if rule == "llm_key" else rule
     assert refused.value.non_retryable is True
     assert refused.value.type == expected
     assert (runtime.requests, proxy.attempts) == ([], 0), "nothing runs on other access"
@@ -894,3 +910,164 @@ async def test_the_agents_model_runs_and_its_evidence_and_usage_name_it(tmp_path
     assert evidence["model"] == "gpt-5-codex"
     [usage] = client.usage
     assert usage["model_name"] == "gpt-5-codex"
+
+
+# ------------------------------------------------------------------ the pool's LLM Keys (rev 3)
+
+POOL_ID = "3b8e2f61-7c4a-4d19-9e05-6a1f0c2d8b47"
+LLM_KEY_ID = "c41d9a72-5e3b-4f80-8a16-2d7e9b0f3c58"
+POOL_LLM_KEY = "sk-proj-the-pools-openai-key"
+
+
+class _ReleasingClient(_Client):
+    """A control plane holding one LLM Key of the pool, as the admin's browser stored it."""
+
+    def __init__(self, release: dict[str, Any] | Exception) -> None:
+        super().__init__()
+        self.release = release
+        self.requests: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def release_llm_key(
+        self, work_record_id: str, llm_key_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        self.requests.append((work_record_id, llm_key_id, dict(payload)))
+        if isinstance(self.release, Exception):
+            raise self.release
+        return dict(self.release)
+
+
+def _pool(tmp_path: Path, *, provider: str = "openai") -> tuple[LlmKeyOpener, dict[str, Any]]:
+    """A pool Runner's opener, and QTS's release of the pool's key for it."""
+
+    pool_key = parse_pool_key(generate_recipient_key().private_key)
+    recipient_keys = RecipientKeyStore(tmp_path / "state")
+    recipient = recipient_keys.current()
+    pool_share, platform_share = split_llm_key(POOL_LLM_KEY)
+    release = {
+        "llm_key_id": LLM_KEY_ID,
+        "pool_id": POOL_ID,
+        "provider": provider,
+        "pool_key_fingerprint": pool_key.fingerprint,
+        "pool_share": seal(
+            public_key=pool_key.public_key,
+            binding=pool_share_binding(
+                pool_id=POOL_ID, llm_key_id=LLM_KEY_ID, pool_key_fingerprint=pool_key.fingerprint
+            ),
+            plaintext=pool_share,
+        ),
+        "recipient_key_id": recipient.key_id,
+        "platform_share": seal(
+            public_key=recipient.public_key,
+            binding=platform_share_binding(
+                llm_key_id=LLM_KEY_ID, recipient_key_id=recipient.key_id
+            ),
+            plaintext=platform_share,
+        ),
+    }
+    return LlmKeyOpener(pool_key=pool_key, recipient_keys=recipient_keys), release
+
+
+def _llm_key_input() -> BranchPullRequestInput:
+    return _branch_pr_input("organisation", LlmAccess(kind="llm_key", llm_key_id=LLM_KEY_ID))
+
+
+@pytest.mark.asyncio
+async def test_a_released_llm_key_is_held_in_memory_for_one_directive_and_gone_after_it(
+    tmp_path: Path,
+) -> None:
+    seen: list[str] = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["authorization"])
+        return httpx.Response(200, json={"usage": {"input_tokens": 12, "output_tokens": 3}})
+
+    proxy = LlmProxy(
+        slots=SlotStore(), client=httpx.AsyncClient(transport=httpx.MockTransport(provider))
+    )
+    opener, release = _pool(tmp_path)
+    client = _ReleasingClient(release)
+    runtime = _SpendingCodex()
+
+    async with proxy:
+        await _activities(
+            client,
+            runtime,
+            tmp_path=tmp_path,
+            host_party="organisation",
+            proxy=proxy,  # type: ignore[arg-type]
+            llm_keys=opener,
+        ).create_or_update_branch_pr(_llm_key_input())
+
+        [request] = runtime.requests
+        env = dict(request.extra_env)
+        async with httpx.AsyncClient() as late:
+            after = await late.post(
+                f"{env['OPENAI_BASE_URL']}/responses",
+                json={"model": "gpt-5", "input": "again"},
+                headers={"Authorization": f"Bearer {env['OPENAI_API_KEY']}"},
+            )
+
+    assert request.auth_mode == AuthMode.API_KEY
+    assert (runtime.status, seen) == (200, [f"Bearer {POOL_LLM_KEY}"])
+    # The Agent Runtime holds the attempt's bearer only, never the key.
+    assert POOL_LLM_KEY not in env.values()
+    # Gone with the Directive: the attempt is closed, and the key never reached the slot
+    # store that serves every other Directive and the heartbeat.
+    assert after.status_code == 401
+    assert proxy.slots.statuses() == []
+    assert proxy.slots.resolve(UUID(CONTRACT_ID), "openai") is None
+    [(work_record_id, llm_key_id, asked)] = client.requests
+    assert (work_record_id, llm_key_id) == (WORK_RECORD_ID, LLM_KEY_ID)
+    assert asked["pool_key_fingerprint"] == opener.fingerprint
+    assert asked["directive_id"].startswith(f"{WORK_RECORD_ID}:")
+    assert POOL_LLM_KEY not in repr(client.evidence)
+
+
+@pytest.mark.parametrize(
+    ("change", "rule"),
+    [
+        ("old_pool_key", LLM_KEY_UNOPENABLE_RULE),
+        ("other_provider", LLM_KEY_UNOPENABLE_RULE),
+        ("other_key", LLM_KEY_UNOPENABLE_RULE),
+        ("refused", LLM_KEY_RELEASE_REFUSED_RULE),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_llm_key_that_is_refused_or_does_not_open_fails_the_directive_closed(
+    tmp_path: Path, change: str, rule: str
+) -> None:
+    """Nothing runs, on this key or on any other access, and the Evidence names the rule."""
+
+    opener, release = _pool(
+        tmp_path, provider="anthropic" if change == "other_provider" else "openai"
+    )
+    answer: dict[str, Any] | Exception = release
+    if change == "old_pool_key":
+        # Installed before the admin replaced the Pool Key: the share is sealed to the new one.
+        opener = LlmKeyOpener(
+            pool_key=parse_pool_key(generate_recipient_key().private_key),
+            recipient_keys=RecipientKeyStore(tmp_path / "state"),
+        )
+    elif change == "other_key":
+        answer = {**release, "llm_key_id": "0e5f8a31-9b2c-4d7e-a610-3c8b1f4d2e95"}
+    elif change == "refused":
+        answer = WorkerFastApiClientRejectionError("refused", status_code=403)
+    client = _ReleasingClient(answer)
+    runtime = _Codex()
+    proxy = _Proxy(holds=True, host_key=True)
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            client,
+            runtime,
+            tmp_path=tmp_path,
+            host_party="organisation",
+            proxy=proxy,
+            llm_keys=opener,
+        ).create_or_update_branch_pr(_llm_key_input())
+
+    assert refused.value.non_retryable is True
+    assert refused.value.type == rule
+    assert (runtime.requests, proxy.attempts) == ([], 0), "nothing runs on other access"
+    [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
+    assert (evidence["event"], evidence["rule"]) == ("directive.llm_access_refused", rule)
