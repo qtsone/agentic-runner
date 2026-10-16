@@ -35,6 +35,8 @@ from agentic_runner.auth_mode import (
     LLM_KEY_UNSUPPORTED_RULE,
     SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
+    SUBSCRIPTION_NO_RIGHT_RULE,
+    SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE,
     SUBSCRIPTION_NOT_SIGNED_IN_RULE,
     SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
 )
@@ -62,7 +64,11 @@ from agentic_runner_contracts.activity_io import (
 )
 from agentic_runner_contracts.llm_access import LlmAccess
 from agentic_runner_contracts.routing import DirectiveRouting, RunnerRoutingIdentity
-from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
+from agentic_runner_contracts.runner_registration import (
+    ContractLlmTerms,
+    FloorState,
+    HeartbeatAck,
+)
 from agentic_runner_contracts.runtime_context import work_branch_name
 from agentic_runner_contracts.sealed_credential import SealedCredential, delivery_binding
 
@@ -220,6 +226,7 @@ def _activities(
     isolation: ContractIsolation | None = None,
     usage_windows: UsageWindows | None = None,
     cli_kind: str = "codex_cli",
+    llm_contracts: list[ContractLlmTerms] | None = None,
 ) -> RunnerRalphActivities:
     return RunnerRalphActivities(
         client,  # type: ignore[arg-type]
@@ -233,6 +240,7 @@ def _activities(
         llm_proxy=proxy,  # type: ignore[arg-type]
         contract_isolation=isolation,
         usage_windows=usage_windows,
+        llm_contracts=lambda: llm_contracts,
     )
 
 
@@ -365,6 +373,71 @@ async def test_access_the_runner_no_longer_holds_fails_the_directive_closed(
     [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
     assert evidence["event"] == "directive.llm_access_refused"
     assert (evidence["rule"], evidence["llm_access"]) == (expected, access.kind)
+
+
+@pytest.mark.parametrize(
+    ("terms", "rule"),
+    [
+        (
+            [ContractLlmTerms(contract_id=UUID(CONTRACT_ID), subscription="no_right")],
+            SUBSCRIPTION_NO_RIGHT_RULE,
+        ),
+        (
+            [ContractLlmTerms(contract_id=UUID(CONTRACT_ID), subscription="not_acknowledged")],
+            SUBSCRIPTION_NOT_ACKNOWLEDGED_RULE,
+        ),
+        # An ack that names other Contracts but not this one allows it nothing.
+        ([ContractLlmTerms(contract_id=uuid4(), subscription="allowed")], "no_right"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_subscription_the_last_ack_does_not_allow_fails_closed(
+    tmp_path: Path, terms: list[ContractLlmTerms], rule: str
+) -> None:
+    """QTS-1751: the person's own, signed-in Runner still refuses a subscription the
+    control plane's own ack says the Contract may not use, whatever routing named."""
+
+    isolation = _isolation(tmp_path)
+    _sign_in(isolation)
+    client = _Client()
+    runtime = _Codex()
+
+    with pytest.raises(ApplicationError) as refused:
+        await _activities(
+            client,
+            runtime,
+            tmp_path=tmp_path,
+            host_party="user",
+            isolation=isolation,
+            llm_contracts=terms,
+        ).create_or_update_branch_pr(_branch_pr_input("user", LlmAccess(kind="subscription")))
+
+    expected = SUBSCRIPTION_NO_RIGHT_RULE if rule == "no_right" else rule
+    assert refused.value.non_retryable is True
+    assert refused.value.type == expected
+    assert runtime.requests == []
+    [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
+    assert evidence["event"] == "directive.llm_access_refused"
+    assert (evidence["rule"], evidence["llm_access"]) == (expected, "subscription")
+
+
+@pytest.mark.asyncio
+async def test_a_subscription_the_last_ack_allows_runs(tmp_path: Path) -> None:
+    isolation = _isolation(tmp_path)
+    _sign_in(isolation)
+    runtime = _Codex()
+
+    await _activities(
+        _Client(),
+        runtime,
+        tmp_path=tmp_path,
+        host_party="user",
+        isolation=isolation,
+        llm_contracts=[ContractLlmTerms(contract_id=UUID(CONTRACT_ID), subscription="allowed")],
+    ).create_or_update_branch_pr(_branch_pr_input("user", LlmAccess(kind="subscription")))
+
+    [request] = runtime.requests
+    assert request.auth_mode == AuthMode.SUBSCRIPTION
 
 
 @pytest.mark.parametrize("install_channel", ["helm", "workstation", "docker"])

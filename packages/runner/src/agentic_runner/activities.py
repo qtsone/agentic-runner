@@ -292,7 +292,11 @@ from agentic_runner_contracts.routing import (
     assert_routed,
     selector_satisfied,
 )
-from agentic_runner_contracts.runner_registration import SubscriptionState
+from agentic_runner_contracts.runner_registration import (
+    ContractLlmTerms,
+    SubscriptionRight,
+    SubscriptionState,
+)
 from agentic_runner_contracts.runtime_context import (
     EGRESS_ALLOW_LIST_KEY,
     McpServerSpec,
@@ -1720,6 +1724,7 @@ class RunnerRalphActivities:
         directives_in_flight: DirectivesInFlight | None = None,
         usage_windows: UsageWindows | None = None,
         runner_limit: AppliedRunnerLimit | None = None,
+        llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
         # What this Runner's host denies every Agent on it, checked at start (ADR-0022
@@ -1794,6 +1799,9 @@ class RunnerRalphActivities:
         # The retry fence (runner-repo 05). None fences nothing: a process that never
         # registered has no state directory to keep the records in.
         self._attempt_records = attempt_records
+        # The Contracts the last heartbeat ack named, read at each Directive (QTS-1751).
+        # None, or a callable answering None, before any ack from a 3.25 control plane.
+        self._llm_contracts = llm_contracts
 
     def activity_callables(self) -> list[Callable[..., Any]]:
         """Return decorated activity callables for Temporal worker registration."""
@@ -3148,6 +3156,7 @@ class RunnerRalphActivities:
                     host_party=host_party,
                     host_key_held=self._host_key_held(state),
                     subscription=self._subscription_state(state),
+                    subscription_right=self._subscription_right(state),
                     runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
                 )
             return choose_auth_mode(
@@ -3217,6 +3226,19 @@ class RunnerRalphActivities:
             self._llm_proxy is not None
             and provider is not None
             and self._llm_proxy.slots.holds_host(provider.value)
+        )
+
+    def _subscription_right(self, state: _RuntimeContextState) -> SubscriptionRight | None:
+        """What the last ack said of this Contract's own subscription; ``no_right`` for a
+        Contract it did not name, since nothing then allowed one here."""
+
+        terms = self._llm_contracts() if self._llm_contracts is not None else None
+        if terms is None:
+            return None
+        contract_id = _optional_uuid(state.contract_id)
+        return next(
+            (term.subscription for term in terms if term.contract_id == contract_id),
+            SubscriptionRight.NO_RIGHT,
         )
 
     def _subscription_state(self, state: _RuntimeContextState) -> SubscriptionState:

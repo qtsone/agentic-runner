@@ -9,7 +9,7 @@ the same turn in-process (``user_sources.ProxyTriage``).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from uuid import UUID
 
 import httpx
@@ -17,6 +17,7 @@ from temporalio import activity
 
 from agentic_runner.llm_proxy import LlmProxy
 from agentic_runner_contracts.activity_io import TriageTurnInput, TriageTurnOutput
+from agentic_runner_contracts.runner_registration import ContractLlmTerms
 
 
 async def run_triage_turn(
@@ -29,13 +30,15 @@ async def run_triage_turn(
     contract_id: UUID | None,
     agent_id: UUID | None,
     reserve_max_tokens: int | None = None,
+    delivered_only: bool = False,
     client: httpx.AsyncClient | None = None,
 ) -> str | None:
     """One completion through this Runner's proxy, metered like any Directive.
 
     ``None`` on anything that keeps the answer from being trusted -- a hang, a ceiling or
     Reserve refusal, a missing slot, a malformed body: the caller's fallback is the
-    keyword classifier, never an Incident (PRD issue 29).
+    keyword classifier, never an Incident (PRD issue 29). ``delivered_only`` keeps the
+    turn off this Runner's store key (``LlmProxy.attempt``).
     """
 
     http = client or httpx.AsyncClient()
@@ -45,6 +48,7 @@ async def run_triage_turn(
             contract_id=contract_id,
             agent_id=agent_id,
             reserve_max_tokens=reserve_max_tokens,
+            delivered_only=delivered_only,
         ) as handle:
             response = await http.post(
                 f"{handle.base_url}/chat/completions",
@@ -80,11 +84,15 @@ class RunnerTriageActivities:
         proxy: LlmProxy,
         model: str,
         timeout_seconds: float,
+        host_party: str | None = None,
+        llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._proxy = proxy
         self._model = model
         self._timeout_seconds = timeout_seconds
+        self._host_party = host_party
+        self._llm_contracts = llm_contracts
         self._client = client
 
     def activity_callables(self) -> list[Callable[..., object]]:
@@ -101,9 +109,18 @@ class RunnerTriageActivities:
             contract_id=_optional_uuid(request.intake_lead_contract_id),
             agent_id=_optional_uuid(request.intake_lead_agent_id),
             reserve_max_tokens=request.reserve_max_tokens,
+            delivered_only=self._pool_runner_before_named_access(),
             client=self._client,
         )
         return TriageTurnOutput(raw_text=raw_text)
+
+    def _pool_runner_before_named_access(self) -> bool:
+        """A pool Runner's store key stays out of the turn until an ack names the
+        Contracts: a control plane below 3.25 caps none of that spend, the rule a
+        Directive that names no access follows (QTS-1736, QTS-1751)."""
+
+        named = self._llm_contracts() if self._llm_contracts is not None else None
+        return self._host_party != "user" and named is None
 
 
 def _optional_uuid(value: str) -> UUID | None:
