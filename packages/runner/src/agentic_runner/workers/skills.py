@@ -9,8 +9,10 @@ Runner's own argv, not assumed (local-agents 02 asked the same question over ACP
 - **Claude Code** (2.1.292): the Runner runs ``claude --print --bare``, and ``--bare`` drops
   the Skill tool. ``$CLAUDE_CONFIG_DIR/skills/<slug>/SKILL.md`` is then neither advertised
   nor resolved by ``/<slug>``, and ``--tools …,Skill`` does not bring the tool back. Claude
-  Code therefore gets the bodies as a prompt preamble. Dropping ``--bare`` would also
-  re-enable the Workspace's hooks and ``CLAUDE.md``, which is not this module's call.
+  Code therefore gets the bodies as a prompt preamble. A subscription Directive runs
+  without ``--bare`` but loads no setting source (``claude_runtime._claude_argv``), so the
+  harness root's ``skills`` directory is not read there either, and it gets the same
+  preamble.
 
 The harness root is per Contract, not per Directive, so two concurrent Directives of one
 Contract share its ``skills`` directory.

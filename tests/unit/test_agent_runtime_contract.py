@@ -178,7 +178,7 @@ RUNTIME_CASES: list[RuntimeContractCase] = [
     ),
     RuntimeContractCase(
         cli_kind="claude_code",
-        auth_modes=frozenset({AuthMode.API_KEY}),
+        auth_modes=frozenset({AuthMode.API_KEY, AuthMode.SUBSCRIPTION}),
         permission_mode="permission=skip;output=json",
         make_success=_claude_success,
         make_refusal=_claude_refusal,

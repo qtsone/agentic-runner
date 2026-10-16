@@ -58,6 +58,7 @@ CONTRACT = UUID("11111111-1111-4111-8111-111111111111")
 CODEX_MODES = CodexRuntime.auth_modes
 CLAUDE_MODES = ClaudeRuntime.auth_modes
 ACP_MODES = AcpRuntime.auth_modes
+KEY_ONLY_MODES = frozenset({AuthMode.API_KEY})
 
 
 # ------------------------------------------------------------------ the mode table
@@ -112,11 +113,22 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
         ACP_MODES,
         SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
     ),
-    # The non-ACP Claude Code runtime runs on keys only (local-agents 07).
-    ("organisation", False, UID, LOGIN, "claude_code", CLAUDE_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
+    # The default Claude Code runtime runs a subscription too (local-agents 07, QTS-1737).
+    ("organisation", False, UID, LOGIN, "claude_code", CLAUDE_MODES, AuthMode.SUBSCRIPTION),
+    # A runtime with no subscription mode has nothing to run on without a key.
+    (
+        "organisation",
+        False,
+        UID,
+        LOGIN,
+        "claude_code",
+        KEY_ONLY_MODES,
+        NO_RUNTIME_SUBSCRIPTION_RULE,
+    ),
     # The person's own Runner: routing tied the Contract to the person, whatever its uids.
     ("user", False, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
-    ("user", False, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
+    ("user", False, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.SUBSCRIPTION),
+    ("user", False, NO_UID, NO_LOGIN, "claude_code", KEY_ONLY_MODES, AuthMode.API_KEY),
     # An unregistered process is nobody's own Runner and makes no routing assertion.
     (None, False, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
     (None, True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),

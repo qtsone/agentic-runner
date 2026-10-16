@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from agentic_runner.workers._runtime_support import SubprocessResult
 from agentic_runner.workers.agent_runtime import AuthMode, DirectiveRequest
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
 from agentic_runner.workers.codex_runtime import CodexRuntime
+from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.settings import WorkerSettings
 from agentic_runner_contracts.runner_registration import CliVersion
 
@@ -125,7 +127,7 @@ async def test_execute_directive_invokes_claude_print_bare_in_workspace(tmp_path
     assert "--dangerously-skip-permissions" in call.argv
     assert all("Apply the fix" not in argument for argument in call.argv)
     assert call.cwd == workspace
-    assert call.env == PROXY_ENV
+    assert call.env == {"PATH": os.environ["PATH"], **PROXY_ENV}
     assert call.stdin == "Apply the fix"
     assert call.timeout_seconds == settings.CLAUDE_CLI_TIMEOUT_SECONDS
     assert call.output_limit_bytes == settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES
@@ -223,6 +225,69 @@ async def test_execute_directive_propagates_cancellation(tmp_path: Path) -> None
         await runtime.execute_directive(_request(workspace))
 
 
+def _sandbox(tmp_path: Path) -> DirectiveSandbox:
+    return DirectiveSandbox(
+        home_dir=tmp_path / "home",
+        harness_config_dir=tmp_path / "harness",
+        max_processes=None,
+        max_memory_bytes=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_subscription_directive_runs_behind_the_sign_in_launcher_without_bare(
+    tmp_path: Path,
+) -> None:
+    settings = _enabled_settings(tmp_path)
+    workspace = settings.WORKSPACE_ROOT / "wr" / "repo"
+    workspace.mkdir(parents=True)
+    runner = FakeRunner(SubprocessResult(exit_code=0, stdout="done", stderr=""))
+    runtime = ClaudeRuntime(settings=settings, runner=runner)
+    sandbox = _sandbox(tmp_path)
+
+    result = await runtime.execute_directive(
+        replace(_request(workspace), auth_mode=AuthMode.SUBSCRIPTION, sandbox=sandbox)
+    )
+
+    (call,) = runner.calls
+    launcher, claude = call.argv[:5], call.argv[5:]
+    assert launcher[:2] == ["/bin/sh", "-c"]
+    assert launcher[3:] == ["agentic-claude", str(sandbox.harness_config_dir)]
+    assert claude[:2] == ["claude", "--print"]
+    assert "--bare" not in claude
+    assert claude[claude.index("--setting-sources") + 1] == ""
+    # The proxy pair never reaches a subscription turn, so its bearer goes nowhere else.
+    assert call.env == {
+        "PATH": os.environ["PATH"],
+        "CLAUDE_CONFIG_DIR": str(sandbox.harness_config_dir),
+        "HOME": str(sandbox.home_dir),
+        "TMPDIR": str(sandbox.tmp_dir),
+    }
+    assert result.exit_code == 0
+    assert result.evidence.guard_mode == (
+        "auth=subscription; permission=skip-in-sandbox; output=json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_subscription_directive_without_a_harness_root_is_refused(tmp_path: Path) -> None:
+    settings = _enabled_settings(tmp_path)
+    workspace = settings.WORKSPACE_ROOT / "wr" / "repo"
+    workspace.mkdir(parents=True)
+    runner = FakeRunner(SubprocessResult(exit_code=0, stdout="done", stderr=""))
+    runtime = ClaudeRuntime(settings=settings, runner=runner)
+
+    result = await runtime.execute_directive(
+        replace(_request(workspace), auth_mode=AuthMode.SUBSCRIPTION)
+    )
+
+    assert runner.calls == []
+    assert result.exit_code == 126
+    assert result.evidence.guard_mode == (
+        "refused: subscription mode without a Contract harness root"
+    )
+
+
 def _cli(cli_kind: str, *, meets_floor: bool = True) -> CliVersion:
     return CliVersion(cli_kind=cli_kind, version="1.0.0", meets_floor=meets_floor)
 
@@ -235,7 +300,7 @@ def test_build_agent_runtimes_serves_every_cli_found_above_its_floor(tmp_path: P
 
     assert set(runtimes) == {"claude_code", "codex_cli"}
     assert isinstance(runtimes["claude_code"], ClaudeRuntime)
-    assert runtimes["claude_code"].auth_modes == {AuthMode.API_KEY}
+    assert runtimes["claude_code"].auth_modes == {AuthMode.API_KEY, AuthMode.SUBSCRIPTION}
     assert isinstance(runtimes["codex_cli"], CodexRuntime)
     assert runtimes["codex_cli"].auth_modes == {AuthMode.API_KEY, AuthMode.SUBSCRIPTION}
 
