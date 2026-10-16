@@ -50,6 +50,11 @@ from agentic_runner.tiny_http import (
     response_head,
     write_json,
 )
+from agentic_runner_contracts.llm_access import (
+    PROVIDER_KEY_NAMES,
+    RUNTIME_PROVIDERS,
+    LlmProvider,
+)
 from agentic_runner_contracts.llm_usage import (
     CeilingExhaustedError,
     ModelPrice,
@@ -75,7 +80,7 @@ __all__ = [
     "Ceilings",
     "CredentialSlot",
     "LLM_SLOT_REFERENCES",
-    "LlmProvider",
+    "LlmEndpoint",
     "LlmProxy",
     "SLOT_REFUSED_SOURCE",
     "SLOT_SWAPPED_SOURCE",
@@ -196,8 +201,8 @@ class CredentialSlot:
 
 
 @dataclass(frozen=True, slots=True)
-class LlmProvider:
-    """Where a delivered key is spent, and how it is presented there.
+class LlmEndpoint:
+    """Where a provider's key is spent, and how it is presented there.
 
     Endpoints are plain config, never a secret (ADR-0013 §11), so the sealed wire does not
     carry one: the Credential Reference's name says which provider a value belongs to and
@@ -221,18 +226,18 @@ class LlmProvider:
         )
 
 
-# The Credential References a delivered value fills the proxy's slot from (local-agents
-# 04b), named after the variable each harness reads its own key from, so a funder declares
-# the name the vendor's docs already taught them. Any other reference stays a verb-seam or
-# MCP credential and never reaches the proxy.
-LLM_SLOT_REFERENCES: Final[Mapping[str, LlmProvider]] = {
-    "OPENAI_API_KEY": LlmProvider(
+# The key names a value fills the proxy's slot from, sealed (local-agents 04b) or in the
+# Runner's own store (Spec: Runners rev 3): the contracts' key-name table, so both halves
+# agree on them. Any other reference stays a verb-seam or MCP credential and never
+# reaches the proxy.
+LLM_SLOT_REFERENCES: Final[Mapping[str, LlmEndpoint]] = {
+    PROVIDER_KEY_NAMES[LlmProvider.OPENAI]: LlmEndpoint(
         name="openai",
         runtime_kind="codex_cli",
         base_url="https://api.openai.com/v1",
         auth_style="bearer",
     ),
-    "ANTHROPIC_API_KEY": LlmProvider(
+    PROVIDER_KEY_NAMES[LlmProvider.ANTHROPIC]: LlmEndpoint(
         name="anthropic",
         runtime_kind="claude_code",
         base_url="https://api.anthropic.com/v1",
@@ -241,7 +246,7 @@ LLM_SLOT_REFERENCES: Final[Mapping[str, LlmProvider]] = {
 }
 
 
-def llm_slot_references(base_urls: Mapping[str, str]) -> dict[str, LlmProvider]:
+def llm_slot_references(base_urls: Mapping[str, str]) -> dict[str, LlmEndpoint]:
     """:data:`LLM_SLOT_REFERENCES` with an operator's endpoint per provider name -- a
     gateway in front of the vendor, or the chart test's fake provider."""
 
@@ -272,24 +277,26 @@ async def models_list_probe(slot: CredentialSlot) -> bool:
 
 
 class SlotStore:
-    """Every Contract's current LLM slot, resolved per request (22 A8).
+    """Every LLM key the proxy may spend, resolved per request (22 A8).
 
-    Mutated by delivery, read by every call. The read is a plain dictionary lookup on
-    purpose: it happens inside the request, so a replacement lands on every running
-    Directive at its next call rather than at its next Directive.
+    Two kinds of slot, one per provider each (Spec: Runners rev 3): a key sealed for one
+    Contract, held per Contract and provider, and the key in the Runner's own store, held
+    per provider and serving every Contract the Runner runs. One per provider is what lets
+    a Contract with both keys give a Claude Code Directive the Anthropic key and a Codex
+    Directive the OpenAI key; one per Contract served whichever was delivered last.
+
+    Mutated by delivery and by the store's sync, read by every call. The read is a plain
+    dictionary lookup on purpose: it happens inside the request, so a replacement lands on
+    every running Directive at its next call rather than at its next Directive.
     """
 
     def __init__(self, *, probe: SlotProber = models_list_probe) -> None:
         self._probe = probe
-        self._slots: dict[UUID, CredentialSlot] = {}
-        self._probes: dict[UUID, SlotProbe] = {}
-        self._last_used: dict[UUID, datetime] = {}
-        # Leaf Contract -> the Contract whose slot funds it (22 A6). Data from issue 34;
-        # the proxy follows the mapping and never derives it.
-        self._funded_by: dict[UUID, UUID] = {}
-
-    def fund_from(self, leaf_contract_id: UUID, account_contract_id: UUID) -> None:
-        self._funded_by[leaf_contract_id] = account_contract_id
+        self._slots: dict[tuple[UUID, str], CredentialSlot] = {}
+        self._probes: dict[tuple[UUID, str], SlotProbe] = {}
+        self._last_used: dict[tuple[UUID, str], datetime] = {}
+        self._host: dict[str, CredentialSlot] = {}
+        self._host_probes: dict[str, SlotProbe] = {}
 
     async def put(
         self,
@@ -305,84 +312,136 @@ class SlotStore:
         Contract, which is the failure 22 A10 asks the probe to prevent.
         """
 
-        if not await self._probe(slot):
-            self._probes[contract_id] = SlotProbe.INVALID
-            if evidence is not None:
-                await evidence(
-                    SLOT_REFUSED_SOURCE,
-                    {
-                        "reason": "probe_invalid",
-                        "contract_id": str(contract_id),
-                        "runtime_kind": slot.runtime_kind,
-                        "key_id": slot.key_id,
-                        "reference": slot.reference,
-                        "probe": SlotProbe.INVALID.value,
-                    },
-                )
-            return SlotProbe.INVALID
-        self._slots[contract_id] = slot
-        self._probes[contract_id] = SlotProbe.VALID
+        key = (contract_id, slot.provider_name)
+        probe = SlotProbe.VALID if await self._probe(slot) else SlotProbe.INVALID
+        self._probes[key] = probe
+        if probe == SlotProbe.VALID:
+            self._slots[key] = slot
         if evidence is not None:
             await evidence(
-                SLOT_SWAPPED_SOURCE,
+                SLOT_SWAPPED_SOURCE if probe == SlotProbe.VALID else SLOT_REFUSED_SOURCE,
                 {
+                    **({} if probe == SlotProbe.VALID else {"reason": "probe_invalid"}),
                     "contract_id": str(contract_id),
                     "runtime_kind": slot.runtime_kind,
                     "key_id": slot.key_id,
                     "reference": slot.reference,
-                    "probe": SlotProbe.VALID.value,
+                    "probe": probe.value,
                 },
             )
-        return SlotProbe.VALID
+        return probe
 
-    def drop(self, contract_id: UUID) -> None:
-        """Forget a Contract's slot: wiped, not listed (22 A9). The next call is refused."""
+    async def put_host(self, slot: CredentialSlot) -> SlotProbe:
+        """Probe the key the host put in its own store, and serve it only if it answers.
 
-        self._slots.pop(contract_id, None)
-        self._probes.pop(contract_id, None)
-        self._last_used.pop(contract_id, None)
+        A refused key is not served and its probe is reported, the same gate a delivered
+        key passes (22 A10), so a typo in a Secret shows on the heartbeat as `invalid`
+        rather than as a 401 inside a Directive.
+        """
 
-    def resolve(self, contract_id: UUID | None) -> CredentialSlot | None:
-        """The slot this call spends, read at the call (22 A8)."""
+        probe = SlotProbe.VALID if await self._probe(slot) else SlotProbe.INVALID
+        self._host_probes[slot.provider_name] = probe
+        if probe == SlotProbe.VALID:
+            self._host[slot.provider_name] = slot
+        else:
+            self._host.pop(slot.provider_name, None)
+        return probe
 
-        if contract_id is None:
-            return None
-        slot = self._slots.get(contract_id)
-        if slot is None:
-            funder = self._funded_by.get(contract_id)
-            if funder is not None:
-                slot = self._slots.get(funder)
-        if slot is not None:
-            self._last_used[contract_id] = datetime.now(UTC)
-        return slot
+    def drop(self, contract_id: UUID, provider: str | None = None) -> None:
+        """Forget a Contract's delivered slot for one provider, or every one: wiped, not
+        listed (22 A9). The next call that needs it is refused."""
 
-    def holds(self, contract_id: UUID) -> bool:
-        """Whether a call for this Contract would find a slot -- without the use stamp
-        :meth:`resolve` leaves, because choosing a Directive's mode spends nothing."""
+        for key in [key for key in self._probes if key[0] == contract_id]:
+            if provider is None or key[1] == provider:
+                self._slots.pop(key, None)
+                self._probes.pop(key, None)
+                self._last_used.pop(key, None)
 
-        funder = self._funded_by.get(contract_id)
-        return contract_id in self._slots or (funder is not None and funder in self._slots)
+    def drop_host(self, provider: str) -> None:
+        """The host took its key out of its store; no Contract is served it any more."""
+
+        self._host.pop(provider, None)
+        self._host_probes.pop(provider, None)
+
+    def resolve(
+        self, contract_id: UUID | None, provider: str | None, *, host_key_only: bool = False
+    ) -> CredentialSlot | None:
+        """The slot this call spends, read at the call (22 A8).
+
+        ``host_key_only`` is a Directive routed to ``host_key``: the store's key or
+        nothing, never a delivered one. ``provider`` None is a caller with no Agent
+        Runtime (the triage turn), which speaks the OpenAI-compatible wire and takes the
+        first key held, OpenAI's first.
+        """
+
+        for candidate in self._candidates(contract_id, provider):
+            slot = None if host_key_only else self._delivered(contract_id, candidate)
+            if slot is None:
+                slot = self._host.get(candidate)
+            if slot is not None:
+                if contract_id is not None:
+                    self._last_used[(contract_id, candidate)] = datetime.now(UTC)
+                return slot
+        return None
+
+    def holds(self, contract_id: UUID | None, provider: str | None) -> bool:
+        """Whether a call for this Contract and provider would find a slot -- without the
+        use stamp :meth:`resolve` leaves, because choosing a Directive's mode spends
+        nothing."""
+
+        return any(
+            self._delivered(contract_id, candidate) is not None or candidate in self._host
+            for candidate in self._candidates(contract_id, provider)
+        )
+
+    def holds_host(self, provider: str) -> bool:
+        return provider in self._host
+
+    def host_probe(self, provider: str) -> SlotProbe | None:
+        """The probe of the store's key for this provider; None while the store holds none."""
+
+        return self._host_probes.get(provider)
 
     def statuses(self) -> list[SlotStatus]:
-        """The heartbeat's slot fields (22 A10, issue 31's ``valid|invalid|unprobed``)."""
+        """The heartbeat's delivered-slot fields (22 A10, issue 31's ``valid|invalid|
+        unprobed``), one per Contract and provider. The store's keys are reported in the
+        LLM access report instead."""
 
-        contract_ids = sorted(set(self._slots) | set(self._probes) | set(self._funded_by), key=str)
+        keys = sorted(set(self._slots) | set(self._probes), key=lambda key: (str(key[0]), key[1]))
         return [
             SlotStatus(
                 contract_id=contract_id,
-                runtime_kind=(
-                    self._slots[contract_id].runtime_kind if contract_id in self._slots else "codex"
+                runtime_kind=_runtime_kind(provider),
+                present=(contract_id, provider) in self._slots,
+                key_id=(
+                    self._slots[(contract_id, provider)].key_id
+                    if (contract_id, provider) in self._slots
+                    else None
                 ),
-                present=contract_id in self._slots,
-                key_id=(self._slots[contract_id].key_id if contract_id in self._slots else None),
                 delivered_at=(
-                    self._slots[contract_id].delivered_at if contract_id in self._slots else None
+                    self._slots[(contract_id, provider)].delivered_at
+                    if (contract_id, provider) in self._slots
+                    else None
                 ),
-                last_used_at=self._last_used.get(contract_id),
-                probe=self._probes.get(contract_id, SlotProbe.UNPROBED),
+                last_used_at=self._last_used.get((contract_id, provider)),
+                probe=self._probes.get((contract_id, provider), SlotProbe.UNPROBED),
             )
-            for contract_id in contract_ids
+            for contract_id, provider in keys
         ]
+
+    def _delivered(self, contract_id: UUID | None, provider: str) -> CredentialSlot | None:
+        return None if contract_id is None else self._slots.get((contract_id, provider))
+
+    def _candidates(self, contract_id: UUID | None, provider: str | None) -> list[str]:
+        if provider is not None:
+            return [provider]
+        held = {name for owner, name in self._slots if owner == contract_id} | set(self._host)
+        preferred = [LlmProvider.OPENAI.value, LlmProvider.ANTHROPIC.value]
+        return preferred + sorted(held - set(preferred))
+
+
+def _runtime_kind(provider: str) -> str:
+    return next((kind for kind, owner in RUNTIME_PROVIDERS.items() if owner == provider), provider)
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,11 +455,10 @@ class Ceilings:
 
     contract_limit: int | None = None
     contract_used: int = 0
+    # Pushed only where the Organisation's ceiling counts this Runner's usage: on the
+    # Organisation's own Runners (Spec: Runners rev 3).
     organisation_limit: int | None = None
     organisation_used: int = 0
-    # The Organisation's ceiling covers its org-funded Contracts only: a user-funded
-    # Contract spends the user's own key and is none of the org's budget (map 12 B3).
-    org_funded: bool = False
 
 
 class CeilingStore:
@@ -439,7 +497,7 @@ class CeilingStore:
                 raise CeilingExhaustedError(
                     ceiling="contract", limit=ceilings.contract_limit, used=used
                 )
-        if not ceilings.org_funded or ceilings.organisation_limit is None:
+        if ceilings.organisation_limit is None:
             return
         used = ceilings.organisation_used + local
         if used >= ceilings.organisation_limit:
@@ -504,6 +562,12 @@ class AttemptHandle:
     # A per-attempt cap on top of the Contract's ceilings: the Learning reserve (PRD issue
     # 55, map 12 B6). None is no cap -- every ordinary Directive.
     reserve_max_tokens: int | None = None
+    # Which provider's slot this attempt spends (`llm_access.provider_for` its cli_kind);
+    # None for the triage turn, which takes whichever key is held.
+    provider: str | None = None
+    # A Directive routed to `host_key`: the store's key only, so a key that leaves the
+    # store mid-Directive fails its next call rather than falling back to another.
+    host_key_only: bool = False
 
     def env(self, cli_kind: str) -> dict[str, str]:
         return attempt_env(cli_kind, base_url=self.base_url, token=self.token)
@@ -597,6 +661,8 @@ class LlmProxy:
         work_record_id: UUID | None = None,
         token: str | None = None,
         reserve_max_tokens: int | None = None,
+        provider: str | None = None,
+        host_key_only: bool = False,
     ) -> AsyncIterator[AttemptHandle]:
         """Admit one Directive attempt for as long as it runs, and no longer.
 
@@ -615,6 +681,8 @@ class LlmProxy:
             agent_id=agent_id,
             work_record_id=work_record_id,
             reserve_max_tokens=reserve_max_tokens,
+            provider=provider,
+            host_key_only=host_key_only,
         )
         self._attempts[attempt_id] = handle
         try:
@@ -656,7 +724,9 @@ class LlmProxy:
             await write_json(writer, 404, {"detail": "no such proxy route"})
             return
 
-        slot = self.slots.resolve(attempt.contract_id)
+        slot = self.slots.resolve(
+            attempt.contract_id, attempt.provider, host_key_only=attempt.host_key_only
+        )
         if slot is None:
             await self._refused(attempt, reason="slot_missing")
             await write_json(

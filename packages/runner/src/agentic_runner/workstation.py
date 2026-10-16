@@ -57,8 +57,10 @@ from agentic_runner_contracts.runner_registration import (
     EgressPosture,
     HostAttestation,
     InstallChannel,
+    InstallTarget,
     IsolationMode,
     LifecycleKind,
+    RunnerInstall,
     SessionKind,
     StoreKind,
 )
@@ -724,4 +726,6 @@ def run_process(paths: OrgPaths, *, login_agent: bool) -> int:
         store=store.kind,
         path=settings.path,
     )
-    return asyncio.run(service.run(host_store=store, attestation=attestation))
+    # A workstation's hostname can name its person, so it is never reported (rev 3).
+    install = RunnerInstall(target=InstallTarget.WORKSTATION)
+    return asyncio.run(service.run(host_store=store, attestation=attestation, install=install))

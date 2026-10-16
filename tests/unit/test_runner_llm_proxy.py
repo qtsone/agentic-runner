@@ -199,26 +199,121 @@ async def test_a_value_that_fails_the_probe_is_not_swapped_in(provider: FakeProv
     assert (status.present, status.key_id, status.probe) == (True, "key-a", SlotProbe.INVALID)
 
 
+def provider_slot(value: str, provider_name: str) -> CredentialSlot:
+    return CredentialSlot(
+        reference=f"{provider_name}_key",
+        key_id=f"{provider_name}-key",
+        provider_name=provider_name,
+        base_url="https://provider.test/v1",
+        value=value,
+        runtime_kind="codex_cli" if provider_name == "openai" else "claude_code",
+    )
+
+
+def provider_attempt(
+    proxy: LlmProxy, provider_name: str | None, *, host_key_only: bool = False
+) -> Any:
+    return proxy.attempt(
+        directive_id=DIRECTIVE,
+        contract_id=CONTRACT,
+        agent_id=AGENT,
+        work_record_id=WORK_RECORD,
+        provider=provider_name,
+        host_key_only=host_key_only,
+    )
+
+
 @pytest.mark.asyncio
-async def test_a_leaf_contract_resolves_the_funding_contracts_slot(
+async def test_a_contract_with_keys_for_both_providers_keeps_both(
     provider: FakeProvider,
 ) -> None:
-    """22 A6: the mapping is issue 34's data; the proxy only follows it."""
+    """Rev 3: one slot per Contract and provider. A Claude Code Directive spends the
+    Anthropic key and a Codex Directive the OpenAI key, whichever was delivered last."""
 
     async def always_valid(_: CredentialSlot) -> bool:
         return True
 
     slots = SlotStore(probe=always_valid)
-    await slots.put(ACCOUNT_CONTRACT, slot("sk-account"))
-    slots.fund_from(CONTRACT, ACCOUNT_CONTRACT)
+    await slots.put(CONTRACT, provider_slot("sk-openai", "openai"))
+    await slots.put(CONTRACT, provider_slot("sk-ant-api", "anthropic"))
+
+    async with LlmProxy(
+        slots=slots, client=httpx.AsyncClient(transport=provider.transport())
+    ) as running:
+        async with provider_attempt(running, "openai") as handle:
+            assert (await complete(handle)).status_code == 200
+        async with provider_attempt(running, "anthropic") as handle:
+            assert (await complete(handle)).status_code == 200
+
+    assert provider.keys_seen == ["Bearer sk-openai", "Bearer sk-ant-api"]
+    assert {(status.runtime_kind, status.present) for status in slots.statuses()} == {
+        ("codex_cli", True),
+        ("claude_code", True),
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_host_stores_key_serves_every_contract(provider: FakeProvider) -> None:
+    """Rev 3: the key in the Runner's own store reaches the proxy for every Contract."""
+
+    async def always_valid(_: CredentialSlot) -> bool:
+        return True
+
+    slots = SlotStore(probe=always_valid)
+    assert await slots.put_host(provider_slot("sk-host", "openai")) == SlotProbe.VALID
+
+    async with LlmProxy(
+        slots=slots, client=httpx.AsyncClient(transport=provider.transport())
+    ) as running:
+        for contract_id in (CONTRACT, ACCOUNT_CONTRACT):
+            async with running.attempt(
+                directive_id=DIRECTIVE, contract_id=contract_id, provider="openai"
+            ) as handle:
+                assert (await complete(handle)).status_code == 200
+
+    assert provider.keys_seen == ["Bearer sk-host", "Bearer sk-host"]
+    assert slots.host_probe("openai") == SlotProbe.VALID
+    assert slots.host_probe("anthropic") is None
+
+
+@pytest.mark.asyncio
+async def test_a_host_key_directive_never_falls_back_to_a_delivered_key(
+    provider: FakeProvider,
+) -> None:
+    """A Directive routed to `host_key` spends the store's key or nothing: once the host
+    takes it out, the next call is refused although a delivered key is still held."""
+
+    async def always_valid(_: CredentialSlot) -> bool:
+        return True
+
+    slots = SlotStore(probe=always_valid)
+    await slots.put(CONTRACT, provider_slot("sk-delivered", "openai"))
+    await slots.put_host(provider_slot("sk-host", "openai"))
 
     async with (
         LlmProxy(slots=slots, client=httpx.AsyncClient(transport=provider.transport())) as running,
-        open_attempt(running) as handle,
+        provider_attempt(running, "openai", host_key_only=True) as handle,
     ):
         assert (await complete(handle)).status_code == 200
+        slots.drop_host("openai")
+        assert (await complete(handle)).status_code == 503
 
-    assert provider.keys_seen[-1] == "Bearer sk-account"
+    assert provider.keys_seen == ["Bearer sk-host"]
+
+
+@pytest.mark.asyncio
+async def test_a_host_key_the_provider_refuses_is_reported_and_not_served(
+    provider: FakeProvider,
+) -> None:
+    async def refuses(_: CredentialSlot) -> bool:
+        return False
+
+    slots = SlotStore(probe=refuses)
+
+    assert await slots.put_host(provider_slot("sk-typo", "anthropic")) == SlotProbe.INVALID
+    assert not slots.holds_host("anthropic")
+    assert slots.host_probe("anthropic") == SlotProbe.INVALID
+    assert slots.resolve(CONTRACT, "anthropic") is None
 
 
 @pytest.mark.asyncio
@@ -275,22 +370,17 @@ async def test_a_call_over_the_contract_ceiling_is_refused_with_the_typed_error(
 
 
 @pytest.mark.asyncio
-async def test_the_organisation_ceiling_ignores_a_user_funded_contract(
+async def test_the_organisation_ceiling_applies_wherever_it_is_pushed(
     proxy: LlmProxy, provider: FakeProvider
 ) -> None:
-    """Map 12 B3: a user-funded Contract spends the user's own key, not the org's budget."""
+    """Rev 3: the control plane pushes the Organisation's ceiling only to the
+    Organisation's own Runners, so the Runner applies whatever it is pushed."""
 
-    proxy.ceilings.push(
-        CONTRACT,
-        Ceilings(organisation_limit=10, organisation_used=10, org_funded=False),
-    )
+    proxy.ceilings.push(CONTRACT, Ceilings(organisation_limit=None, organisation_used=10))
     async with open_attempt(proxy) as handle:
         assert (await complete(handle)).status_code == 200
 
-    proxy.ceilings.push(
-        CONTRACT,
-        Ceilings(organisation_limit=10, organisation_used=10, org_funded=True),
-    )
+    proxy.ceilings.push(CONTRACT, Ceilings(organisation_limit=10, organisation_used=10))
     async with open_attempt(proxy) as handle:
         refused = await complete(handle)
 

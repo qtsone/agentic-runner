@@ -86,36 +86,40 @@ To drive a CLI through its ACP bridge, name its kind on `install`:
 
 ## Sign in to Codex and Claude Code
 
-Each Contract's CLI runs under its own sign-in, which the Runner keeps in the Contract's
-own directory under its state root. It does not read your own `~/.codex` or `~/.claude`.
-
-**Codex** signs in from the console: on the Contract's page, start the sign-in and finish
-it in your browser.
-
-**Claude Code** signs in on this computer, in your terminal, with Anthropic's own sign-in:
+Give your Runner your LLM access with one command, in your terminal:
 
 ```sh
-agentic-runner sign-in --org acme --contract <contract-id>
+agentic-runner sign-in claude     # or: sign-in codex; with no argument it asks about each
 ```
 
-The Contract's page shows its id. The first time you sign a Contract in, the command asks
-you to confirm the id, because a mistyped one would get a signed-in directory of its own.
-The command runs `claude` as the Contract, in the
-Contract's directory, and connects it to your terminal. Do what Claude asks: open the link
-and approve in your browser. If the browser shows you a code, paste it into the terminal.
-The code and the login stay on this computer. Nothing goes through the console, which only
-shows whether the Contract is signed in.
+It takes no ids: your Runner serves one Contract, and the Runner learned which from the
+control plane. If this computer runs Runners for more than one Organisation, add
+`--org acme`. For each CLI it offers two things:
 
-Claude Code has two ways to sign in. Both use your Claude subscription:
+- **Your subscription.** The command runs the vendor's own sign-in as the Contract, in the
+  Contract's own directory under the state root, connected to your terminal. It does not
+  read your own `~/.codex` or `~/.claude`. Do what the CLI asks: open the link and approve
+  in your browser. Codex (`codex login --device-auth`) shows a code in the terminal to
+  enter in the browser. The code and the login stay on this computer; nothing goes through
+  the console. Claude Code signs in one of two ways:
+  - **Long-lived token** (the default, `--method oauth_token`). Claude prints a token that
+    lasts a year, and the Runner saves it in the Contract's directory, readable by that
+    Contract only.
+  - **Claude.ai sign-in** (`--method claude_ai`). A login that renews itself until you sign
+    out. On macOS the Runner keeps it in a keychain of the Contract's own, not in your
+    login keychain.
 
-- **Long-lived token** (the default, `--method oauth_token`). Claude asks you to approve a
-  token that lasts a year. Claude prints the token in your terminal, and the Runner saves
-  it in the Contract's directory, readable by that Contract only. You sign in once a year.
-- **Claude.ai sign-in** (`--method claude_ai`). A login that renews itself until you sign
-  out. On macOS the Runner keeps it in a keychain of the Contract's own, not in your login
-  keychain.
+  The command refuses a subscription when your Contract does not allow your own
+  subscription, or you have not acknowledged the subscription terms in the console, and
+  says which.
+- **An API key.** Typed without echo, and kept in this Organisation's store (the login
+  keychain on macOS) under the provider's key name: `ANTHROPIC_API_KEY` or
+  `OPENAI_API_KEY`. `credential set` puts one there too. The Runner checks it with the
+  provider within one heartbeat and serves it to your Agents through its LLM proxy; the
+  Agent's CLI never sees it.
 
-To sign in again, run the command again. A new sign-in replaces the old one.
+The console shows which of the two each CLI has, from the Runner's heartbeat. To sign in
+again, run the command again. A new sign-in replaces the old one.
 
 ## Give it work
 
@@ -123,7 +127,7 @@ To sign in again, run the command again. A new sign-in replaces the old one.
 Runner is running:
 
 1. Open **/me/runners** in the console. Your Runner is listed there, online.
-2. Sign in the Contract's CLI, as above.
+2. Sign in, as above.
 3. Open **/me/work/new** and pick a Contract the page says *runs on a Runner you host*.
    Describe the work and create the Work Record.
 4. On **/me/work/[id]**, the Evidence names the Runner that took it.
@@ -140,6 +144,7 @@ agentic-runner status acme    # process, identity, heartbeat age
 agentic-runner stop acme      # this Organisation only; every other one keeps running
 agentic-runner start acme
 printf %s "$VALUE" | agentic-runner credential set acme deploy_key   # a Credential Reference
+printf %s "$KEY" | agentic-runner credential set acme OPENAI_API_KEY    # your own LLM key
 ```
 
 `stop` drains: the Runner takes no new work and lets the Directive in flight finish.

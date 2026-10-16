@@ -15,6 +15,12 @@ login is the Contract's alone:
 The platform decides who may use a subscription at the door (the Subscription Principal
 and the Organisation's opt-in, QTS-1350); this module is the backstop, so it decides from
 what the Runner itself can check and never from the payload.
+
+From contracts 3.24 the platform names the access in the Directive's routing
+(``DirectiveRouting.llm_access``, Spec: Runners rev 3). :func:`require_named_access` then
+replaces the choice: the Runner runs on exactly the named access or refuses, and never
+falls back to another. A Directive without it, from a control plane on an older pin, keeps
+:func:`choose_auth_mode`.
 """
 
 from __future__ import annotations
@@ -23,16 +29,24 @@ from collections.abc import Collection
 from typing import Final
 
 from agentic_runner.workers.agent_runtime import AuthMode
+from agentic_runner_contracts.llm_access import LlmAccess, LlmAccessKind
+from agentic_runner_contracts.runner_registration import SubscriptionState
 
 __all__ = [
     "NO_RUNTIME_SUBSCRIPTION_RULE",
+    "HOST_KEY_NOT_HELD_RULE",
+    "LLM_ACCESS_UNKNOWN_RULE",
+    "LLM_KEY_UNSUPPORTED_RULE",
     "SETUP_TOKEN_REFUSED_RULE",
+    "SUBSCRIPTION_NOT_SIGNED_IN_RULE",
+    "SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE",
     "SHARED_HOST_PARTIES",
     "SIGN_IN_NEEDS_CONTRACT_UID_RULE",
     "SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE",
     "SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE",
     "AuthModeRefusedError",
     "choose_auth_mode",
+    "require_named_access",
     "is_setup_token",
     "is_shared_runner",
     "runs_subscriptions",
@@ -46,6 +60,12 @@ SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE: Final[str] = "subscription_needs_harness_
 NO_RUNTIME_SUBSCRIPTION_RULE: Final[str] = "runtime_has_no_subscription_mode"
 SIGN_IN_NEEDS_CONTRACT_UID_RULE: Final[str] = "sign_in_needs_contract_uid"
 SETUP_TOKEN_REFUSED_RULE: Final[str] = "setup_token_refused"
+# A Directive whose named `llm_access` this Runner no longer holds (rev 3).
+HOST_KEY_NOT_HELD_RULE: Final[str] = "host_key_not_held"
+SUBSCRIPTION_NOT_SIGNED_IN_RULE: Final[str] = "subscription_not_signed_in"
+SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE: Final[str] = "subscription_off_personal_runner"
+LLM_KEY_UNSUPPORTED_RULE: Final[str] = "llm_key_unsupported"
+LLM_ACCESS_UNKNOWN_RULE: Final[str] = "llm_access_unknown"
 # `claude setup-token` mints an OAuth bearer under this prefix; an Anthropic API key is
 # `sk-ant-api…`. The sealed wire carries no mode, so the value's own shape is what the
 # Runner can refuse on.
@@ -120,6 +140,60 @@ def choose_auth_mode(
             "kind runs on API keys only",
         )
     return AuthMode.SUBSCRIPTION
+
+
+def require_named_access(
+    access: LlmAccess,
+    *,
+    host_party: str | None,
+    host_key_held: bool,
+    subscription: SubscriptionState,
+    runtime_modes: Collection[AuthMode],
+) -> AuthMode:
+    """The mode the named access runs in, or a refusal naming what is missing.
+
+    ``host_key_held`` is the provider's key in this Runner's own store, serving in the
+    proxy; ``subscription`` the Contract's harness root for the Directive's kind. A
+    subscription runs only on its person's own Runner (rev 3: never on a pool Runner),
+    and only while it is signed in, unexpired and not at its usage limit.
+    """
+
+    if access.kind == LlmAccessKind.HOST_KEY:
+        if not host_key_held:
+            raise AuthModeRefusedError(
+                HOST_KEY_NOT_HELD_RULE,
+                "this Directive was routed to the provider's key in this Runner's own store, "
+                "and the store no longer holds a key the provider accepts",
+            )
+        return AuthMode.API_KEY
+    if access.kind == LlmAccessKind.SUBSCRIPTION:
+        if host_party != "user":
+            raise AuthModeRefusedError(
+                SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
+                f"this Runner is hosted by {host_party!r}; a subscription runs only on its "
+                "person's own Runner",
+            )
+        if AuthMode.SUBSCRIPTION not in runtime_modes:
+            raise AuthModeRefusedError(
+                NO_RUNTIME_SUBSCRIPTION_RULE,
+                "this Runner's runtime for the Directive's CLI kind runs on API keys only",
+            )
+        if subscription != SubscriptionState.SIGNED_IN:
+            raise AuthModeRefusedError(
+                SUBSCRIPTION_NOT_SIGNED_IN_RULE,
+                f"this Directive was routed to the person's subscription, and its sign-in on "
+                f"this Runner is {subscription.value}; run `agentic-runner sign-in` here",
+            )
+        return AuthMode.SUBSCRIPTION
+    if access.kind == LlmAccessKind.LLM_KEY:
+        raise AuthModeRefusedError(
+            LLM_KEY_UNSUPPORTED_RULE,
+            "this Directive was routed to one of the pool's LLM Keys, which this Runner "
+            "release cannot open; update the Runner",
+        )
+    raise AuthModeRefusedError(
+        LLM_ACCESS_UNKNOWN_RULE, f"this Runner does not know the LLM access {access.kind!r}"
+    )
 
 
 def is_setup_token(value: str) -> bool:

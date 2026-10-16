@@ -15,9 +15,10 @@ the Organisation's cap.
 Runner (PRD issue 47, ``workstation.py``): one login agent per Organisation, managed by
 the user who hosts it, with no ``sudo`` anywhere.
 
-``sign-in --contract <id>`` signs one Contract's Claude Code in with Anthropic's own flow,
-in this terminal, as that Contract's uid in its harness root (QTS-1448). No code or token
-passes through the control plane.
+``sign-in [claude|codex]`` gives a person's own Runner their LLM access: their subscription,
+through the vendor's own sign-in in this terminal, or an API key stored in the Runner's
+own store (``sign_in.py``, Spec: Runners rev 3). No ids, and no code or token passes
+through the control plane.
 
 ``skill install | print`` hands the setup skill to the person's own Claude Code or Codex
 (``skill.py``, console-v2 issue 21).
@@ -37,10 +38,10 @@ import asyncio
 import getpass
 import json
 import os
+import socket
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from uuid import UUID
 
 from agentic_runner import __version__ as runner_version
 from agentic_runner import service, skill, workstation
@@ -66,11 +67,14 @@ from agentic_runner.service import (
     parse_tags,
     registration_token_from_env,
 )
+from agentic_runner.sign_in import AGENT_RUNTIMES, KeyStore
 from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN, SIGN_IN_METHODS
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
     HostAttestation,
     InstallChannel,
+    InstallTarget,
+    RunnerInstall,
     SessionKind,
     StoreKind,
 )
@@ -212,17 +216,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sign_in = subcommands.add_parser(
         "sign-in",
-        help="sign a Contract's Claude Code in with Anthropic's own flow, in this terminal",
+        help="give your own Runner your subscription or an API key, for Claude Code or Codex",
     )
-    sign_in.add_argument("--contract", required=True, help="the Contract's id")
+    sign_in.add_argument(
+        "runtime",
+        nargs="?",
+        choices=tuple(AGENT_RUNTIMES),
+        help="one Agent Runtime; omitted asks about each one this Runner serves",
+    )
     sign_in.add_argument(
         "--method",
         default=OAUTH_TOKEN,
         choices=SIGN_IN_METHODS,
-        help="oauth_token: a long-lived token (claude setup-token); claude_ai: a Claude.ai "
-        "login (claude auth login --claudeai)",
+        help="Claude subscriptions only. oauth_token: a long-lived token (claude setup-token); "
+        "claude_ai: a Claude.ai login (claude auth login --claudeai)",
     )
-    sign_in.add_argument("--org", default=None, help="a workstation Organisation (issue 47)")
+    sign_in.add_argument(
+        "--org",
+        default=None,
+        help="the workstation Organisation, when this workstation runs more than one",
+    )
     sign_in.add_argument("--root", default=None, type=Path, help=argparse.SUPPRESS)
 
     annotate = subcommands.add_parser("annotate", help="attach an annotation to this Work Record")
@@ -313,7 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "run":
         if arguments.org:
             return workstation.run_process(_org_paths(arguments), login_agent=arguments.login_agent)
-        return asyncio.run(service.run(attestation=_image_attestation()))
+        return asyncio.run(service.run(attestation=_image_attestation(), install=_run_install()))
     if arguments.command in {"install", "start", "stop", "credential"}:
         return _workstation(arguments)
     if arguments.command == "recipient-key":
@@ -390,29 +403,74 @@ def _image_attestation() -> HostAttestation:
             else InstallChannel.MANUAL
         ),
         session=SessionKind.CONTAINER,
-        store=StoreKind.FILE if load_config().credential_store is not None else StoreKind.NONE,
+        # Always a store: the state directory's own, where `sign-in` keeps a key, read
+        # before any mounted Secret (`service.build_credential_resolver`).
+        store=StoreKind.FILE,
         path=os.environ.get("PATH", ""),
     )
 
 
+def _run_install() -> RunnerInstall:
+    """Where a command reaches this ``run``: Helm or Docker with the hostname -- the pod
+    name under Helm, the container id under Docker -- and anything else as a workstation,
+    whose hostname can name its person and is never reported (rev 3)."""
+
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return RunnerInstall(target=InstallTarget.HELM, hostname=socket.gethostname() or None)
+    if _in_docker():
+        return RunnerInstall(target=InstallTarget.DOCKER, hostname=socket.gethostname() or None)
+    return RunnerInstall(target=InstallTarget.WORKSTATION)
+
+
+def _in_docker() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _in_container() -> bool:
+    return bool(os.environ.get("KUBERNETES_SERVICE_HOST")) or _in_docker()
+
+
 def _sign_in(arguments: argparse.Namespace) -> int:
-    try:
-        contract_id = str(UUID(arguments.contract))
-    except ValueError:
-        print(f"--contract expects a Contract id, got {arguments.contract!r}", file=sys.stderr)
-        return 2
     if not (os.isatty(0) and os.isatty(1)):
         print(
             "sign-in is interactive: run it in a terminal (`kubectl exec -it`, `docker exec -it`)",
             file=sys.stderr,
         )
         return 2
-    if arguments.org:
-        paths = _org_paths(arguments)
+    store: KeyStore
+    if arguments.org or not _in_container():
+        try:
+            paths = _sign_in_org(arguments)
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
         os.environ.update(
             workstation.run_environment(paths, workstation.WorkstationSettings.load(paths))
         )
-    return asyncio.run(service.sign_in_claude(contract_id, method=arguments.method))
+        store = open_workstation_store(paths.org, fallback=paths.credentials)
+    else:
+        store = service.own_store(load_config())
+    return asyncio.run(service.sign_in(arguments.runtime, store=store, method=arguments.method))
+
+
+def _sign_in_org(arguments: argparse.Namespace) -> workstation.OrgPaths:
+    """``--org``, or the one Organisation this workstation runs -- no id to type."""
+
+    if arguments.org:
+        return _org_paths(arguments)
+    root = arguments.root or workstation.default_root()
+    installed = (
+        sorted(path.name for path in root.iterdir() if (path / "workstation.json").is_file())
+        if root.is_dir()
+        else []
+    )
+    if len(installed) != 1:
+        raise ValueError(
+            "no workstation Runner is installed here"
+            if not installed
+            else f"this workstation runs {', '.join(installed)}: name one with --org"
+        )
+    return workstation.OrgPaths(root=root, org=installed[0])
 
 
 def _install(arguments: argparse.Namespace, paths: workstation.OrgPaths) -> int:

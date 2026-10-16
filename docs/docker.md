@@ -66,22 +66,32 @@ AGENTIC_RUNNER_VERSION=<version> docker compose up -d
 ## What each part does
 
 - **The state volume** (`/var/lib/agentic-os`) holds the Runner's identity, its Recipient
-  Key, the Workspaces and each Contract's harness root, which is where the Codex and
-  Claude Code sign-ins are kept. One volume is enough. If you lose it, the Runner registers
-  again as a new Runner, every funder must deliver their sealed credentials again, and
-  every Contract must sign in again.
-- **Signing in.** Codex signs in from the console, on the Contract's page. Claude Code signs
-  in on the host, in your terminal, with Anthropic's own sign-in:
+  Key, the Workspaces, each Contract's harness root, which is where the Codex and
+  Claude Code sign-ins are kept, and the keys `sign-in` stored. One volume is enough. If
+  you lose it, the Runner registers again as a new Runner, every funder must deliver their
+  sealed credentials again, and you must sign in again.
+- **LLM access.** The Runner uses only its host's own access, and its heartbeat reports
+  which it holds. Two ways to give it:
 
-  ```sh
-  docker exec -it agentic-runner agentic-runner sign-in --contract <contract-id>
-  ```
+  - **A key in a mounted folder.** One file per key, named after the provider's key name
+    (`ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex), mounted read-only
+    with `-v /path/to/keys:/etc/agentic-runner/credentials:ro` and
+    `-e AGENTIC_RUNNER_CREDENTIAL_STORE=/etc/agentic-runner/credentials`. The Runner reads
+    it within one heartbeat, checks it with the provider, and serves it from its LLM proxy
+    to every Contract it runs. It never reaches an Agent Runtime.
+  - **`sign-in`, on your own Runner.** In your terminal:
 
-  It runs `claude` as the Contract's own user, in the Contract's harness root. Open the
-  link it prints, approve in your browser, and paste the code the browser shows you into
-  the terminal. Nothing goes through the console. `--method oauth_token` (the default) is
-  a long-lived token, valid for a year, that the Runner saves in the harness root, readable
-  by that Contract only. `--method claude_ai` is a Claude.ai login that renews itself.
+    ```sh
+    docker exec -it agentic-runner agentic-runner sign-in claude
+    ```
+
+    `sign-in codex` does the same for Codex; with no argument it asks about each. It
+    offers your subscription, through the vendor's own sign-in run as the Contract's own
+    user in its harness root (Claude Code's login, or `codex login --device-auth` with the
+    code shown in the terminal), or an API key, typed without echo and kept on the state
+    volume. It takes no ids, refuses on an Organisation's or an Account's Runner, and
+    refuses a subscription your Contract does not allow or you have not acknowledged,
+    saying which.
 - **`restart: unless-stopped`** brings the Runner back after a crash or a host reboot. It
   re-reads its identity from the volume and does not register a second time.
 - **`stop_grace_period: 35m`** (`--stop-timeout 2100`). On `SIGTERM` the Runner stops

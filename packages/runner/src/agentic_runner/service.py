@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import getpass
+import hashlib
 import logging
 import os
 import shutil
@@ -31,7 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID
 
 import httpx
@@ -48,28 +50,33 @@ from temporalio.worker import (
 from agentic_runner import __version__ as runner_version
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.attempts import AttemptRecords
-from agentic_runner.auth_mode import SIGN_IN_NEEDS_CONTRACT_UID_RULE, runs_subscriptions
+from agentic_runner.auth_mode import runs_subscriptions
 from agentic_runner.child_watcher import install_stop_tolerant_child_watcher
 from agentic_runner.config import RunnerConfig
 from agentic_runner.config import load as load_config
 from agentic_runner.credentials import (
     CredentialResolver,
     DirectoryCredentialStore,
-    EmptyCredentialStore,
     HostCredentialStore,
+    LayeredCredentialStore,
 )
-from agentic_runner.device_login_activities import ContractDeviceLoginActivities
 from agentic_runner.harness_self_test import DirectivesInFlight, HarnessSelfTests
 from agentic_runner.heartbeat_link import WAKE_DIVERGENCE, HeartbeatLink
 from agentic_runner.hooks import AttemptFacts, HookName, HookRunner
+from agentic_runner.host_store import FileCredentialStore
 from agentic_runner.integrations.git.workspace import LocalGitWorkspace
 from agentic_runner.integrations.github.gh_client import GitHubAppClient
 from agentic_runner.integrations.oauth import HttpOAuthProvider
 from agentic_runner.lifecycle import LIFECYCLE_FILENAME, LifecycleOutbox
+from agentic_runner.llm_contracts import (
+    LLM_CONTRACTS_FILENAME,
+    load_llm_contracts,
+    save_llm_contracts,
+)
 from agentic_runner.llm_proxy import (
     LLM_SLOT_REFERENCES,
     CeilingStore,
-    LlmProvider,
+    LlmEndpoint,
     LlmProxy,
     SlotStore,
     UsageOutbox,
@@ -108,6 +115,7 @@ from agentic_runner.sealed_box import (
     RecipientKeyStore,
     SealedCredentialStream,
 )
+from agentic_runner.sign_in import KeyStore, SignIn
 from agentic_runner.tiny_http import HttpRequest, read_request, write_json
 from agentic_runner.triage_activities import RunnerTriageActivities
 from agentic_runner.usage_windows import (
@@ -120,19 +128,27 @@ from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_executables
 from agentic_runner.workers.agent_runtime import AgentRuntime
 from agentic_runner.workers.claude_runtime import ClaudeRuntime
-from agentic_runner.workers.claude_sign_in import ClaudeSignInError, ClaudeSignIns
+from agentic_runner.workers.claude_sign_in import OAUTH_TOKEN, ClaudeSignInError, ClaudeSignIns
 from agentic_runner.workers.codex_runtime import CodexRuntime
-from agentic_runner.workers.contract_device_login import ContractDeviceLogin
 from agentic_runner.workers.contract_isolation import UID_MAP_FILENAME, ContractIsolation
 from agentic_runner.workers.fastapi_client import DirectiveTokenSource, RunnerFastApiClient
+from agentic_runner.workers.harness_logins import (
+    CodexSignInError,
+    CodexSignIns,
+    holds_login,
+    subscription_report,
+)
 from agentic_runner.workers.settings import WorkerSettings, get_worker_settings
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.channel_messages import TranscriptDelivery
+from agentic_runner_contracts.llm_access import PROVIDER_KEY_NAMES, provider_for
 from agentic_runner_contracts.routing import RunnerRoutingIdentity
 from agentic_runner_contracts.runner_registration import (
     RECENT_OUTCOMES_MAX,
     AcpBridgeVersion,
     CliVersion,
+    ContractLlmAccess,
+    ContractLlmTerms,
     CredentialManifest,
     CredentialValidity,
     DirectiveOutcome,
@@ -144,9 +160,14 @@ from agentic_runner_contracts.runner_registration import (
     HostAttestation,
     IsolationMode,
     LifecycleKind,
+    ProviderKeyReport,
     RecipientKey,
     ResourcePressure,
+    RunnerInstall,
     RunnerLimitReport,
+    RuntimeSubscriptionReport,
+    SlotProbe,
+    SubscriptionState,
 )
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContextResolver
 from agentic_runner_contracts.sealed_credential import key_fingerprint
@@ -174,10 +195,11 @@ __all__ = [
     "parse_tags",
     "recipient_key",
     "register",
+    "own_store",
     "run",
+    "sign_in",
     "run_runner_lifecycle_hook",
     "run_worker_until_terminated",
-    "sign_in_claude",
     "with_profile_acp_cli_kinds",
 ]
 
@@ -223,6 +245,8 @@ _SHUTDOWN_HEADROOM_SECONDS = 60
 # process touches on every acknowledged heartbeat, whose mtime is the heartbeat age.
 PIDFILE_NAME = "runner.pid"
 HEARTBEAT_STAMP_NAME = "last-heartbeat"
+# The keys `agentic-runner sign-in` stores on a container Runner (`own_store`).
+OWN_STORE_DIR = "credentials"
 # Every top-level state file the Runner reads back. A workstation's state directory also
 # holds files the Runner only writes or the OS service manager owns (`runner.log`), so the
 # start check names these rather than refusing whatever else sits beside them.
@@ -231,6 +255,7 @@ _PRIVATE_STATE_FILES = (
     RECIPIENT_KEY_FILENAME,
     LIFECYCLE_FILENAME,
     UID_MAP_FILENAME,
+    LLM_CONTRACTS_FILENAME,
 )
 
 
@@ -390,25 +415,33 @@ def build_hook_runner(config: RunnerConfig) -> HookRunner:
     return HookRunner(hooks_path=config.hooks_path)
 
 
-def build_credential_resolver(
-    config: RunnerConfig,
-    *,
-    host_store: HostCredentialStore | None = None,
-    host_party: str | None = None,
-) -> CredentialResolver:
-    """The host store a Directive resolves its Credential References from (22 A1).
-
-    No store configured resolves to `EmptyCredentialStore` rather than to no resolver at
-    all -- "nothing is installed" is the fail-closed reading. Values a funder sealed land
-    in this same resolver, under the same reference name, from the heartbeat stream.
+def own_store(config: RunnerConfig) -> FileCredentialStore:
+    """Where ``agentic-runner sign-in`` keeps a key typed on a container Runner, whose
+    configured store is a read-only mounted Secret: ``0600`` files in the state directory.
     """
 
-    store: HostCredentialStore = host_store or (
-        DirectoryCredentialStore(config.credential_store)
-        if config.credential_store is not None
-        else EmptyCredentialStore()
-    )
-    return CredentialResolver(store=store, host_party=host_party)
+    return FileCredentialStore(config.state_dir / OWN_STORE_DIR)
+
+
+def build_credential_resolver(
+    config: RunnerConfig, *, host_store: HostCredentialStore | None = None
+) -> CredentialResolver:
+    """The host store a Directive resolves its Credential References from (22 A1), and the
+    LLM proxy its keys by the provider's key name (Spec: Runners rev 3).
+
+    A workstation passes its OS store, which ``sign-in`` and ``credential set`` both write.
+    A container reads the keys ``sign-in`` stored first, then the mounted Secret; with
+    neither holding a value, "nothing is installed" is the fail-closed reading. Values a
+    funder sealed land in this same resolver, under the same reference name, from the
+    heartbeat stream.
+    """
+
+    if host_store is not None:
+        return CredentialResolver(store=host_store)
+    stores: list[HostCredentialStore] = [own_store(config)]
+    if config.credential_store is not None:
+        stores.append(DirectoryCredentialStore(config.credential_store))
+    return CredentialResolver(store=LayeredCredentialStore(*stores))
 
 
 def build_socket_dir(config: RunnerConfig) -> Path:
@@ -777,8 +810,13 @@ class ControlPlaneStream:
     self_tests: HarnessSelfTests | None = None
     # Local-agents 10: each subscription's usage windows; None off a user-hosted Runner.
     usage_windows: UsageWindows | None = None
-    # Local-agents 04b: which delivered references fill the LLM proxy's slot, and where.
-    llm_slots: Mapping[str, LlmProvider] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
+    # Local-agents 04b and rev 3: which key names fill the LLM proxy's slots, delivered or
+    # from the host's own store, and where each is spent.
+    llm_slots: Mapping[str, LlmEndpoint] = field(default_factory=lambda: dict(LLM_SLOT_REFERENCES))
+    # Rev 3: where a command reaches this Runner, and where the ack's Contract terms are
+    # kept for `agentic-runner sign-in`.
+    install: RunnerInstall | None = None
+    state_dir: Path | None = None
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
     # ADR-0022 §57: the Runner Limit read at start and its posture; None while it is empty.
@@ -787,6 +825,12 @@ class ControlPlaneStream:
     # ADR-0022 §7: the Contracts the last ack asked this Runner to report references for.
     _manifests: list[CredentialManifest] = field(default_factory=list)
     _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
+    # The host store's keys offered to the proxy, by key name, as a digest: a changed
+    # value is probed again, an unchanged one is not.
+    _offered_host: dict[str, str] = field(default_factory=dict)
+    # Rev 3: the Contracts the last ack said this Runner serves; None until an ack from a
+    # control plane on 3.24 named them, and the LLM access report is sent only after.
+    _llm_contracts: list[ContractLlmTerms] | None = None
     _last_seen: tuple[float, datetime] | None = None
 
     def _observe_sleep(self, now: datetime) -> None:
@@ -812,37 +856,39 @@ class ControlPlaneStream:
         return 0.0 if server is None else round((now - server).total_seconds(), 1)
 
     def _harnesses(self) -> list[HarnessVersion]:
-        """Per Contract: the CLI's version and whether it runs on a delivered key (22 A8)
-        or on the login its funder created in the harness root -- read off the slot, never
-        off the root, which the Runner does not open. A Contract with a harness root and no
-        slot is listed too, so a login-only Contract gets its descriptor (local-agents 17).
+        """Per Contract: the CLI's version and whether it runs on a key the proxy holds
+        (22 A8) or on a sign-in in the harness root -- read off the slots and by ``stat``,
+        never by opening the root. A Contract with a harness root and no slot is listed
+        too, so a login-only Contract gets its descriptor (local-agents 17).
+
+        ``auth_mode`` is ``api_key``, ``subscription`` for a sign-in, or ``none``; it
+        replaced ``login``, which said only that no key was delivered (rev 3). The LLM
+        access report is the record routing reads; this row is the harness's descriptor.
         """
 
         if self.attestation is None:
             return []
         versions = {cli.cli_kind: cli.version for cli in self.attestation.clis}
-        slots = {
-            (str(slot.contract_id), slot.runtime_kind): slot.present
-            for slot in self.proxy.slots.statuses()
-        }
+        slots = {(str(slot.contract_id), slot.runtime_kind) for slot in self.proxy.slots.statuses()}
         roots = self.contracts.harness_roots() if self.contracts is not None else []
         return [
-            self._harness(
-                contract_id, cli_kind, versions, delivered=slots.get((contract_id, cli_kind), False)
-            )
-            for contract_id, cli_kind in sorted(set(slots) | set(roots))
+            self._harness(contract_id, cli_kind, versions)
+            for contract_id, cli_kind in sorted(slots | set(roots))
         ]
 
     def _harness(
-        self, contract_id: str, cli_kind: str, versions: Mapping[str, str], *, delivered: bool
+        self, contract_id: str, cli_kind: str, versions: Mapping[str, str]
     ) -> HarnessVersion:
         runtime = self.runtimes.get(cli_kind)
         capabilities = runtime.capabilities() if runtime is not None else None
+        provider = provider_for(cli_kind)
+        keyed = self.proxy.slots.holds(UUID(contract_id), provider) if provider else False
+        auth_mode = "api_key" if keyed else self._signed_in_mode(contract_id, cli_kind)
         return HarnessVersion(
             contract_id=UUID(contract_id),
             cli_kind=cli_kind,
             version=versions.get(cli_kind, "unknown"),
-            auth_mode="api_key" if delivered else "login",
+            auth_mode=auth_mode,
             auth_modes=(sorted(capabilities.auth_modes) if capabilities is not None else None),
             permission_mode=capabilities.permission_mode if capabilities is not None else None,
             self_test=(
@@ -852,10 +898,65 @@ class ControlPlaneStream:
             ),
             usage_windows=(
                 self.usage_windows.windows(contract_id, cli_kind)
-                if self.usage_windows is not None and not delivered
+                if self.usage_windows is not None
                 else None
             ),
         )
+
+    def _signed_in_mode(self, contract_id: str, cli_kind: str) -> str:
+        if self.contracts is None:
+            return "none"
+        report = self._subscription(contract_id, cli_kind)
+        return "none" if report.state == SubscriptionState.NONE else "subscription"
+
+    def _subscription(self, contract_id: str, cli_kind: str) -> RuntimeSubscriptionReport:
+        assert self.contracts is not None
+        return subscription_report(
+            self.contracts,
+            contract_id,
+            cli_kind,
+            windows=(
+                self.usage_windows.windows(contract_id, cli_kind)
+                if self.usage_windows is not None
+                else None
+            ),
+            now=self.clock(),
+        )
+
+    def _llm_access_report(self) -> list[ContractLlmAccess] | None:
+        """Per Contract the last ack named: the store's key and its probe per provider,
+        and the subscription per Agent Runtime served (Spec: Runners rev 3).
+
+        The store's keys are the host's and serve every Contract, so they repeat; a
+        subscription is one Contract's harness root's. Sent only once an ack named the
+        Contracts -- a control plane below 3.24 refuses the field.
+        """
+
+        if self._llm_contracts is None:
+            return None
+        keys = [
+            ProviderKeyReport(
+                provider=provider,
+                held=key_name in self._offered_host,
+                probe=self.proxy.slots.host_probe(provider.value) or SlotProbe.UNPROBED,
+            )
+            for provider, key_name in PROVIDER_KEY_NAMES.items()
+        ]
+        return [
+            ContractLlmAccess(
+                contract_id=terms.contract_id,
+                keys=keys,
+                subscriptions=(
+                    [
+                        self._subscription(str(terms.contract_id), cli_kind)
+                        for cli_kind in sorted(self.runtimes)
+                    ]
+                    if self.contracts is not None
+                    else []
+                ),
+            )
+            for terms in self._llm_contracts
+        ]
 
     def _credential_report(self) -> list[CredentialValidity]:
         """Per Contract the last ack named, whether each reference would resolve (§7).
@@ -882,6 +983,7 @@ class ControlPlaneStream:
     async def exchange(self, applied: Sequence[Any]) -> HeartbeatAck:
         now = self.clock()
         self._observe_sleep(now)
+        await self._sync_host_keys()
         lifecycle = self.lifecycle.pending() if self.lifecycle is not None else []
         renewed, resealed = self.sealed.renew(now)
         if self.oauth is not None:
@@ -916,6 +1018,8 @@ class ControlPlaneStream:
             oauth_tokens=self.oauth.uploads() if self.oauth else [],
             oauth_outcomes=self.oauth.take_outcomes() if self.oauth else [],
             runner_limit=self.runner_limit,
+            llm_access=self._llm_access_report(),
+            install=self.install if self._llm_contracts is not None else None,
         )
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
@@ -940,9 +1044,7 @@ class ControlPlaneStream:
             )
         self._sync_delivered()
         self._manifests = list(ack.credential_manifests)
-        self.credentials.fund(
-            {str(manifest.contract_id): manifest.funding_party for manifest in self._manifests}
-        )
+        self._take_llm_contracts(ack.llm_contracts)
         await self._sync_llm_slots()
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token
@@ -987,28 +1089,57 @@ class ControlPlaneStream:
             self.credentials.drop(contract_id, slot)
         self._delivered = set(plaintext)
 
+    def _take_llm_contracts(self, terms: list[ContractLlmTerms] | None) -> None:
+        """Keep the ack's Contract terms, and the copy ``sign-in`` reads when they change.
+        An ack without them (a control plane below 3.24) leaves what is held."""
+
+        if terms is None or terms == self._llm_contracts:
+            return
+        self._llm_contracts = list(terms)
+        if self.state_dir is not None:
+            save_llm_contracts(self.state_dir, terms)
+
+    async def _sync_host_keys(self) -> None:
+        """The host store's keys, by the provider's key name, become the proxy's host slots
+        (Spec: Runners rev 3), serving every Contract this Runner runs.
+
+        Read every beat, so a key put straight into the store (``credential set``, the
+        chart's Secret, a mounted folder, ``sign-in``) reaches the proxy within one beat.
+        Probed only when the value changed; a removed key stops serving at once.
+        """
+
+        for key_name, endpoint in sorted(self.llm_slots.items()):
+            value = self.credentials.host_store.get(key_name)
+            if value is None:
+                if self._offered_host.pop(key_name, None) is not None:
+                    self.proxy.slots.drop_host(endpoint.name)
+                continue
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            if self._offered_host.get(key_name) == digest:
+                continue
+            self._offered_host[key_name] = digest
+            await self.proxy.slots.put_host(
+                endpoint.slot(reference=key_name, key_id=f"{key_name}@host", value=value)
+            )
+
     async def _sync_llm_slots(self) -> None:
-        """A delivered LLM key becomes its Contract's proxy slot (local-agents 04b).
+        """A delivered LLM key becomes its Contract's proxy slot for its provider
+        (local-agents 04b, rev 3).
 
         Offered once per value, not once per beat: :meth:`SlotStore.put` probes the
         provider, and a value the probe refused stays refused until the funder delivers a
         new one -- the heartbeat's slot fields already say why. A renewal re-seals the same
-        value, so it costs no probe either.
-
-        One slot per Contract, as the proxy resolves it: a Contract delivered both an
-        OpenAI and an Anthropic key serves whichever was offered last (a per-harness slot
-        needs the attempt to carry its cli_kind). So withdrawing either reference wipes
-        the Contract's slot and re-offers what remains -- otherwise a revoked key that was
-        serving would go on serving behind the one still delivered (22 A9).
+        value, so it costs no probe either. A withdrawn reference wipes that provider's
+        slot alone (22 A9); the Contract's other provider keeps serving.
         """
 
         delivered = {
             key: value for key, value in self.sealed.plaintext.items() if key[1] in self.llm_slots
         }
-        withdrawn = {contract_id for contract_id, _ in set(self._offered_to_proxy) - set(delivered)}
-        for contract_id in withdrawn:
-            self.proxy.slots.drop(UUID(contract_id))
-        offered = {key: v for key, v in self._offered_to_proxy.items() if key[0] not in withdrawn}
+        withdrawn = set(self._offered_to_proxy) - set(delivered)
+        for contract_id, reference in withdrawn:
+            self.proxy.slots.drop(UUID(contract_id), self.llm_slots[reference].name)
+        offered = {key: v for key, v in self._offered_to_proxy.items() if key not in withdrawn}
         for (contract_id, reference), value in sorted(delivered.items()):
             if offered.get((contract_id, reference)) == value:
                 continue
@@ -1071,6 +1202,58 @@ def _temporal_worker(client: Client, **kwargs: Any) -> Worker:
     return Worker(client, **kwargs)
 
 
+async def sign_in(which: str | None, *, store: KeyStore, method: str = OAUTH_TOKEN) -> int:
+    """``agentic-runner sign-in [claude|codex]`` (``sign_in.SignIn``), composed here.
+
+    Runs with the Runner's environment (``kubectl exec``, ``docker exec``, or a
+    workstation's own), so a subscription gets the uid and the harness root the Contract's
+    Directives already run under. ``store`` is where a typed key goes: the workstation's
+    OS store, or ``own_store`` in a container. Nothing reaches the control plane.
+    """
+
+    state_dir = load_config().state_dir
+    state = load_state(state_dir)
+
+    async def subscription(contract_id: str, cli_kind: str) -> int:
+        mode = isolation_mode()
+        can = can_separate_uids()
+        try:
+            require_isolation_supported(mode, can_separate_uids=can)
+            settings = get_worker_settings()
+        except RunnerRegistrationError as error:
+            print(f"refusing to sign in ({error.reason}): {error}", file=sys.stderr)
+            return 1
+        except ValidationError:
+            print(
+                "refusing to sign in: run this with the Runner's environment (`docker exec`, "
+                "`kubectl exec`, or on the workstation that runs it)",
+                file=sys.stderr,
+            )
+            return 2
+        isolation = build_contract_isolation(settings, can_separate_uids=can)
+        try:
+            if cli_kind == "codex_cli":
+                return await CodexSignIns(isolation).sign_in(contract_id)
+            return await ClaudeSignIns(isolation).sign_in(contract_id, method=method)
+        except (ClaudeSignInError, CodexSignInError) as error:
+            print(f"sign-in failed: {error}", file=sys.stderr)
+            return 1
+
+    return await SignIn(
+        host_party=(state.host_party if state is not None else "") or None,
+        contracts=load_llm_contracts(state_dir),
+        served=[kind for kind, cli in _SIGN_IN_CLIS.items() if shutil.which(cli)],
+        store=store,
+        subscription=subscription,
+        ask=input,
+        secret=getpass.getpass,
+        say=lambda line: print(line, file=sys.stderr),
+    ).run(which)
+
+
+_SIGN_IN_CLIS: Final[Mapping[str, str]] = {"claude_code": "claude", "codex_cli": "codex"}
+
+
 async def run(
     *,
     http_client: httpx.AsyncClient | None = None,
@@ -1082,6 +1265,7 @@ async def run(
     readiness: Readiness | None = None,
     host_store: HostCredentialStore | None = None,
     attestation: HostAttestation | None = None,
+    install: RunnerInstall | None = None,
 ) -> int:
     """The Runner process. Returns the exit code.
 
@@ -1089,7 +1273,9 @@ async def run(
     control plane: the HTTP transport, the Temporal connection, the Worker and the
     capability check. Production passes none of them. ``host_store`` and
     ``attestation`` are the workstation's (issue 47): its OS credential store and what
-    it says about itself. ``heartbeat_interval`` defaults to the cadence bootstrap gave.
+    it says about itself. ``install`` is where a command reaches this Runner, which the
+    heartbeat reports so the console can print ``sign-in`` for it (rev 3).
+    ``heartbeat_interval`` defaults to the cadence bootstrap gave.
     """
 
     loop = asyncio.get_running_loop()
@@ -1109,6 +1295,7 @@ async def run(
             readiness=readiness,
             host_store=host_store,
             attestation=attestation,
+            install=install,
         )
     finally:
         loop.remove_signal_handler(signal.SIGTERM)
@@ -1125,6 +1312,7 @@ async def _run(
     readiness: Readiness | None,
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
+    install: RunnerInstall | None = None,
 ) -> int:
     install_stop_tolerant_child_watcher(asyncio.get_running_loop())
     try:
@@ -1182,73 +1370,11 @@ async def _run(
             heartbeat_interval=heartbeat_interval,
             host_store=host_store,
             attestation=attestation,
+            install=install,
             runner_limit=runner_limit,
         )
     finally:
         await readiness.close()
-
-
-async def sign_in_claude(contract_id: str, *, method: str) -> int:
-    """``agentic-runner sign-in``: Claude Code's own flow for one Contract, in this terminal.
-
-    Runs with the Runner's environment (``kubectl exec``, or ``--org`` on a workstation),
-    so the Contract gets the uid and the harness root its Directives already run under.
-    Nothing reaches the control plane: the console only reads the outcome back through
-    ``claude auth status`` (QTS-1448).
-
-    Refused up front where no Directive could run on the login (``runs_subscriptions``,
-    QTS-1450), and confirmed at a prompt for a Contract this Runner holds no harness root
-    for yet: a mistyped id would otherwise get a uid and a signed-in tree of its own.
-    """
-
-    mode = isolation_mode()
-    can = can_separate_uids()
-    try:
-        require_isolation_supported(mode, can_separate_uids=can)
-    except RunnerRegistrationError as error:
-        print(f"refusing to sign in ({error.reason}): {error}", file=sys.stderr)
-        return 1
-    control_plane = os.environ.get(CONTROL_PLANE_ENV, "").strip()
-    if control_plane:
-        os.environ.setdefault("INTERNAL_FASTAPI_BASE_URL", control_plane)
-    try:
-        settings = get_worker_settings()
-    except ValidationError:
-        print(
-            "refusing to sign in: run this with the Runner's environment "
-            "(`--org <org>` on a workstation, `kubectl exec` into the Runner's pod)",
-            file=sys.stderr,
-        )
-        return 2
-    state = load_state(load_config().state_dir)
-    host_party = (state.host_party if state is not None else "") or None
-    if not runs_subscriptions(host_party, separates_contract_uids=can):
-        runner = f"hosted by {host_party!r}" if host_party else "not registered"
-        print(
-            f"refusing to sign in ({SIGN_IN_NEEDS_CONTRACT_UID_RULE}): this Runner is {runner} "
-            "and does not run each Contract under its own uid, so no Directive would run on "
-            "the login",
-            file=sys.stderr,
-        )
-        return 1
-    sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can))
-    if not sign_ins.has_harness_root(contract_id) and not _confirm_new_contract(contract_id):
-        print("not signed in", file=sys.stderr)
-        return 1
-    try:
-        return await sign_ins.sign_in(contract_id, method=method)
-    except ClaudeSignInError as error:
-        print(f"sign-in failed: {error}", file=sys.stderr)
-        return 1
-
-
-def _confirm_new_contract(contract_id: str) -> bool:
-    answer = input(
-        f"This Runner holds no Claude Code harness root for Contract {contract_id} yet. Check "
-        "the id against the console: a mistyped one signs in a Contract no Directive runs as. "
-        "Sign it in? [y/N] "
-    )
-    return answer.strip().lower() in {"y", "yes"}
 
 
 async def _serve(
@@ -1267,6 +1393,7 @@ async def _serve(
     heartbeat_interval: float | None,
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
+    install: RunnerInstall | None = None,
     runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
 ) -> int:
     limit_report = runner_limit_report(
@@ -1334,6 +1461,7 @@ async def _serve(
             interval=interval,
             host_store=host_store,
             attestation=attestation,
+            install=install,
             lifecycle=lifecycle,
             runner_limit=runner_limit,
         )
@@ -1366,13 +1494,12 @@ async def _serve_registered(
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
     lifecycle: LifecycleOutbox,
+    install: RunnerInstall | None = None,
     runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
 ) -> int:
     load = _LoadInterceptor()
     proxy = LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox())
-    credentials = build_credential_resolver(
-        config, host_store=host_store, host_party=state.host_party
-    )
+    credentials = build_credential_resolver(config, host_store=host_store)
     isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
     runtimes = build_agent_runtimes(
         settings,
@@ -1419,6 +1546,8 @@ async def _serve_registered(
         self_tests=self_tests,
         usage_windows=usage_windows,
         runner_limit=runner_limit_report(runner_limit, runtimes, egress_posture=egress_posture),
+        install=install,
+        state_dir=state_dir,
     )
     stream.sources = UserSourcePoller(
         stream=SignedIntakeStream(stream.client, state),
@@ -1431,7 +1560,6 @@ async def _serve_registered(
     )
     messages = MessageStore(state_dir / MESSAGES_DIR)
     stream.messages = messages
-    sign_ins = ClaudeSignIns(build_contract_isolation(settings, can_separate_uids=can_change_uid))
     stream.oauth = OAuthConnectors(
         sealed=stream.sealed, provider=HttpOAuthProvider(), credentials=credentials
     )
@@ -1484,7 +1612,6 @@ async def _serve_registered(
                 token_source=stream,
                 messages=messages,
                 tool_servers=tool_servers,
-                sign_ins=sign_ins,
                 usage_windows=usage_windows,
                 runner_limit=runner_limit,
                 # The wake signal rides the connection this process polls with: one
@@ -1507,7 +1634,7 @@ async def _serve_registered(
         if usage_windows is not None:
             sweeps.append(
                 asyncio.create_task(
-                    _usage_windows_forever(usage_windows, isolation, proxy, SELF_TEST_SWEEP_SECONDS)
+                    _usage_windows_forever(usage_windows, isolation, SELF_TEST_SWEEP_SECONDS)
                 )
             )
         readiness.ready = True
@@ -1644,20 +1771,21 @@ def build_usage_windows(
 
 
 async def _usage_windows_forever(
-    usage_windows: UsageWindows, isolation: ContractIsolation, proxy: LlmProxy, interval: float
+    usage_windows: UsageWindows, isolation: ContractIsolation, interval: float
 ) -> None:
     """Each signed-in harness root's usage windows, whenever its probe falls due
-    (local-agents 10). A root with a delivered key runs on the proxy, not a subscription."""
+    (local-agents 10). Whether a key is also held does not matter: from rev 3 the control
+    plane chooses the subscription or the key per Directive, and a usage limit is what
+    sends the work elsewhere, so the heartbeat reports it either way."""
 
     while True:
-        delivered = {
-            (str(slot.contract_id), slot.runtime_kind)
-            for slot in proxy.slots.statuses()
-            if slot.present
-        }
         try:
             await usage_windows.run_due(
-                [root for root in isolation.harness_roots() if root not in delivered]
+                [
+                    (contract_id, cli_kind)
+                    for contract_id, cli_kind in isolation.harness_roots()
+                    if holds_login(isolation, contract_id, cli_kind)
+                ]
             )
         except Exception as error:  # noqa: BLE001 - a lost sweep is retried on the next one
             _logger.warning("usage window sweep failed: %s", error)
@@ -1681,7 +1809,6 @@ def _activities(
     messages: MessageStore | None = None,
     signaller: TemporalWorkflowSignaller | None = None,
     tool_servers: ToolServerHealthLog | None = None,
-    sign_ins: ClaudeSignIns | None = None,
     usage_windows: UsageWindows | None = None,
     runner_limit: AppliedRunnerLimit | None = None,
 ) -> list[Callable[..., Any]]:
@@ -1736,11 +1863,6 @@ def _activities(
     )
     return [
         *ralph.activity_callables(),
-        *ContractDeviceLoginActivities(
-            contract_isolation=isolation,
-            device_login=ContractDeviceLogin(isolation, claude=sign_ins),
-            host_party=state.host_party or None,
-        ).activity_callables(),
         *RunnerTriageActivities(
             proxy=proxy,
             model=settings.TRIAGE_MODEL,

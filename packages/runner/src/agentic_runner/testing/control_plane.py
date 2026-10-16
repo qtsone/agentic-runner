@@ -21,6 +21,11 @@ funder's value to every Runner's Recipient Key and pushes it on each ack, the ru
 context and usage routes answer for one Contract, and ``/v1`` -- also outside the prefix
 -- is the LLM provider a Runner is pointed at, recording the credential each call
 presented, so a test sees the proxy spent the delivered key and not the attempt bearer.
+
+Contracts 3.24 (Spec: Runners rev 3): every ack names the one Contract this fake serves in
+``llm_contracts``, with ``subscription`` as its right, so a Runner reports the LLM access it
+holds for it; :attr:`FakeControlPlane.llm_access` keeps each report. ``subscription``
+``None`` answers as a control plane below 3.24 does: no Contract terms at all.
 """
 
 from __future__ import annotations
@@ -58,12 +63,14 @@ from agentic_runner_contracts.public_metadata import runner_task_queue
 from agentic_runner_contracts.runner_registration import (
     BootstrapRequest,
     BootstrapResponse,
+    ContractLlmTerms,
     DirectiveTokenRequest,
     DirectiveTokenResponse,
     FloorState,
     HeartbeatAck,
     HeartbeatEnvelope,
     RunnerIdentityMaterial,
+    SubscriptionRight,
 )
 from agentic_runner_contracts.runner_signature import (
     RUNNER_ID_HEADER,
@@ -169,6 +176,9 @@ class FakeControlPlane:
     cli_kind: str = "codex_cli"
     # Blank answers as a control plane from before ADR-0022 §4 does: no address at all.
     temporal_address: str = ""
+    # The ack's word on whether the person may sign this Contract in with their own
+    # subscription; None leaves `llm_contracts` out, as a control plane below 3.24 does.
+    subscription: SubscriptionRight | None = SubscriptionRight.NO_RIGHT
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)
     runner_ids: list[UUID] = field(default_factory=list)
@@ -180,6 +190,7 @@ class FakeControlPlane:
     provider_calls: list[ProviderCall] = field(default_factory=list)
     slots: list[dict[str, Any]] = field(default_factory=list)
     usage: list[dict[str, Any]] = field(default_factory=list)
+    llm_access: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -234,6 +245,7 @@ class FakeControlPlane:
                     {"path": c.path, "authorization": c.authorization} for c in self.provider_calls
                 ],
                 "slots": self.slots[-4:],
+                "llm_access": self.llm_access[-4:],
                 "usage": self.usage,
                 "evidence_events": [{"source": e.source, **e.payload} for e in self.evidence],
             }
@@ -424,6 +436,10 @@ class FakeControlPlane:
             {"runner_id": str(runner_id), **slot.model_dump(mode="json")} for slot in envelope.slots
         )
         self.usage.extend(record.model_dump(mode="json") for record in envelope.usage)
+        self.llm_access.extend(
+            {"runner_id": str(runner_id), **report.model_dump(mode="json")}
+            for report in envelope.llm_access or []
+        )
         runner.tokens += 1
         ack = HeartbeatAck(
             runner_id=runner_id,
@@ -436,6 +452,13 @@ class FakeControlPlane:
             # Every Usage Record committed, so the Runner's outbox drops exactly these.
             usage_accepted=[f"{u.directive_id}:{u.sequence}" for u in envelope.usage],
             sealed_credentials=self._sealed_credentials(runner_id),
+            llm_contracts=(
+                None
+                if self.subscription is None
+                else [
+                    ContractLlmTerms(contract_id=self.contract_id, subscription=self.subscription)
+                ]
+            ),
         )
         return _Answer(200, ack.model_dump(mode="json"))
 

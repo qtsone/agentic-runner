@@ -3,9 +3,10 @@
 A fake ``claude`` (a Python script standing in for ``setup-token``, ``auth login
 --claudeai`` and ``auth status --json``) runs through the real seam: the launcher, a real
 pseudo-terminal relayed to the caller's descriptors, and ``ContractIsolation.sandbox``.
-The caller's terminal is a pipe the test types into and a file it reads back. Like
-``test_contract_device_login.py`` this runs with ``can_separate_uids=False``; the uid line
-itself is ``tests/integration/test_contract_uid_isolation.py``'s.
+The caller's terminal is a pipe the test types into and a file it reads back. This runs
+with ``can_separate_uids=False``; the uid line itself is
+``tests/integration/test_contract_uid_isolation.py``'s. The ``sign-in`` command that
+drives it is ``test_runner_sign_in.py``'s.
 """
 
 from __future__ import annotations
@@ -31,10 +32,6 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from agentic_runner import cli, service
-from agentic_runner.auth_mode import SIGN_IN_NEEDS_CONTRACT_UID_RULE
-from agentic_runner.private_state import ensure_private_dir
-from agentic_runner.registration import RunnerState, save_state
 from agentic_runner.workers._runtime_support import run_subprocess_exec
 from agentic_runner.workers.claude_sign_in import (
     OAUTH_TOKEN_FILE,
@@ -42,7 +39,6 @@ from agentic_runner.workers.claude_sign_in import (
     ClaudeSignIns,
     launcher_argv,
 )
-from agentic_runner.workers.contract_device_login import ContractDeviceLogin, UnknownHarnessError
 from agentic_runner.workers.contract_isolation import ContractIsolation
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
@@ -513,14 +509,6 @@ async def test_a_resize_of_the_callers_terminal_reaches_the_cli(
 # ------------------------------------------------------------------ nothing is relayed
 
 
-@pytest.mark.asyncio
-async def test_no_console_starts_a_claude_sign_in(isolation: ContractIsolation) -> None:
-    """The device-login activity has no Claude Code command left to start (QTS-1448)."""
-
-    with pytest.raises(UnknownHarnessError):
-        await ContractDeviceLogin(isolation).sign_in(CONTRACT_A, runtime_kind="claude_code")
-
-
 def test_the_ack_carries_no_sign_in_code() -> None:
     """Contracts 3.14: the field is gone. A 3.13 control plane's empty one still parses, so
     either side may upgrade first; an ack that carries a code is refused."""
@@ -545,189 +533,3 @@ def test_the_ack_carries_no_sign_in_code() -> None:
     assert "sign_in_codes" not in HeartbeatAck.model_validate(ack).model_dump()
     with pytest.raises(ValidationError):
         HeartbeatAck.model_validate({**ack, "sign_in_codes": [code]})
-
-
-# ------------------------------------------------------------------ the command
-
-
-def test_the_command_refuses_a_contract_id_that_is_not_one(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(service, "sign_in_claude", _unexpected)
-
-    assert cli.main(["sign-in", "--contract", "../other"]) == 2
-    assert "expects a Contract id" in capsys.readouterr().err
-
-
-def test_the_command_needs_a_terminal(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(service, "sign_in_claude", _unexpected)
-    monkeypatch.setattr(os, "isatty", lambda _fd: False)
-
-    assert cli.main(["sign-in", "--contract", CONTRACT_A]) == 2
-    assert "kubectl exec -it" in capsys.readouterr().err
-
-
-def test_the_command_signs_in_the_named_contract_with_the_named_method(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str]] = []
-
-    async def sign_in_claude(contract_id: str, *, method: str) -> int:
-        calls.append((contract_id, method))
-        return 0
-
-    monkeypatch.setattr(service, "sign_in_claude", sign_in_claude)
-    monkeypatch.setattr(os, "isatty", lambda _fd: True)
-
-    assert cli.main(["sign-in", "--contract", CONTRACT_A.upper()]) == 0
-    assert cli.main(["sign-in", "--contract", CONTRACT_A, "--method", "claude_ai"]) == 0
-    assert calls == [(CONTRACT_A, "oauth_token"), (CONTRACT_A, "claude_ai")]
-
-
-@pytest.mark.asyncio
-async def test_without_the_runners_environment_the_command_refuses(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The uid map and the harness roots are the Runner's: guessing them would sign in
-    a directory no Directive reads."""
-
-    monkeypatch.setenv(service.ISOLATION_ENV, "none")
-    for name in ("TEMPORAL_ADDRESS", "INTERNAL_FASTAPI_BASE_URL", service.CONTROL_PLANE_ENV):
-        monkeypatch.delenv(name, raising=False)
-
-    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 2
-    assert "--org" in capsys.readouterr().err
-
-
-@pytest.fixture
-def runner_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Runner's environment, as `kubectl exec` or `--org` gives it; returns its state
-    directory. A Runner that cannot separate uids, so `isolation: none`."""
-
-    state_dir = tmp_path / "runner-state"
-    ensure_private_dir(state_dir)
-    for name, value in {
-        service.ISOLATION_ENV: "none",
-        "AGENTIC_RUNNER_CONFIG": str(tmp_path / "absent.toml"),
-        "AGENTIC_RUNNER_STATE_DIR": str(state_dir),
-        "TEMPORAL_ADDRESS": "127.0.0.1:7233",
-        "INTERNAL_FASTAPI_BASE_URL": "http://agentic-api.internal:8000",
-        "WORKSPACE_ROOT": str(tmp_path / "workspaces"),
-        "WORKER_STATE_DIR": str(tmp_path / "worker-state"),
-        "CODEX_HOME": str(tmp_path / "codex-home"),
-    }.items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setattr(service, "can_separate_uids", lambda: False)
-    return state_dir
-
-
-def _registered(state_dir: Path, host_party: str) -> None:
-    save_state(
-        state_dir,
-        RunnerState(
-            runner_id=uuid4(),
-            identity_id="id",
-            private_key_pem="unused",
-            temporal_namespace="org-x",
-            task_queue="runner.x",
-            host_party=host_party,
-        ),
-    )
-
-
-@pytest.fixture
-def signed_in(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    contracts: list[str] = []
-
-    async def sign_in(self: ClaudeSignIns, contract_id: str, *, method: str) -> int:
-        contracts.append(contract_id)
-        return 0
-
-    monkeypatch.setattr(ClaudeSignIns, "sign_in", sign_in)
-    return contracts
-
-
-@pytest.mark.parametrize("host_party", ["organisation", "account", None])
-@pytest.mark.asyncio
-async def test_the_command_refuses_where_no_directive_would_run_on_the_login(
-    runner_env: Path,
-    signed_in: list[str],
-    capsys: pytest.CaptureFixture[str],
-    host_party: str | None,
-) -> None:
-    """Sentinel's residual risk 1 on QTS-1448: a shared Runner that runs no Contract as
-    its own uid, or one never registered, refuses before any harness root is touched."""
-
-    if host_party is not None:
-        _registered(runner_env, host_party)
-
-    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 1
-    assert SIGN_IN_NEEDS_CONTRACT_UID_RULE in capsys.readouterr().err
-    assert signed_in == []
-    assert not (runner_env.parent / "workspaces" / CONTRACT_A).exists()
-
-
-@pytest.mark.asyncio
-async def test_the_command_signs_in_on_a_shared_runner_with_contract_uids(
-    runner_env: Path, signed_in: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _registered(runner_env, "organisation")
-    monkeypatch.setenv(service.ISOLATION_ENV, "contract_uid")
-    monkeypatch.setattr(service, "can_separate_uids", lambda: True)
-    monkeypatch.setattr(ClaudeSignIns, "has_harness_root", lambda _self, _contract: True)
-
-    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 0
-    assert signed_in == [CONTRACT_A]
-
-
-@pytest.mark.asyncio
-async def test_the_command_asks_before_signing_in_a_contract_this_runner_never_served(
-    runner_env: Path,
-    signed_in: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Warden note 2 (QTS-1448): a mistyped id must not quietly get a uid and a signed-in
-    tree of its own; nothing is made for it unless the person says so."""
-
-    _registered(runner_env, "user")
-    prompts: list[str] = []
-    answers = iter(["", "y"])
-
-    def answer(prompt: str) -> str:
-        prompts.append(prompt)
-        return next(answers)
-
-    monkeypatch.setattr("builtins.input", answer)
-
-    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 1
-    assert "not signed in" in capsys.readouterr().err
-    assert signed_in == []
-    assert not (runner_env.parent / "workspaces" / CONTRACT_A).exists()
-
-    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 0
-    assert signed_in == [CONTRACT_A]
-    assert all(CONTRACT_A in prompt for prompt in prompts) and len(prompts) == 2
-
-
-@pytest.mark.asyncio
-async def test_the_command_signs_in_a_contract_it_serves_without_asking(
-    runner_env: Path, signed_in: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _registered(runner_env, "user")
-    root = runner_env.parent / "workspaces" / CONTRACT_A / "harness" / "claude_code"
-    root.mkdir(parents=True)
-    monkeypatch.setattr("builtins.input", _no_prompt)
-
-    assert await service.sign_in_claude(CONTRACT_A, method="oauth_token") == 0
-    assert signed_in == [CONTRACT_A]
-
-
-def _no_prompt(prompt: str) -> str:
-    raise AssertionError(f"asked: {prompt}")
-
-
-async def _unexpected(contract_id: str, *, method: str) -> int:
-    raise AssertionError("refused before any sign-in")
