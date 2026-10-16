@@ -62,7 +62,12 @@ def test_the_pool_key_is_the_consoles_private_half_and_its_fingerprint() -> None
     assert fixture["pool_key_private"] not in repr(pool_key)
 
 
-@pytest.mark.parametrize("value", ["not base64!", "AAAA", generate_recipient_key().key_id])
+# Fixed ids: xdist requires every worker to collect the same names, and a key id is random.
+@pytest.mark.parametrize(
+    "value",
+    ["not base64!", "AAAA", generate_recipient_key().key_id],
+    ids=["not-base64", "too-short", "recipient-key-id"],
+)
 def test_a_value_that_is_not_a_pool_key_is_refused(value: str) -> None:
     with pytest.raises(PoolKeyError):
         parse_pool_key(value)
