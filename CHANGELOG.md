@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.26.1](https://github.com/qtsone/agentic-runner/compare/v3.26.0...v3.26.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **runner:** sign-in offers a subscription only when the Contract allows it (QTS-1776) ([#74](https://github.com/qtsone/agentic-runner/issues/74)) ([bdc9290](https://github.com/qtsone/agentic-runner/commit/bdc92907ec9da76623283ac5955825391fec8e9d))
+
 # [3.26.0](https://github.com/qtsone/agentic-runner/compare/v3.25.1...v3.26.0) (2026-10-16)
 
 
