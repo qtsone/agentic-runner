@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.27.0](https://github.com/qtsone/agentic-runner/compare/v3.26.1...v3.27.0) (2026-10-17)
+
+
+### Features
+
+* **runner:** install a workstation Runner under its own name (QTS-1773) ([#75](https://github.com/qtsone/agentic-runner/issues/75)) ([80a5986](https://github.com/qtsone/agentic-runner/commit/80a5986a7a6c8e53dfd62c7af46ffb9baf9fa778))
+
 ## [3.26.1](https://github.com/qtsone/agentic-runner/compare/v3.26.0...v3.26.1) (2026-10-17)
 
 
