@@ -55,6 +55,7 @@ from agentic_runner.config import CONFIG_FILE_ENV
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.llm_contracts import load_llm_contracts
+from agentic_runner.organisation_name import load_organisation_name
 from agentic_runner.pool_key import parse_pool_key, save_pool_key
 from agentic_runner.private_state import UnsafeStateError
 from agentic_runner.registration import load_state
@@ -64,6 +65,7 @@ from agentic_runner_contracts.public_metadata import NAMESPACE_PREFIX
 from agentic_runner_contracts.runner_registration import (
     RUNNER_NAME_PATTERN,
     CliVersion,
+    ContractLlmTerms,
     EgressPosture,
     HostAttestation,
     InstallChannel,
@@ -670,9 +672,9 @@ _LIST_HEADER: Final = (
 def list_lines(root: Path) -> list[str]:
     """``list``: one row per Runner installed here (QTS-1774).
 
-    Ids, not names: the Runner is told neither the Organisation's nor the Contract's name.
-    Eight characters, as the console shows a Runner's id beside its name (Spec: Runners
-    rev 7).
+    The Organisation's and the Contract's names once an ack from a control plane on 3.29
+    named them (QTS-1909); before that, the first eight characters of their ids, as the
+    console shows a Runner's id beside its name (Spec: Runners rev 7).
     """
 
     names = installed_names(root)
@@ -705,17 +707,21 @@ def _list_row_or_reason(paths: RunnerPaths) -> tuple[str, str, str, str, str, st
 def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
     state = load_state(paths.state_dir)
     contracts = load_llm_contracts(paths.state_dir)
+    organisation_name = _printable(load_organisation_name(paths.state_dir) or "")
     try:
         version = paths.started_version.read_text(encoding="utf-8").strip() or "-"
     except OSError:
         version = "-"
     return (
         paths.name,
-        state.temporal_namespace.removeprefix(NAMESPACE_PREFIX)[:8] if state else "-",
+        (
+            organisation_name
+            or (state.temporal_namespace.removeprefix(NAMESPACE_PREFIX)[:8] if state else "-")
+        ),
         (
             "-"
             if not contracts
-            else str(contracts[0].contract_id)[:8]
+            else _contract_label(contracts[0])
             if len(contracts) == 1
             else f"{len(contracts)} Contracts"
         ),
@@ -723,6 +729,15 @@ def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
         version,
         "running" if process_id(paths) else "stopped",
     )
+
+
+def _contract_label(terms: ContractLlmTerms) -> str:
+    return _printable(terms.contract_name or "") or str(terms.contract_id)[:8]
+
+
+def _printable(name: str) -> str:
+    # A name someone typed in the console: an escape sequence in it would reach the terminal.
+    return "".join(character for character in name if character.isprintable())
 
 
 def next_step_lines(host_party: str) -> list[str]:

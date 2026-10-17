@@ -33,7 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Final, Protocol
+from typing import Any, Final, Literal, Protocol
 from uuid import UUID
 
 import httpx
@@ -85,6 +85,7 @@ from agentic_runner.llm_proxy import (
 from agentic_runner.mcp import ToolServerHealthLog
 from agentic_runner.message_store import MESSAGES_DIR, MessageStore, TemporalWorkflowSignaller
 from agentic_runner.oauth_connectors import OAuthConnectors
+from agentic_runner.organisation_name import save_organisation_name
 from agentic_runner.pool_key import (
     POOL_KEY_ENV,
     POOL_KEY_FILENAME,
@@ -852,6 +853,9 @@ class ControlPlaneStream:
     # QTS-1773: the control plane's contracts version, from its ack; None until an ack from
     # one on 3.27 or later, the first to send it and to parse `RunnerInstall.name`.
     _control_plane_contracts: str | None = None
+    # QTS-1909: the name in the copy `list` reads, None while there is none. "unwritten"
+    # until this process first writes it, so the first ack replaces what a previous one left.
+    _organisation_name: str | None | Literal["unwritten"] = "unwritten"
     _last_seen: tuple[float, datetime] | None = None
 
     def _observe_sleep(self, now: datetime) -> None:
@@ -1081,6 +1085,7 @@ class ControlPlaneStream:
         self._take_pool(ack.pool)
         if ack.contracts_version is not None:
             self._control_plane_contracts = ack.contracts_version
+        self._take_organisation_name(ack.organisation_name)
         await self._sync_llm_slots()
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token
@@ -1138,6 +1143,15 @@ class ControlPlaneStream:
         self._llm_contracts = list(terms)
         if self.state_dir is not None:
             save_llm_contracts(self.state_dir, terms)
+
+    def _take_organisation_name(self, name: str | None) -> None:
+        """Keep the copy ``list`` reads when the ack's name changes. Unlike the Contract
+        terms, an ack without one clears it: only the name, never the id, can go stale."""
+
+        if self.state_dir is None or name == self._organisation_name:
+            return
+        save_organisation_name(self.state_dir, name)
+        self._organisation_name = name
 
     def _take_pool(self, pool: PoolTerms | None) -> None:
         """Keep the ack's pool. An ack without one (a personal Runner, or a control plane

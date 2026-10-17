@@ -64,6 +64,8 @@ class _Registration:
         self.llm_contracts: list[ContractLlmTerms] | None = None
         # None is a control plane below 3.27, which forbids `RunnerInstall.name`.
         self.contracts_version: str | None = None
+        # None is a control plane below 3.29, which names no Organisation.
+        self.organisation_name: str | None = None
 
     async def heartbeat(self, state: Any, envelope: HeartbeatEnvelope) -> HeartbeatAck:
         self.sent.append(envelope)
@@ -76,6 +78,7 @@ class _Registration:
             sealed_credentials=list(self.rows),
             llm_contracts=self.llm_contracts,
             contracts_version=self.contracts_version,
+            organisation_name=self.organisation_name,
         )
 
 
@@ -459,3 +462,25 @@ async def test_the_acks_contract_terms_are_kept_for_sign_in(tmp_path: Path) -> N
 
     assert load_llm_contracts(state_dir) == terms
     assert oct((state_dir / "llm-contracts.json").stat().st_mode & 0o777) == "0o600"
+
+
+@pytest.mark.asyncio
+async def test_the_acks_organisation_name_is_kept_for_list_until_an_ack_drops_it(
+    tmp_path: Path,
+) -> None:
+    """QTS-1909: every ack says it, so a control plane moved back below 3.29 lists ids again."""
+
+    from agentic_runner.organisation_name import load_organisation_name
+
+    registration, probe = _Registration(), _Probe()
+    state_dir = tmp_path / "state"
+    stream = _stream(tmp_path, registration, probe, state_dir=state_dir)
+
+    registration.organisation_name = "Acme"
+    await stream.exchange([])
+    assert load_organisation_name(state_dir) == "Acme"
+    assert oct((state_dir / "organisation-name").stat().st_mode & 0o777) == "0o600"
+
+    registration.organisation_name = None
+    await stream.exchange([])
+    assert load_organisation_name(state_dir) is None

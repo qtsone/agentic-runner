@@ -170,14 +170,14 @@ than one, a command without a name lists them and asks you to name one.
 
 ```text
 NAME          ORGANISATION  CONTRACT  CONTROL PLANE                    VERSION  LOGIN AGENT
-alice-laptop  4f2a91c0      9b1e07d3  https://api.agentic.example.com  3.28.0   running
+alice-laptop  Acme          Web       https://api.agentic.example.com  3.29.0   running
 billing       c81d5e22      -         https://api.agentic.example.com  3.27.0   stopped
 ```
 
-The Organisation and the Contract are the first 8 characters of their ids, as the console
-shows a Runner's id: the Runner is not told their names. The Contract is `-` until the
-Runner's first heartbeat names it, and an Organisation Runner that serves several shows how
-many. The version is the one the Runner last started on, so after `uv tool upgrade` it
+The Organisation and the Contract show by the names the console gives them. A Runner whose
+control plane does not send the names yet shows the first 8 characters of their ids, as the
+console shows a Runner's id. The Contract is `-` until the Runner's first heartbeat names
+it, and an Organisation Runner that serves several shows how many. The version is the one the Runner last started on, so after `uv tool upgrade` it
 changes when you restart the Runner.
 
 Each Runner has its own directory under the state root, named after it

@@ -112,6 +112,10 @@ RegistrationToken = Annotated[str, StringConstraints(min_length=16, max_length=2
 # instance name on the machine, and what the console lists the Runner under.
 RUNNER_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,31}$"
 RunnerName = Annotated[str, StringConstraints(pattern=RUNNER_NAME_PATTERN)]
+# An Organisation's or a Contract's name as the console shows it (QTS-1909). Only bounded,
+# to the platform's column: a pattern a stored name happens to break would refuse every
+# ack, so the Runner makes the name safe where it prints it.
+DisplayName = Annotated[str, StringConstraints(min_length=1, max_length=255)]
 
 
 class IsolationMode(StrEnum):
@@ -688,6 +692,16 @@ class ContractLlmTerms(BaseModel):
 
     contract_id: UUID
     subscription: SubscriptionRight
+    # QTS-1909: for `agentic-runner list`. None from a control plane below 3.29; the ack
+    # forbids extra keys, so the control plane sends it only to a Runner on 3.29 or later.
+    contract_name: DisplayName | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unsent_name(self, handler: SerializerFunctionWrapHandler) -> Any:
+        body = handler(self)
+        if isinstance(body, dict) and body.get("contract_name") is None:
+            body.pop("contract_name", None)
+        return body
 
 
 class PoolTerms(BaseModel):
@@ -1029,19 +1043,23 @@ class HeartbeatAck(BaseModel):
     # control plane below 3.27, which forbids that key. The ack forbids extra keys, so the
     # control plane sends it only to a Runner whose heartbeat names contracts 3.27 or later.
     contracts_version: Version | None = None
+    # QTS-1909: the Organisation this Runner serves, by the name the console shows, for
+    # `agentic-runner list`. None from a control plane below 3.29; the ack forbids extra
+    # keys, so the control plane sends it only to a Runner on 3.29 or later.
+    organisation_name: DisplayName | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
         # body that Runner already parses; likewise `tags` for a Runner on 3.19,
-        # `llm_contracts` for one on 3.24, `pool` for one on 3.25 and `contracts_version`
-        # for one on 3.26. An empty tag set or Contract list is still sent: it says the
-        # Runner has no Tags, or serves no Contract.
+        # `llm_contracts` for one on 3.24, `pool` for one on 3.25, `contracts_version`
+        # for one on 3.26 and `organisation_name` for one on 3.28. An empty tag set or
+        # Contract list is still sent: it says the Runner has no Tags, or serves no Contract.
         body = handler(self)
         if isinstance(body, dict):
             if not body.get("credential_manifests"):
                 body.pop("credential_manifests", None)
-            for name in ("tags", "llm_contracts", "pool", "contracts_version"):
+            for name in ("tags", "llm_contracts", "pool", "contracts_version", "organisation_name"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body
