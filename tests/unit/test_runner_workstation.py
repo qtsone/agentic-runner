@@ -19,6 +19,7 @@ The two-Organisation process test and the sleep test are integration tests
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import plistlib
@@ -30,7 +31,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -45,8 +46,9 @@ from agentic_runner.host_store import (
     open_workstation_store,
 )
 from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.llm_contracts import save_llm_contracts
 from agentic_runner.pool_key import POOL_KEY_ENV, PoolKeyError, load_pool_key
-from agentic_runner.registration import load_state
+from agentic_runner.registration import RunnerState, load_state, save_state
 from agentic_runner.sealed_box import (
     RecipientKeyStore,
     SealedCredentialError,
@@ -57,6 +59,7 @@ from agentic_runner.sealed_box import (
 from agentic_runner.testing import FakeControlPlane
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
+    ContractLlmTerms,
     FloorState,
     HeartbeatAck,
     HeartbeatEnvelope,
@@ -65,6 +68,7 @@ from agentic_runner_contracts.runner_registration import (
     LifecycleKind,
     SessionKind,
     StoreKind,
+    SubscriptionRight,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -270,6 +274,221 @@ def test_an_install_made_before_the_runner_name_keeps_running(
 
     assert started == [(paths, True)]
     assert workstation.WorkstationSettings.load(paths).control_plane_url == CONTROL_PLANE
+
+
+# ------------------------------------------------------------------ list, and no name to type
+
+
+def _installed(
+    root: Path, name: str, *, organisation: UUID | None = None
+) -> workstation.RunnerPaths:
+    paths = workstation.RunnerPaths(root=root, name=name)
+    paths.create()
+    _settings(paths, "/usr/bin:/bin").save(paths)
+    if organisation is not None:
+        save_state(
+            paths.state_dir,
+            RunnerState(
+                runner_id=uuid4(),
+                identity_id="id",
+                private_key_pem="unused",
+                temporal_namespace=f"org-{organisation}",
+                task_queue="runner.x",
+            ),
+        )
+    return paths
+
+
+def test_list_prints_one_row_per_runner_installed_here(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """QTS-1774: five installs, five rows, with what each one is and whether it runs."""
+
+    root = tmp_path / "state"
+    acme, billing = uuid4(), uuid4()
+    contract, other = uuid4(), uuid4()
+    running = _installed(root, "alice-laptop", organisation=acme)
+    save_llm_contracts(
+        running.state_dir,
+        [ContractLlmTerms(contract_id=contract, subscription=SubscriptionRight.ALLOWED)],
+    )
+    running.started_version.write_text("3.28.0")
+    running.pidfile.write_text(str(os.getpid()))
+    pool = _installed(root, "acme-pool", organisation=acme)
+    save_llm_contracts(
+        pool.state_dir,
+        [
+            ContractLlmTerms(contract_id=identity, subscription=SubscriptionRight.NO_RIGHT)
+            for identity in (contract, other)
+        ],
+    )
+    _installed(root, "billing", organisation=billing).started_version.write_text("3.27.0")
+    _installed(root, "cucubau", organisation=billing)
+    _installed(root, "never-registered")
+    # Moved aside before a new token, as the guide says: no longer a Runner here.
+    (root / "acme.organisation").mkdir()
+    (root / "acme.organisation" / "workstation.json").write_text("{}")
+
+    assert cli.main(["list", "--root", str(root)]) == 0
+
+    header, *rows = capsys.readouterr().out.splitlines()
+    assert header.split() == ["NAME", "ORGANISATION", "CONTRACT", "CONTROL", "PLANE", "VERSION"] + [
+        "LOGIN",
+        "AGENT",
+    ]
+    assert [row.split() for row in rows] == [
+        ["acme-pool", str(acme)[:8], "2", "Contracts", CONTROL_PLANE, "-", "stopped"],
+        ["alice-laptop", str(acme)[:8], str(contract)[:8], CONTROL_PLANE, "3.28.0", "running"],
+        ["billing", str(billing)[:8], "-", CONTROL_PLANE, "3.27.0", "stopped"],
+        ["cucubau", str(billing)[:8], "-", CONTROL_PLANE, "-", "stopped"],
+        ["never-registered", "-", "-", CONTROL_PLANE, "-", "stopped"],
+    ]
+    # Columns line up, so the table reads as one.
+    assert len({row.index(CONTROL_PLANE) for row in [*rows]}) == 1
+
+
+def test_list_on_a_machine_with_no_runner_says_where_it_looked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["list", "--root", str(tmp_path / "absent")]) == 0
+    assert capsys.readouterr().out.strip() == (
+        f"no workstation Runner is installed under {tmp_path / 'absent'}"
+    )
+
+
+def test_the_runner_writes_the_version_it_started_on(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
+    paths.create()
+    _settings(paths, str(bin_dir)).save(paths)
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+
+    async def run(**_: Any) -> int:
+        return 0
+
+    monkeypatch.setattr(service, "run", run)
+    monkeypatch.setattr(workstation, "open_workstation_store", lambda *_a, **_k: _FileStore())
+
+    assert workstation.run_process(paths, login_agent=True) == 0
+    assert paths.started_version.read_text() == agentic_runner.__version__
+
+
+class _FileStore:
+    kind = StoreKind.FILE
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def put(self, reference: str, value: str) -> None:
+        self.values[reference] = value
+
+
+def test_with_one_runner_installed_no_command_needs_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "state"
+    only = _installed(root, "alice-laptop")
+    started: list[workstation.RunnerPaths] = []
+    monkeypatch.setattr(workstation, "start", started.append)
+    store = _FileStore()
+    monkeypatch.setattr(cli, "open_workstation_store", lambda *_a, **_k: store)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk-typed\n"))
+
+    assert cli.main(["start", "--root", str(root)]) == 0
+    assert cli.main(["credential", "set", "OPENAI_API_KEY", "--root", str(root)]) == 0
+
+    assert started == [only]
+    assert store.values == {"OPENAI_API_KEY": "sk-typed"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["start"], ["stop"], ["status"], ["credential", "set", "OPENAI_API_KEY"]],
+)
+def test_with_several_runners_installed_a_command_names_them_and_points_to_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop")
+    _installed(root, "billing")
+    monkeypatch.setattr(workstation, "start", _not_driven)
+    monkeypatch.setattr(workstation, "stop", _not_driven)
+    monkeypatch.setattr(cli, "_in_container", lambda: False)
+
+    assert cli.main([*argv, "--root", str(root)]) != 0
+
+    error = capsys.readouterr().err
+    assert "alice-laptop, billing" in error and "`agentic-runner list`" in error
+
+
+def _not_driven(_paths: workstation.RunnerPaths) -> None:
+    raise AssertionError("no Runner was named")
+
+
+def test_sign_in_needs_no_name_with_one_runner_and_lists_them_with_several(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The acceptance criterion: `agentic-runner sign-in claude`, nothing else typed."""
+
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop")
+    signed: list[str | None] = []
+
+    async def sign_in(which: str | None, *, store: Any, method: str) -> int:
+        signed.append(os.environ["AGENTIC_RUNNER_STATE_DIR"])
+        return 0
+
+    monkeypatch.setattr(service, "sign_in", sign_in)
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+    monkeypatch.setenv(workstation.ROOT_ENV, str(root))
+    # `sign-in` exports the Runner's environment into its own; this one variable is enough
+    # to tell which Runner it chose, and setting it here first lets the fixture restore it.
+    monkeypatch.setenv("AGENTIC_RUNNER_STATE_DIR", "")
+    monkeypatch.setattr(
+        workstation,
+        "run_environment",
+        lambda paths, _settings: {"AGENTIC_RUNNER_STATE_DIR": str(paths.state_dir)},
+    )
+    monkeypatch.setattr(cli, "_in_container", lambda: False)
+    monkeypatch.setattr(cli, "open_workstation_store", lambda *_a, **_k: _FileStore())
+
+    assert cli.main(["sign-in", "claude"]) == 0
+    assert signed == [str(root / "alice-laptop")]
+
+    _installed(root, "billing")
+    assert cli.main(["sign-in", "claude"]) == 2
+    error = capsys.readouterr().err
+    assert "alice-laptop, billing: name one with --name" in error
+    assert "`agentic-runner list`" in error
+    assert len(signed) == 1
+
+
+def test_a_bare_run_on_a_machine_with_installed_runners_says_to_start_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Owner note 3 (QTS-1774): `run` needs parameters an installed Runner never types."""
+
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop")
+    monkeypatch.delenv(service.REGISTRATION_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(service.AGENT_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(workstation.ROOT_ENV, str(root))
+    monkeypatch.setenv("AGENTIC_RUNNER_STATE_DIR", str(tmp_path / "unregistered"))
+    monkeypatch.setenv("AGENTIC_RUNNER_CONFIG", str(tmp_path / "absent.toml"))
+    monkeypatch.setattr(cli, "_in_container", lambda: False)
+    monkeypatch.setattr(service, "run", _not_run)
+
+    assert cli.main(["run"]) == 2
+    error = capsys.readouterr().err
+    assert "alice-laptop" in error and "`agentic-runner start <name>`" in error
+
+
+async def _not_run(**_: Any) -> int:
+    raise AssertionError("a bare run must not register from an empty environment")
 
 
 @pytest.mark.asyncio

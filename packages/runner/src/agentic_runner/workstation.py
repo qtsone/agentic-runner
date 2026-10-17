@@ -1,6 +1,6 @@
 """The workstation Runner: one login agent per Runner (PRD issue 47, map ticket 23).
 
-``agentic-runner install | start | stop | status <name>``. Everything a CI-runner
+``agentic-runner install | start | stop | status <name>`` and ``list``. Everything a CI-runner
 precedent does on a developer machine and nothing a daemon would need:
 
 * **One process per Runner** (23 item 3), each with its own state directory, identity,
@@ -47,16 +47,19 @@ from xml.sax.saxutils import escape
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from agentic_runner import __version__ as runner_version
 from agentic_runner import service
 from agentic_runner.build import build_id
 from agentic_runner.cli_floor import CLI_FLOORS, CLI_NAMES, meets_floor, parse_cli_version
 from agentic_runner.config import CONFIG_FILE_ENV
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
+from agentic_runner.llm_contracts import load_llm_contracts
 from agentic_runner.pool_key import parse_pool_key, save_pool_key
 from agentic_runner.registration import load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES
+from agentic_runner_contracts.public_metadata import NAMESPACE_PREFIX
 from agentic_runner_contracts.runner_registration import (
     RUNNER_NAME_PATTERN,
     CliVersion,
@@ -84,7 +87,10 @@ __all__ = [
     "default_root",
     "install",
     "install_channel",
+    "installed_names",
+    "list_lines",
     "locate_clis",
+    "only_runner",
     "parse_acp_cli_kinds",
     "require_any_cli",
     "run_environment",
@@ -130,6 +136,36 @@ def default_root(*, platform: str = sys.platform, environ: Mapping[str, str] = o
         return Path(environ.get("LOCALAPPDATA") or home / "AppData" / "Local") / "agentic-runner"
     state_home = environ.get("XDG_STATE_HOME", "").strip()
     return (Path(state_home) if state_home else home / ".local" / "state") / "agentic-runner"
+
+
+def installed_names(root: Path) -> list[str]:
+    """Every Runner installed under ``root``, by name.
+
+    A directory whose name is not a Runner's is skipped: the guide moves an old install
+    aside as ``<name>.organisation`` before a new token, and that one is not a Runner here.
+    """
+
+    if not root.is_dir():
+        return []
+    return sorted(
+        path.name
+        for path in root.iterdir()
+        if re.fullmatch(RUNNER_NAME_PATTERN, path.name)
+        and RunnerPaths(root=root, name=path.name).settings_file.is_file()
+    )
+
+
+def only_runner(root: Path, *, how: str = "name one") -> RunnerPaths:
+    """The one Runner installed here, so a command needs no name (QTS-1774)."""
+
+    names = installed_names(root)
+    if len(names) == 1:
+        return RunnerPaths(root=root, name=names[0])
+    if not names:
+        raise ValueError(f"no workstation Runner is installed under {root}")
+    raise ValueError(
+        f"this machine runs {', '.join(names)}: {how} (`agentic-runner list` shows each)"
+    )
 
 
 @dataclass(frozen=True)
@@ -183,6 +219,12 @@ class RunnerPaths:
     @property
     def log(self) -> Path:
         return self.state_dir / "runner.log"
+
+    @property
+    def started_version(self) -> Path:
+        # Written by the process, not `install`: every Runner here runs one console script,
+        # and after `uv tool upgrade` a Runner not restarted still runs the old version.
+        return self.state_dir / "runner-version"
 
     @property
     def socket_dir(self) -> Path:
@@ -614,6 +656,58 @@ def status_lines(paths: RunnerPaths, *, now: datetime | None = None) -> list[str
     return lines
 
 
+_LIST_HEADER: Final = (
+    "NAME",
+    "ORGANISATION",
+    "CONTRACT",
+    "CONTROL PLANE",
+    "VERSION",
+    "LOGIN AGENT",
+)
+
+
+def list_lines(root: Path) -> list[str]:
+    """``list``: one row per Runner installed here (QTS-1774).
+
+    Ids, not names: the Runner is told neither the Organisation's nor the Contract's name.
+    Eight characters, as the console shows a Runner's id beside its name (Spec: Runners
+    rev 7).
+    """
+
+    names = installed_names(root)
+    if not names:
+        return [f"no workstation Runner is installed under {root}"]
+    rows = [_LIST_HEADER, *(_list_row(RunnerPaths(root=root, name=name)) for name in names)]
+    widths = [max(len(row[column]) for row in rows) for column in range(len(_LIST_HEADER) - 1)]
+    return [
+        "  ".join([*(cell.ljust(width) for cell, width in zip(row, widths, strict=False)), row[-1]])
+        for row in rows
+    ]
+
+
+def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
+    state = load_state(paths.state_dir)
+    contracts = load_llm_contracts(paths.state_dir)
+    try:
+        version = paths.started_version.read_text(encoding="utf-8").strip() or "-"
+    except OSError:
+        version = "-"
+    return (
+        paths.name,
+        state.temporal_namespace.removeprefix(NAMESPACE_PREFIX)[:8] if state else "-",
+        (
+            "-"
+            if not contracts
+            else str(contracts[0].contract_id)[:8]
+            if len(contracts) == 1
+            else f"{len(contracts)} Contracts"
+        ),
+        WorkstationSettings.load(paths).control_plane_url,
+        version,
+        "running" if process_id(paths) else "stopped",
+    )
+
+
 def next_step_lines(host_party: str) -> list[str]:
     """Where to go once the Runner is live (QTS-1314): the dogfood install ended at
     ``started`` and left the person with no idea what the console wanted next.
@@ -735,6 +829,7 @@ def run_process(paths: RunnerPaths, *, login_agent: bool) -> int:
         return 1
     for name, value in run_environment(paths, settings).items():
         os.environ[name] = value
+    paths.started_version.write_text(runner_version, encoding="utf-8")
     store = open_workstation_store(paths.name, fallback=paths.credentials)
     attestation = collect_attestation(
         channel=settings.install_channel,

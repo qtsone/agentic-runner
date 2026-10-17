@@ -102,7 +102,7 @@ agentic-runner sign-in claude     # or: sign-in codex; with no argument it asks 
 
 It takes no ids: your Runner serves one Contract, and the Runner learned which from the
 control plane. If this computer runs more than one Runner, add
-`--name alice-laptop`. For each CLI it offers two things:
+`--name alice-laptop`; `agentic-runner list` shows their names. For each CLI it offers two things:
 
 - **Your subscription.** The command runs the vendor's own sign-in as the Contract, in the
   Contract's own directory under the state root, connected to your terminal. It does not
@@ -147,7 +147,12 @@ Contract's Runner to be hosted by you.
 
 ## Operate
 
+An installed Runner is its login agent. Start it with `agentic-runner start <name>`, not
+`agentic-runner run`: `run` serves a Runner its environment sets up, as in a container, and
+on this machine it names your Runners and stops.
+
 ```sh
+agentic-runner list                   # every Runner on this machine, and which are running
 agentic-runner status alice-laptop    # process, identity, heartbeat age
 agentic-runner stop alice-laptop      # this Runner only; every other one keeps running
 agentic-runner start alice-laptop
@@ -156,6 +161,24 @@ printf %s "$KEY" | agentic-runner credential set alice-laptop OPENAI_API_KEY    
 ```
 
 `stop` drains: the Runner takes no new work and lets the Directive in flight finish.
+
+With one Runner on this machine, every command here works without its name:
+`agentic-runner status`, `agentic-runner stop`, `agentic-runner sign-in claude`. With more
+than one, a command without a name lists them and asks you to name one.
+
+`list` prints one row per Runner:
+
+```text
+NAME          ORGANISATION  CONTRACT  CONTROL PLANE                    VERSION  LOGIN AGENT
+alice-laptop  4f2a91c0      9b1e07d3  https://api.agentic.example.com  3.28.0   running
+billing       c81d5e22      -         https://api.agentic.example.com  3.27.0   stopped
+```
+
+The Organisation and the Contract are the first 8 characters of their ids, as the console
+shows a Runner's id: the Runner is not told their names. The Contract is `-` until the
+Runner's first heartbeat names it, and an Organisation Runner that serves several shows how
+many. The version is the one the Runner last started on, so after `uv tool upgrade` it
+changes when you restart the Runner.
 
 Each Runner has its own directory under the state root, named after it
 (`~/Library/Application Support/agentic-runner/` on macOS, `~/.local/state/agentic-runner/`
