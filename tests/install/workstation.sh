@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # docs/workstation.md, run as written: `uv tool install` the built wheels, `agentic-runner
-# install <org>`, and a Runner that registers and heartbeats against the conformance kit's
+# install <name>`, and a Runner that registers and heartbeats against the conformance kit's
 # fake control plane and a Temporal dev server (`temporal` on PATH).
 # Usage: tests/install/workstation.sh <dist dir holding both wheels> process|launchd
 #
@@ -17,7 +17,7 @@ dist="$(cd "$1" && pwd)"
 mode="$2"
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"
-org=ci
+name=ci
 root="${work}/root"
 namespace=org-00000000-0000-0000-0000-000000000001
 stats=http://127.0.0.1:8000/stats
@@ -26,9 +26,9 @@ pids=()
 export UV_TOOL_DIR="${work}/tools" UV_TOOL_BIN_DIR="${work}/tools/bin"
 
 cleanup() {
-  if [ "${mode}" = launchd ]; then agentic-runner stop "${org}" --root "${root}" || true; fi
+  if [ "${mode}" = launchd ]; then agentic-runner stop "${name}" --root "${root}" || true; fi
   for pid in ${pids[@]+"${pids[@]}"}; do kill "${pid}" 2>/dev/null || true; done
-  if [ -f "${root}/${org}/runner.log" ]; then echo "-- runner.log"; cat "${root}/${org}/runner.log"; fi
+  if [ -f "${root}/${name}/runner.log" ]; then echo "-- runner.log"; cat "${root}/${name}/runner.log"; fi
 }
 trap cleanup EXIT
 
@@ -56,43 +56,43 @@ printf '#!/bin/sh\necho "2.1.280 (Claude Code)"\n' > "${work}/bin/claude"
 chmod +x "${work}/bin/claude"
 export PATH="${work}/bin:${PATH}"
 
-echo "== agentic-runner install ${org} (${mode})"
+echo "== agentic-runner install ${name} (${mode})"
 start_flag=()
 [ "${mode}" = process ] && start_flag=(--no-start)
-AGENTIC_RUNNER_REGISTRATION_TOKEN=workstation-test-registration-token agentic-runner install "${org}" \
+AGENTIC_RUNNER_REGISTRATION_TOKEN=workstation-test-registration-token agentic-runner install "${name}" \
   --control-plane http://127.0.0.1:8000 \
   --temporal-address 127.0.0.1:7233 --temporal-plaintext \
   --root "${root}" ${start_flag[@]+"${start_flag[@]}"}
 
 if [ "${mode}" = launchd ]; then
-  plist="${HOME}/Library/LaunchAgents/agentic-runner.${org}.plist"
+  plist="${HOME}/Library/LaunchAgents/agentic-runner.${name}.plist"
   plutil -lint "${plist}"
-  [ "$(plutil -extract Label raw "${plist}")" = "agentic-runner.${org}" ]
+  [ "$(plutil -extract Label raw "${plist}")" = "agentic-runner.${name}" ]
   [ "$(plutil -extract RunAtLoad raw "${plist}")" = true ]
   [ "$(plutil -extract KeepAlive.SuccessfulExit raw "${plist}")" = false ]
   [ "$(plutil -extract ProgramArguments.1 raw "${plist}")" = run ]
-  [ "$(plutil -extract ProgramArguments.3 raw "${plist}")" = "${org}" ]
-  launchctl print "gui/$(id -u)/agentic-runner.${org}" | grep -E 'state|pid'
+  [ "$(plutil -extract ProgramArguments.3 raw "${plist}")" = "${name}" ]
+  launchctl print "gui/$(id -u)/agentic-runner.${name}" | grep -E 'state|pid'
 else
   # The command the login agent runs (workstation.runner_command), minus --login-agent.
-  agentic-runner run --org "${org}" --root "${root}" &
+  agentic-runner run --name "${name}" --root "${root}" &
   runner_pid=$!
   pids+=("${runner_pid}")
 fi
 
 python3 "${repo}/tests/install/await_runner.py" "${stats}" --isolation none
-agentic-runner status "${org}" --root "${root}" | tee "${work}/status"
+agentic-runner status "${name}" --root "${root}" | tee "${work}/status"
 grep -q 'process        running' "${work}/status"
 grep -qE 'heartbeat      [0-9]+s ago' "${work}/status"
 
 echo "== stop drains to a clean exit"
 if [ "${mode}" = launchd ]; then
-  agentic-runner stop "${org}" --root "${root}"
+  agentic-runner stop "${name}" --root "${root}"
   for _ in $(seq 30); do
-    agentic-runner status "${org}" --root "${root}" | grep -q 'not running' && break
+    agentic-runner status "${name}" --root "${root}" | grep -q 'not running' && break
     sleep 1
   done
-  agentic-runner status "${org}" --root "${root}" | grep -q 'process        not running'
+  agentic-runner status "${name}" --root "${root}" | grep -q 'process        not running'
 else
   kill -TERM "${runner_pid}"
   wait "${runner_pid}"

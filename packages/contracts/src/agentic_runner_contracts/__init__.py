@@ -136,6 +136,11 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose heartbeat names contracts 3.26 or later, and the Runner reports its fingerprint
 # only once an ack carried `pool`. Raises the floor for pool Runners in practice: one
 # below 3.26 cannot open an LLM Key, so routing sends it no `llm_key` Directive.
+# 3.27.0 (QTS-1773, Spec: Runners rev 4): a workstation Runner's name. `RunnerInstall.name`
+# (`RunnerName`, `RUNNER_NAME_PATTERN`) and `HeartbeatAck.contracts_version`, the control
+# plane's own. Additive and omitted while None. The control plane sends its version only
+# to a Runner whose heartbeat names contracts 3.27 or later, and the Runner reports its
+# name only once an ack named a control plane on 3.27 or later. Does not raise the floor.
 __version__ = "3.26.1"
 
 __all__ = ["__version__"]

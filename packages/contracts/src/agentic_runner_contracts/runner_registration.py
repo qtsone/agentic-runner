@@ -108,6 +108,10 @@ Version = Annotated[str, StringConstraints(pattern=r"^\d+\.\d+\.\d+$")]
 # before it reports the first 16.
 BuildId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{12,64}$")]
 RegistrationToken = Annotated[str, StringConstraints(min_length=16, max_length=256)]
+# A workstation Runner's name (QTS-1773): one path segment, launchd label and systemd
+# instance name on the machine, and what the console lists the Runner under.
+RUNNER_NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,31}$"
+RunnerName = Annotated[str, StringConstraints(pattern=RUNNER_NAME_PATTERN)]
 
 
 class IsolationMode(StrEnum):
@@ -640,7 +644,8 @@ class InstallTarget(StrEnum):
 class RunnerInstall(BaseModel):
     """Where to run a command on this Runner. ``hostname`` is the pod name under Helm and
     the container id under Docker; a workstation's, which can name its person, is never
-    sent, and the schema refuses one."""
+    sent, and the schema refuses one. ``name`` is what a workstation Runner was installed
+    as, the person's own choice, which every local command on it takes (QTS-1773)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -648,12 +653,21 @@ class RunnerInstall(BaseModel):
     hostname: (
         Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")] | None
     ) = None
+    name: RunnerName | None = None
 
     @model_validator(mode="after")
     def _hostname_only_in_a_container(self) -> RunnerInstall:
         if self.target == InstallTarget.WORKSTATION and self.hostname is not None:
             raise ValueError("a workstation Runner never reports its hostname")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_no_name(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # A control plane below 3.27 forbids the key; a container Runner has no name.
+        body = handler(self)
+        if isinstance(body, dict) and body.get("name") is None:
+            body.pop("name", None)
+        return body
 
 
 class SubscriptionRight(StrEnum):
@@ -1010,18 +1024,24 @@ class HeartbeatAck(BaseModel):
     # forbids extra keys, so the control plane sends it only to a Runner whose heartbeat
     # names contracts 3.26 or later.
     pool: PoolTerms | None = None
+    # QTS-1773: the control plane's own contracts version, so a Runner sends a field only
+    # to a control plane that parses it -- from 3.27, `RunnerInstall.name`. None from a
+    # control plane below 3.27, which forbids that key. The ack forbids extra keys, so the
+    # control plane sends it only to a Runner whose heartbeat names contracts 3.27 or later.
+    contracts_version: Version | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
         # body that Runner already parses; likewise `tags` for a Runner on 3.19,
-        # `llm_contracts` for one on 3.24 and `pool` for one on 3.25. An empty tag set or
-        # Contract list is still sent: it says the Runner has no Tags, or serves no Contract.
+        # `llm_contracts` for one on 3.24, `pool` for one on 3.25 and `contracts_version`
+        # for one on 3.26. An empty tag set or Contract list is still sent: it says the
+        # Runner has no Tags, or serves no Contract.
         body = handler(self)
         if isinstance(body, dict):
             if not body.get("credential_manifests"):
                 body.pop("credential_manifests", None)
-            for name in ("tags", "llm_contracts", "pool"):
+            for name in ("tags", "llm_contracts", "pool", "contracts_version"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body

@@ -1,12 +1,16 @@
-"""The workstation Runner: one login agent per Organisation (PRD issue 47, map ticket 23).
+"""The workstation Runner: one login agent per Runner (PRD issue 47, map ticket 23).
 
-``agentic-runner install | start | stop | status <org>``. Everything a CI-runner
+``agentic-runner install | start | stop | status <name>``. Everything a CI-runner
 precedent does on a developer machine and nothing a daemon would need:
 
-* **One process per Organisation** (23 item 3), each with its own state directory,
-  identity, namespace, Runner Token, hooks, credential store and Workspaces under
-  ``<root>/<org>/``. A contractor with two clients runs two. There is no supervisor over
-  N Organisations -- that is the "one Runner straddling Organisations" 12 A6 rejected.
+* **One process per Runner** (23 item 3), each with its own state directory, identity,
+  namespace, Runner Token, hooks, credential store and Workspaces under ``<root>/<name>/``.
+  A contractor with two clients runs two. There is no supervisor over N Runners -- that
+  is the "one Runner straddling Organisations" 12 A6 rejected.
+* **The name is the Runner's** (QTS-1773): the console lists the Runner under the name it
+  was installed as, and every local command takes it. It was an Organisation label before,
+  so the name a person chose on /me/runners read as an Organisation; an install made then
+  keeps its directory, login agent and keychain entries, all keyed by the same string.
 * **A login agent, never a system daemon** (23 item 1): a LaunchAgent in
   ``~/Library/LaunchAgents`` on macOS, a systemd *user* unit (with linger) on Linux, a
   per-user logon task on Windows. No ``sudo`` anywhere: the login keychain is unreachable
@@ -18,8 +22,8 @@ precedent does on a developer machine and nothing a daemon would need:
   under a harness root -- the per-Contract ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR`` belongs
   to the login the funder created there (issues 30, 31).
 * **``isolation: none``** (17 A2): no root and no uid switch, so the control plane routes
-  at most one Contract at a time here (issue 42), which one Organisation per process and
-  one active Contract per (Organisation, User Profile) pair already implied.
+  at most one Contract at a time here (issue 42), which one Contract per personal Runner
+  already implied.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ from agentic_runner.registration import load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES
 from agentic_runner_contracts.runner_registration import (
+    RUNNER_NAME_PATTERN,
     CliVersion,
     EgressPosture,
     HostAttestation,
@@ -71,7 +76,7 @@ __all__ = [
     "CLI_NAMES",
     "ROOT_ENV",
     "CliMissingError",
-    "OrgPaths",
+    "RunnerPaths",
     "ServiceDefinition",
     "WorkstationSettings",
     "cli_versions",
@@ -88,12 +93,11 @@ __all__ = [
     "start",
     "status_lines",
     "stop",
-    "validate_org",
+    "validate_name",
 ]
 
 ROOT_ENV: Final = "AGENTIC_RUNNER_WORKSTATION_ROOT"
 
-_ORG = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _LABEL_PREFIX: Final = "agentic-runner"
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -103,18 +107,19 @@ class CliMissingError(RuntimeError):
     pass
 
 
-def validate_org(org: str) -> str:
+def validate_name(name: str) -> str:
     """One path segment, one launchd label, one systemd instance name -- all at once."""
 
-    if not _ORG.fullmatch(org):
+    if not re.fullmatch(RUNNER_NAME_PATTERN, name):
         raise ValueError(
-            f"Organisation name {org!r} must be 1-32 of lowercase letters, digits and '-'"
+            f"Runner name {name!r} must be 1-32 of lowercase letters, digits and '-', "
+            "starting with a letter or digit"
         )
-    return org
+    return name
 
 
 def default_root(*, platform: str = sys.platform, environ: Mapping[str, str] = os.environ) -> Path:
-    """Where every Organisation's directory lives, per the OS's per-user convention."""
+    """Where every Runner's directory lives, per the OS's per-user convention."""
 
     if environ.get(ROOT_ENV, "").strip():
         return Path(environ[ROOT_ENV])
@@ -128,19 +133,19 @@ def default_root(*, platform: str = sys.platform, environ: Mapping[str, str] = o
 
 
 @dataclass(frozen=True)
-class OrgPaths:
-    """``<root>/<org>/`` and everything the process keeps under it."""
+class RunnerPaths:
+    """``<root>/<name>/`` and everything the process keeps under it."""
 
     root: Path
-    org: str
+    name: str
 
     @property
     def state_dir(self) -> Path:
-        return self.root / self.org
+        return self.root / self.name
 
     @property
     def hooks(self) -> Path:
-        # Issue 45's path, per map ticket 26: `<state_dir>/<org>/hooks/`.
+        # Issue 45's path, per map ticket 26: `<state_dir>/<name>/hooks/`.
         return self.state_dir / "hooks"
 
     @property
@@ -189,7 +194,7 @@ class OrgPaths:
             tempfile.gettempdir() if sys.platform == "darwin" else ""
         )
         if runtime:
-            return Path(runtime) / f"agentic-runner-{self.org}"
+            return Path(runtime) / f"agentic-runner-{self.name}"
         return self.state_dir / "sockets"
 
     def create(self) -> None:
@@ -203,10 +208,10 @@ class WorkstationSettings(BaseModel):
     """What ``install`` was told, so ``run`` and ``status`` need no flags."""
 
     # `ignore`, not `forbid`: only `save` writes this file, and an install made before
-    # local-agents 01 retired the per-process `cli_kind` still has to `run` and `status`.
+    # local-agents 01 retired the per-process `cli_kind`, or before QTS-1773 dropped the
+    # `org` its directory already names, still has to `run` and `status`.
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    org: str
     control_plane_url: str
     # A fallback only: `run` uses the address the registration response carries (ADR-0022
     # §4). An install made before 3.17 saved one and keeps it.
@@ -222,15 +227,15 @@ class WorkstationSettings(BaseModel):
     # which every `install` rewrites (QTS-1355).
     acp_cli_kinds: str = ""
 
-    def save(self, paths: OrgPaths) -> None:
+    def save(self, paths: RunnerPaths) -> None:
         paths.settings_file.write_text(self.model_dump_json(indent=2), encoding="utf-8")
 
     @classmethod
-    def load(cls, paths: OrgPaths) -> WorkstationSettings:
+    def load(cls, paths: RunnerPaths) -> WorkstationSettings:
         if not paths.settings_file.is_file():
             raise FileNotFoundError(
-                f"no Runner is installed for {paths.org!r} under {paths.root}; "
-                f"run `agentic-runner install {paths.org}` first"
+                f"no Runner is installed for {paths.name!r} under {paths.root}; "
+                f"run `agentic-runner install {paths.name}` first"
             )
         return cls.model_validate_json(paths.settings_file.read_text(encoding="utf-8"))
 
@@ -262,8 +267,8 @@ def install_channel(
     return InstallChannel.SYSTEMD_USER
 
 
-def run_environment(paths: OrgPaths, settings: WorkstationSettings) -> dict[str, str]:
-    """The environment ``agentic-runner run --org`` gives ``service.run``.
+def run_environment(paths: RunnerPaths, settings: WorkstationSettings) -> dict[str, str]:
+    """The environment ``agentic-runner run --name`` gives ``service.run``.
 
     Set here rather than in the service definition so one definition format -- a plist,
     a unit, a task -- stays a one-liner, and the three OSes cannot drift apart.
@@ -285,7 +290,7 @@ def run_environment(paths: OrgPaths, settings: WorkstationSettings) -> dict[str,
         "TEMPORAL_ADDRESS": settings.temporal_address,
         "WORKSPACE_ROOT": str(paths.workspaces),
         "WORKER_STATE_DIR": str(paths.contract_state),
-        # Ephemeral: one process per Organisation shares the host, so a fixed readiness
+        # Ephemeral: one process per Runner shares the host, so a fixed readiness
         # port inherited from a pod-style environment would collide on the second one.
         service.READINESS_PORT_ENV: "0",
     }
@@ -396,16 +401,16 @@ class ServiceDefinition:
     stop: list[list[str]]
 
 
-def runner_command(org: str, root: Path) -> list[str]:
+def runner_command(name: str, root: Path) -> list[str]:
     # The console script as found, not resolved: Homebrew's `bin/agentic-runner` is a
     # symlink into a versioned Cellar path that the next `brew upgrade` deletes.
     script = shutil.which("agentic-runner")
     prefix = [script] if script else [sys.executable, "-m", "agentic_runner.launch"]
-    return [*prefix, "run", "--org", org, "--root", str(root), "--login-agent"]
+    return [*prefix, "run", "--name", name, "--root", str(root), "--login-agent"]
 
 
 def service_definition(
-    paths: OrgPaths,
+    paths: RunnerPaths,
     settings: WorkstationSettings,
     *,
     platform: str = sys.platform,
@@ -415,8 +420,8 @@ def service_definition(
     command: Sequence[str] | None = None,
 ) -> ServiceDefinition:
     home = home or Path.home()
-    argv = list(command or runner_command(paths.org, paths.root))
-    name = f"{_LABEL_PREFIX}.{paths.org}"
+    argv = list(command or runner_command(paths.name, paths.root))
+    name = f"{_LABEL_PREFIX}.{paths.name}"
     if platform == "darwin":
         return _launch_agent(paths, settings, argv, name=name, home=home, uid=uid)
     if platform == "win32":
@@ -425,7 +430,7 @@ def service_definition(
 
 
 def _launch_agent(
-    paths: OrgPaths,
+    paths: RunnerPaths,
     settings: WorkstationSettings,
     argv: list[str],
     *,
@@ -458,19 +463,19 @@ def _launch_agent(
 
 
 def _systemd_user_unit(
-    paths: OrgPaths,
+    paths: RunnerPaths,
     settings: WorkstationSettings,
     argv: list[str],
     *,
     home: Path,
     user: str | None,
 ) -> ServiceDefinition:
-    unit_name = f"{_LABEL_PREFIX}-{paths.org}.service"
+    unit_name = f"{_LABEL_PREFIX}-{paths.name}.service"
     unit = home / ".config" / "systemd" / "user" / unit_name
     exec_start = " ".join(_systemd_quote(arg) for arg in argv)
     content = (
         "[Unit]\n"
-        f"Description=Agentic OS Runner for {paths.org}\n"
+        f"Description=Agentic OS Runner for {paths.name}\n"
         "After=network-online.target\n\n"
         "[Service]\n"
         f"ExecStart={exec_start}\n"
@@ -504,16 +509,16 @@ def _systemd_quote(value: str) -> str:
 
 
 def _logon_task(
-    paths: OrgPaths, argv: list[str], *, name: str, user: str | None
+    paths: RunnerPaths, argv: list[str], *, name: str, user: str | None
 ) -> ServiceDefinition:
     task_xml = paths.state_dir / f"{name}.task.xml"
-    task_name = f"\\agentic-runner\\{paths.org}"
+    task_name = f"\\agentic-runner\\{paths.name}"
     who = user or os.environ.get("USERNAME", "")
     arguments = subprocess.list2cmdline(argv[1:])
     content = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Agentic OS Runner for {escape(paths.org)}</Description>
+    <Description>Agentic OS Runner for {escape(paths.name)}</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger><Enabled>true</Enabled><UserId>{escape(who)}</UserId></LogonTrigger>
@@ -564,7 +569,7 @@ def drive(commands: list[list[str]], *, run: Run = subprocess.run) -> None:
 # ------------------------------------------------------------------ status
 
 
-def process_id(paths: OrgPaths) -> int | None:
+def process_id(paths: RunnerPaths) -> int | None:
     """The running process's pid, if the pidfile names a live one."""
 
     try:
@@ -580,7 +585,7 @@ def process_id(paths: OrgPaths) -> int | None:
     return pid
 
 
-def heartbeat_age(paths: OrgPaths, *, now: datetime | None = None) -> float | None:
+def heartbeat_age(paths: RunnerPaths, *, now: datetime | None = None) -> float | None:
     try:
         stamped = paths.heartbeat_stamp.stat().st_mtime
     except OSError:
@@ -588,14 +593,14 @@ def heartbeat_age(paths: OrgPaths, *, now: datetime | None = None) -> float | No
     return max(0.0, (now or datetime.now(UTC)).timestamp() - stamped)
 
 
-def status_lines(paths: OrgPaths, *, now: datetime | None = None) -> list[str]:
-    """``status <org>``: the process, its identity and its heartbeat age."""
+def status_lines(paths: RunnerPaths, *, now: datetime | None = None) -> list[str]:
+    """``status <name>``: the process, its identity and its heartbeat age."""
 
     pid = process_id(paths)
     state = load_state(paths.state_dir)
     age = heartbeat_age(paths, now=now)
     lines = [
-        f"organisation   {paths.org} ({paths.state_dir})",
+        f"runner name    {paths.name} ({paths.state_dir})",
         f"process        {'running, pid ' + str(pid) if pid else 'not running'}",
         (
             f"identity       {state.runner_id} in {state.temporal_namespace} on {state.task_queue}"
@@ -634,7 +639,7 @@ def next_step_lines(host_party: str) -> list[str]:
 
 
 async def install(
-    paths: OrgPaths,
+    paths: RunnerPaths,
     settings: WorkstationSettings,
     *,
     registration_token: str,
@@ -645,7 +650,7 @@ async def install(
     run: Run = subprocess.run,
     http_client: httpx.AsyncClient | None = None,
 ) -> list[str]:
-    """Register this Organisation's process and install its login agent.
+    """Register this Runner and install its login agent.
 
     Registration happens here, once, with the Runner Registration Token this user minted
     on /me/runners or the Organisation's Admin issued them (12 A6, QTS-1304) -- pasted at the
@@ -696,18 +701,18 @@ async def install(
     return lines
 
 
-def start(paths: OrgPaths, **driver: Any) -> None:
+def start(paths: RunnerPaths, **driver: Any) -> None:
     _drive_service(paths, "start", **driver)
 
 
-def stop(paths: OrgPaths, **driver: Any) -> None:
-    """Stop this Organisation's process; every other Organisation's keeps polling."""
+def stop(paths: RunnerPaths, **driver: Any) -> None:
+    """Stop this Runner; every other Runner on this machine keeps polling."""
 
     _drive_service(paths, "stop", **driver)
 
 
 def _drive_service(
-    paths: OrgPaths,
+    paths: RunnerPaths,
     verb: str,
     *,
     platform: str = sys.platform,
@@ -719,8 +724,8 @@ def _drive_service(
     drive(definition.start if verb == "start" else definition.stop, run=run)
 
 
-def run_process(paths: OrgPaths, *, login_agent: bool) -> int:
-    """``agentic-runner run --org``: what the login agent executes."""
+def run_process(paths: RunnerPaths, *, login_agent: bool) -> int:
+    """``agentic-runner run --name``: what the login agent executes."""
 
     settings = WorkstationSettings.load(paths)
     try:
@@ -730,13 +735,14 @@ def run_process(paths: OrgPaths, *, login_agent: bool) -> int:
         return 1
     for name, value in run_environment(paths, settings).items():
         os.environ[name] = value
-    store = open_workstation_store(paths.org, fallback=paths.credentials)
+    store = open_workstation_store(paths.name, fallback=paths.credentials)
     attestation = collect_attestation(
         channel=settings.install_channel,
         session=SessionKind.LOGIN_AGENT if login_agent else SessionKind.INTERACTIVE,
         store=store.kind,
         path=settings.path,
     )
-    # A workstation's hostname can name its person, so it is never reported (rev 3).
-    install = RunnerInstall(target=InstallTarget.WORKSTATION)
+    # A workstation's hostname can name its person, so it is never reported (rev 3); the
+    # name it was installed as is the person's choice, and the console lists it (QTS-1773).
+    install = RunnerInstall(target=InstallTarget.WORKSTATION, name=paths.name)
     return asyncio.run(service.run(host_store=store, attestation=attestation, install=install))

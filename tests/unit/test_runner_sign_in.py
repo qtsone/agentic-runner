@@ -507,3 +507,14 @@ def test_a_workstation_never_reports_its_hostname() -> None:
     assert RunnerInstall(target=InstallTarget.WORKSTATION).hostname is None
     with pytest.raises(ValueError, match="never reports its hostname"):
         RunnerInstall(target=InstallTarget.WORKSTATION, hostname="alices-macbook")
+
+
+def test_a_runners_name_is_sent_only_when_it_has_one() -> None:
+    """QTS-1773: a control plane below 3.27 forbids the key, so an unnamed Runner -- a
+    container, or one whose control plane has not said it parses names -- omits it."""
+
+    assert "name" not in RunnerInstall(target=InstallTarget.DOCKER).model_dump(mode="json")
+    named = RunnerInstall(target=InstallTarget.WORKSTATION, name="cucubau")
+    assert named.model_dump(mode="json")["name"] == "cucubau"
+    with pytest.raises(ValueError, match="pattern"):
+        RunnerInstall(target=InstallTarget.WORKSTATION, name="Alice's laptop")

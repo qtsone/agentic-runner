@@ -93,10 +93,9 @@ def _fake_cli(directory: Path, name: str, version: str) -> Path:
     return path
 
 
-def _settings(paths: workstation.OrgPaths, path: str, **overrides: Any) -> Any:
+def _settings(paths: workstation.RunnerPaths, path: str, **overrides: Any) -> Any:
     return workstation.WorkstationSettings(
         **{
-            "org": paths.org,
             "control_plane_url": CONTROL_PLANE,
             "temporal_address": "temporal-grpc.test:443",
             "path": path,
@@ -124,7 +123,7 @@ def _all_commands(definition: workstation.ServiceDefinition) -> list[list[str]]:
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 def test_every_service_definition_is_user_level(tmp_path: Path, platform: str) -> None:
     home = tmp_path / "home"
-    paths = workstation.OrgPaths(root=home / "state", org="acme")
+    paths = workstation.RunnerPaths(root=home / "state", name="acme")
     definition = workstation.service_definition(
         paths,
         _settings(paths, "/usr/bin:/bin"),
@@ -132,7 +131,7 @@ def test_every_service_definition_is_user_level(tmp_path: Path, platform: str) -
         home=home,
         user="dev",
         uid=501,
-        command=["/opt/homebrew/bin/agentic-runner", "run", "--org", "acme"],
+        command=["/opt/homebrew/bin/agentic-runner", "run", "--name", "acme"],
     )
 
     # Under the user's home, never a system location.
@@ -148,7 +147,7 @@ def test_every_service_definition_is_user_level(tmp_path: Path, platform: str) -
         assert definition.path == home / "Library/LaunchAgents/agentic-runner.acme.plist"
         agent = plistlib.loads(definition.content)
         assert agent["Label"] == "agentic-runner.acme"
-        assert agent["ProgramArguments"][1:4] == ["run", "--org", "acme"]
+        assert agent["ProgramArguments"][1:4] == ["run", "--name", "acme"]
         assert agent["EnvironmentVariables"] == {"PATH": "/usr/bin:/bin"}
         # The per-user GUI domain -- a LaunchAgent -- not the `system` domain.
         assert definition.start == [["launchctl", "bootstrap", "gui/501", str(definition.path)]]
@@ -175,7 +174,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     tmp_path: Path, bin_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = tmp_path / "home"
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     plane = FakeControlPlane(host_party="user")
     commands = Commands()
 
@@ -227,11 +226,57 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     assert commands.ran[-1] == ["launchctl", "bootout", f"gui/{os.getuid()}/agentic-runner.acme"]
 
 
+def test_install_names_its_argument_as_the_runners_name(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """QTS-1773: the name typed on /me/runners read, on the machine, as an Organisation."""
+
+    with pytest.raises(SystemExit):
+        cli.main(["install", "--help"])
+
+    usage = capsys.readouterr().out
+    assert "install [-h]" in usage and " name" in usage
+    assert "this Runner's name" in usage and "rganisation" not in usage
+
+
+def test_an_install_made_before_the_runner_name_keeps_running(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its settings file still carries `org`, and its login agent still runs `run --org`:
+    `uv tool upgrade` rewrites neither, and the Runner starts as it did, under that name."""
+
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="cucubau")
+    paths.create()
+    paths.settings_file.write_text(
+        json.dumps(
+            {
+                "org": "cucubau",
+                "control_plane_url": CONTROL_PLANE,
+                "path": str(bin_dir),
+                "install_channel": "manual",
+            }
+        )
+    )
+    started: list[tuple[workstation.RunnerPaths, bool]] = []
+
+    def run_process(run_paths: workstation.RunnerPaths, *, login_agent: bool) -> int:
+        started.append((run_paths, login_agent))
+        return 0
+
+    monkeypatch.setattr(workstation, "run_process", run_process)
+
+    argv = ["run", "--org", "cucubau", "--root", str(paths.root), "--login-agent"]
+    assert cli.main(argv) == 0
+
+    assert started == [(paths, True)]
+    assert workstation.WorkstationSettings.load(paths).control_plane_url == CONTROL_PLANE
+
+
 @pytest.mark.asyncio
 async def test_reinstalling_over_a_registered_state_dir_says_the_token_was_not_used(
     tmp_path: Path, bin_dir: Path
 ) -> None:
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     plane = FakeControlPlane(host_party="organisation")
 
     async def install(token: str) -> list[str]:
@@ -264,11 +309,11 @@ async def test_two_installs_on_one_machine_hold_their_own_identity_and_recipient
     """ADR-0022 §37: a value sealed to one Runner on the machine opens on no other."""
 
     root = tmp_path / "state"
-    first = workstation.OrgPaths(root=root, org="acme")
-    second = workstation.OrgPaths(root=root, org="acme-billing")
+    first = workstation.RunnerPaths(root=root, name="acme")
+    second = workstation.RunnerPaths(root=root, name="acme-billing")
     plane = FakeControlPlane(host_party="user")
 
-    async def register(paths: workstation.OrgPaths, token: str) -> None:
+    async def register(paths: workstation.RunnerPaths, token: str) -> None:
         async with httpx.AsyncClient(transport=plane.transport()) as http:
             await workstation.install(
                 paths,
@@ -343,11 +388,11 @@ def test_a_reinstall_keeps_the_acp_cli_kinds_the_last_install_was_given(
 ) -> None:
     """QTS-1355: `ACP_CLI_KINDS` hand-added to the plist was dropped by the next `install`."""
 
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     installed: list[workstation.WorkstationSettings] = []
 
     async def install(
-        org_paths: workstation.OrgPaths, settings: workstation.WorkstationSettings, **_: Any
+        org_paths: workstation.RunnerPaths, settings: workstation.WorkstationSettings, **_: Any
     ) -> list[str]:
         org_paths.create()
         settings.save(org_paths)
@@ -393,11 +438,11 @@ def test_install_needs_no_temporal_address_and_keeps_one_given_as_a_fallback(
 ) -> None:
     """QTS-1540: the Runner takes its Temporal address from registration (ADR-0022 §4)."""
 
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     installed: list[workstation.WorkstationSettings] = []
 
     async def install(
-        org_paths: workstation.OrgPaths, settings: workstation.WorkstationSettings, **_: Any
+        org_paths: workstation.RunnerPaths, settings: workstation.WorkstationSettings, **_: Any
     ) -> list[str]:
         installed.append(settings)
         return []
@@ -416,7 +461,7 @@ def test_install_needs_no_temporal_address_and_keeps_one_given_as_a_fallback(
 def test_settings_saved_with_or_without_a_temporal_address_load(
     tmp_path: Path, bin_dir: Path
 ) -> None:
-    paths = workstation.OrgPaths(root=tmp_path, org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path, name="acme")
     paths.create()
     _settings(paths, str(bin_dir)).save(paths)
     loaded = workstation.WorkstationSettings.load(paths)
@@ -449,7 +494,7 @@ def test_no_cli_on_path_refuses_the_start_and_one_is_enough(
     tmp_path: Path, bin_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (bin_dir / "claude").unlink()
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     paths.create()
     # One CLI serves that one runtime (local-agents 01); no per-Profile choice to refuse on.
     assert workstation.require_any_cli(str(bin_dir)) == {"codex": str(bin_dir / "codex")}
@@ -462,7 +507,7 @@ def test_no_cli_on_path_refuses_the_start_and_one_is_enough(
 
 
 def test_settings_saved_with_the_retired_cli_kind_still_load(tmp_path: Path, bin_dir: Path) -> None:
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     paths.create()
     saved = _settings(paths, str(bin_dir)).model_dump(mode="json") | {"cli_kind": "codex_cli"}
     paths.settings_file.write_text(json.dumps(saved), encoding="utf-8")
@@ -494,7 +539,7 @@ async def test_the_runner_never_opens_a_file_under_any_harness_root(
     opened: list[str],
 ) -> None:
     home = tmp_path / "home"
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     contract = str(uuid4())
     # Every harness root the box holds: the user's own CLI logins and the per-Contract
     # roots the funders created (issue 30's layout), each with a credential-shaped file.
@@ -540,7 +585,7 @@ async def test_the_runner_never_opens_a_file_under_any_harness_root(
 
 
 async def _run_once(
-    paths: workstation.OrgPaths,
+    paths: workstation.RunnerPaths,
     plane: FakeControlPlane,
     *,
     store: Any,
@@ -617,7 +662,7 @@ def test_a_value_stored_through_the_os_store_reads_back_and_is_absent_from_disk(
 ) -> None:
     monkeypatch.setattr("agentic_runner.host_store.shutil.which", lambda name: f"/usr/bin/{name}")
     keychain = FakeKeychain()
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     paths.create()
     secret = 'sk-live-"quoted" value'
 
@@ -659,7 +704,7 @@ def test_with_no_os_store_reachable_the_fallback_file_is_created_0600(tmp_path: 
     def unreachable(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(argv, 1, "", "Cannot autolaunch D-Bus")
 
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     store = open_workstation_store(
         "acme", fallback=paths.credentials, platform="linux", run=unreachable
     )
@@ -816,10 +861,10 @@ async def test_a_wake_is_attested_with_its_sleep_and_queued_as_a_lifecycle_fact(
 
 
 def test_an_organisation_name_is_one_safe_segment() -> None:
-    assert workstation.validate_org("acme-2") == "acme-2"
+    assert workstation.validate_name("acme-2") == "acme-2"
     for bad in ("", "Acme", "../x", "a" * 33, "a b", "a.b"):
         with pytest.raises(ValueError):
-            workstation.validate_org(bad)
+            workstation.validate_name(bad)
 
 
 def test_the_state_root_follows_each_os_per_user_convention() -> None:
@@ -843,7 +888,7 @@ async def test_a_pool_runner_install_keeps_the_pool_key_private_and_out_of_the_a
     keeps it -- 0600 beside the identity, never in the login agent's definition."""
 
     home = tmp_path / "home"
-    paths = workstation.OrgPaths(root=tmp_path / "state", org="acme")
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
     pool_key = generate_recipient_key()
 
     async with httpx.AsyncClient(transport=FakeControlPlane().transport()) as http:
