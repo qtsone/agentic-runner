@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.29.0](https://github.com/qtsone/agentic-runner/compare/v3.28.1...v3.29.0) (2026-10-17)
+
+
+### Features
+
+* **runner:** list shows the Organisation's and the Contract's names (QTS-1909) ([#78](https://github.com/qtsone/agentic-runner/issues/78)) ([48e7fff](https://github.com/qtsone/agentic-runner/commit/48e7fff5b4dcae66a7e181e02ea8830d757fb166)), closes [#76](https://github.com/qtsone/agentic-runner/issues/76) [#76](https://github.com/qtsone/agentic-runner/issues/76) [#76](https://github.com/qtsone/agentic-runner/issues/76)
+
 ## [3.28.1](https://github.com/qtsone/agentic-runner/compare/v3.28.0...v3.28.1) (2026-10-17)
 
 
