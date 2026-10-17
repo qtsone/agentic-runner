@@ -2,7 +2,7 @@
 
 A contractor with two clients installs twice and runs two processes -- no supervisor
 over N Organisations. Each ``install`` registers against a fake control plane (served
-over real HTTP) and each ``agentic-runner run --org`` is a real OS process, exactly as
+over real HTTP) and each ``agentic-runner run --name`` is a real OS process, exactly as
 its login agent would exec it, polling a Temporal dev server. What this pins:
 
 * two state directories, two identities, two Runner Tokens;

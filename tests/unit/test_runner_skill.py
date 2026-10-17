@@ -200,7 +200,7 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
 async def _start_the_login_agent(
     paths: workstation.RunnerPaths, plane: FakeControlPlane, *, monkeypatch: pytest.MonkeyPatch
 ) -> str:
-    """What the login agent ``install`` wrote does: ``run --org``, until it is heard once.
+    """What the login agent ``install`` wrote does: ``run --name``, until it is heard once.
 
     Returns the Temporal address the Runner connected to.
     """

@@ -592,7 +592,7 @@ async def _run_once(
     attestation: HostAttestation,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``service.run`` as ``run --org`` wires it, until the first heartbeat lands."""
+    """``service.run`` as ``run --name`` wires it, until the first heartbeat lands."""
 
     settings = workstation.WorkstationSettings.load(paths)
     for name, value in workstation.run_environment(paths, settings).items():
