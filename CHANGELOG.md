@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.28.0](https://github.com/qtsone/agentic-runner/compare/v3.27.0...v3.28.0) (2026-10-17)
+
+
+### Features
+
+* **runner:** list the Runners installed on this machine (QTS-1774) ([#76](https://github.com/qtsone/agentic-runner/issues/76)) ([09b79a7](https://github.com/qtsone/agentic-runner/commit/09b79a73116dd7406c93226e17d437651f44e5f6))
+
 # [3.27.0](https://github.com/qtsone/agentic-runner/compare/v3.26.1...v3.27.0) (2026-10-17)
 
 
