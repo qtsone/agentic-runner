@@ -707,7 +707,7 @@ def _list_row_or_reason(paths: RunnerPaths) -> tuple[str, str, str, str, str, st
 def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
     state = load_state(paths.state_dir)
     contracts = load_llm_contracts(paths.state_dir)
-    organisation_name = _printable(load_organisation_name(paths.state_dir) or "")
+    organisation_name = _printable(load_organisation_name(paths.state_dir))
     try:
         version = paths.started_version.read_text(encoding="utf-8").strip() or "-"
     except OSError:
@@ -732,12 +732,12 @@ def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
 
 
 def _contract_label(terms: ContractLlmTerms) -> str:
-    return _printable(terms.contract_name or "") or str(terms.contract_id)[:8]
+    return _printable(terms.contract_name) or str(terms.contract_id)[:8]
 
 
-def _printable(name: str) -> str:
+def _printable(name: str | None) -> str:
     # A name someone typed in the console: an escape sequence in it would reach the terminal.
-    return "".join(character for character in name if character.isprintable())
+    return "".join(character for character in name or "" if character.isprintable())
 
 
 def next_step_lines(host_party: str) -> list[str]:
