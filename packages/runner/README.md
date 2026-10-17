@@ -28,7 +28,8 @@ root: Python, git, `codex`, `claude`, nothing else) and installs with
 `charts/agentic-runner`.
 
 On a workstation it is a per-user login agent, one per Runner:
-`agentic-runner install | start | stop | status <name>` (LaunchAgent, systemd user unit or
-logon task; never `sudo`), with Credential References in the OS credential store.
+`agentic-runner install | start | stop | status <name>` and `agentic-runner list`
+(LaunchAgent, systemd user unit or logon task; never `sudo`), with Credential References in
+the OS credential store.
 
 Licensed under AGPL-3.0-only.

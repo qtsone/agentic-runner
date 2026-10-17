@@ -11,10 +11,10 @@ namespace and queue this process was assigned. It is idempotent by state file --
 restart re-reads what is already there rather than registering a second Runner against
 the Organisation's cap.
 
-``install | start | stop | status <name>`` and ``credential set`` are the workstation
-Runner (PRD issue 47, ``workstation.py``): one login agent per Runner, managed by the user
-who hosts it, with no ``sudo`` anywhere. ``<name>`` is the Runner's, the one the console
-lists it under (QTS-1773).
+``install | start | stop | status <name>``, ``credential set`` and ``list`` are the
+workstation Runner (PRD issue 47, ``workstation.py``): one login agent per Runner, managed
+by the user who hosts it, with no ``sudo`` anywhere. ``<name>`` is the Runner's, the one the
+console lists it under (QTS-1773); a machine with one Runner needs none (QTS-1774).
 
 ``sign-in [claude|codex]`` gives a person's own Runner their LLM access: their subscription,
 through the vendor's own sign-in in this terminal, or an API key stored in the Runner's
@@ -107,6 +107,7 @@ _NAME_HELP = (
     "this Runner's name: the console lists it under this name, and every command on this "
     "machine takes it"
 )
+_INSTALLED_NAME_HELP = "the Runner's name; omitted when this machine runs one Runner"
 
 
 def _old_org_flag(parser: argparse.ArgumentParser) -> None:
@@ -211,14 +212,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         driven = subcommands.add_parser(
             service_verb, help=f"{service_verb} one workstation Runner's login agent"
         )
-        driven.add_argument("name", help=_NAME_HELP)
+        driven.add_argument("name", nargs="?", help=_INSTALLED_NAME_HELP)
         driven.add_argument("--root", default=None, type=Path)
+
+    listed = subcommands.add_parser(
+        "list", help="the workstation Runners installed on this machine, and which are running"
+    )
+    listed.add_argument("--root", default=None, type=Path)
 
     credential = subcommands.add_parser(
         "credential", help="install a Credential Reference value into this host's store"
     )
     credential.add_argument("action", choices=("set",))
-    credential.add_argument("name", help=_NAME_HELP)
+    credential.add_argument("name", nargs="?", help=_INSTALLED_NAME_HELP)
     credential.add_argument("reference")
     credential.add_argument("--root", default=None, type=Path)
 
@@ -233,7 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     status = subcommands.add_parser(
         "status", help="print this installation's versions and Recipient Key fingerprint"
     )
-    status.add_argument("name", nargs="?", help="a workstation Runner's name (issue 47)")
+    status.add_argument("name", nargs="?", help=_INSTALLED_NAME_HELP)
     status.add_argument("--root", default=None, type=Path)
 
     sign_in = subcommands.add_parser(
@@ -256,7 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     sign_in.add_argument(
         "--name",
         default=None,
-        help="the workstation Runner's name, when this workstation runs more than one",
+        help="the workstation Runner's name, when this machine runs more than one",
     )
     _old_org_flag(sign_in)
     sign_in.add_argument("--root", default=None, type=Path, help=argparse.SUPPRESS)
@@ -351,9 +357,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return workstation.run_process(
                 _runner_paths(arguments), login_agent=arguments.login_agent
             )
+        if installed := _installed_instead_of_run():
+            print(
+                f"this machine runs {', '.join(installed)} as login agents: start one with "
+                "`agentic-runner start <name>`. `run` serves a Runner its environment sets "
+                "up, as in a container",
+                file=sys.stderr,
+            )
+            return 2
         return asyncio.run(service.run(attestation=_image_attestation(), install=_run_install()))
     if arguments.command in {"install", "start", "stop", "credential"}:
         return _workstation(arguments)
+    if arguments.command == "list":
+        for line in workstation.list_lines(arguments.root or workstation.default_root()):
+            print(line)
+        return 0
     if arguments.command == "recipient-key":
         api, kube_ns = in_cluster()
         pair = ensure_recipient_key(
@@ -364,9 +382,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
     if arguments.command == "status":
-        lines = (
-            workstation.status_lines(_runner_paths(arguments)) if arguments.name else status_lines()
-        )
+        if arguments.name or (
+            not _in_container()
+            and workstation.installed_names(arguments.root or workstation.default_root())
+        ):
+            try:
+                lines = workstation.status_lines(_runner_paths(arguments))
+            except ValueError as error:
+                print(error, file=sys.stderr)
+                return 2
+        else:
+            lines = status_lines()
         for line in lines:
             print(line)
         return 0
@@ -389,16 +415,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _callback(arguments)
 
 
-def _runner_paths(arguments: argparse.Namespace) -> workstation.RunnerPaths:
-    return workstation.RunnerPaths(
-        root=arguments.root or workstation.default_root(),
-        name=workstation.validate_name(arguments.name),
-    )
+def _runner_paths(
+    arguments: argparse.Namespace, *, how: str = "name one"
+) -> workstation.RunnerPaths:
+    """``<name>``, or the one Runner this machine runs -- nothing to remember (QTS-1774)."""
+
+    root = arguments.root or workstation.default_root()
+    if not arguments.name:
+        return workstation.only_runner(root, how=how)
+    return workstation.RunnerPaths(root=root, name=workstation.validate_name(arguments.name))
+
+
+def _installed_instead_of_run() -> list[str]:
+    """The Runners installed here, when a bare ``run`` would start none of them.
+
+    An installed Runner is its login agent's process; ``run`` without ``--name`` registers
+    from the environment, and on a workstation that holds neither a token nor an identity
+    it could only fail without saying what to type instead (QTS-1774).
+    """
+
+    if _in_container() or registration_token_from_env() or load_state(_state_dir()):
+        return []
+    return workstation.installed_names(workstation.default_root())
 
 
 def _workstation(arguments: argparse.Namespace) -> int:
-    paths = _runner_paths(arguments)
     try:
+        paths = _runner_paths(arguments)
         if arguments.command == "install":
             return _install(arguments, paths)
         if arguments.command == "start":
@@ -482,7 +525,7 @@ def _sign_in(arguments: argparse.Namespace) -> int:
     store: KeyStore
     if arguments.name or not _in_container():
         try:
-            paths = _sign_in_paths(arguments)
+            paths = _runner_paths(arguments, how="name one with --name")
         except ValueError as error:
             print(error, file=sys.stderr)
             return 2
@@ -493,26 +536,6 @@ def _sign_in(arguments: argparse.Namespace) -> int:
     else:
         store = service.own_store(load_config())
     return asyncio.run(service.sign_in(arguments.runtime, store=store, method=arguments.method))
-
-
-def _sign_in_paths(arguments: argparse.Namespace) -> workstation.RunnerPaths:
-    """``--name``, or the one Runner this workstation runs -- no id to type."""
-
-    if arguments.name:
-        return _runner_paths(arguments)
-    root = arguments.root or workstation.default_root()
-    installed = (
-        sorted(path.name for path in root.iterdir() if (path / "workstation.json").is_file())
-        if root.is_dir()
-        else []
-    )
-    if len(installed) != 1:
-        raise ValueError(
-            "no workstation Runner is installed here"
-            if not installed
-            else f"this workstation runs {', '.join(installed)}: name one with --name"
-        )
-    return workstation.RunnerPaths(root=root, name=installed[0])
 
 
 def _install(arguments: argparse.Namespace, paths: workstation.RunnerPaths) -> int:
