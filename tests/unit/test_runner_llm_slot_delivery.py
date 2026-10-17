@@ -62,6 +62,8 @@ class _Registration:
         self.sent: list[HeartbeatEnvelope] = []
         # None is a control plane below 3.25, which names no Contract terms.
         self.llm_contracts: list[ContractLlmTerms] | None = None
+        # None is a control plane below 3.27, which forbids `RunnerInstall.name`.
+        self.contracts_version: str | None = None
 
     async def heartbeat(self, state: Any, envelope: HeartbeatEnvelope) -> HeartbeatAck:
         self.sent.append(envelope)
@@ -73,6 +75,7 @@ class _Registration:
             accepts_new_directives=True,
             sealed_credentials=list(self.rows),
             llm_contracts=self.llm_contracts,
+            contracts_version=self.contracts_version,
         )
 
 
@@ -419,6 +422,26 @@ async def test_no_report_and_no_install_until_an_ack_names_the_contracts(tmp_pat
     new = registration.sent[-1].model_dump(mode="json")
     assert new["llm_access"] == []
     assert new["install"] == {"target": "docker", "hostname": "3f2a1b4c5d6e"}
+
+
+@pytest.mark.asyncio
+async def test_the_runners_name_waits_for_a_control_plane_that_parses_it(tmp_path: Path) -> None:
+    """QTS-1773: a control plane below 3.27 forbids `install.name`, so an upgraded
+    workstation Runner keeps beating against it, unnamed, until an ack names a newer one."""
+
+    registration, probe = _Registration(), _Probe()
+    install = RunnerInstall(target=InstallTarget.WORKSTATION, name="cucubau")
+    stream = _stream(tmp_path, registration, probe, install=install)
+    registration.llm_contracts = []
+
+    await stream.exchange([])
+    await stream.exchange([])
+    assert "name" not in registration.sent[-1].model_dump(mode="json")["install"]
+
+    registration.contracts_version = "3.27.0"
+    await stream.exchange([])
+    await stream.exchange([])
+    assert registration.sent[-1].model_dump(mode="json")["install"]["name"] == "cucubau"
 
 
 @pytest.mark.asyncio

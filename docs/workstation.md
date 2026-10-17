@@ -1,6 +1,6 @@
 # Run a Runner on your own machine
 
-On a laptop or desktop the Runner is a **per-user login agent, one per Organisation**,
+On a laptop or desktop the Runner is a **per-user login agent, one per Runner**,
 installed from PyPI and run as you: a LaunchAgent on macOS, a `systemd --user` unit on
 Linux. Never a system daemon, never `sudo`. CI installs the built wheel with
 `uv tool install` and runs a Runner to its first heartbeat on Linux, and through launchd on
@@ -34,7 +34,7 @@ macOS (`tests/install/workstation.sh`).
    same Contract uid, sandbox, MCP servers, egress proxy and permission checks as a
    pinned bridge, and the Runner reports the kind so Work Records for it are routed here.
 2. **A Runner Registration Token hosted by you.** Mint it yourself on **/me/runners → Add a Runner** in
-   the console, labelled after the machine (`alice-laptop`). It is shown once and installs
+   the console, named after the machine (`alice-laptop`). It is shown once and installs
    for 7 days. Your Organisation's Admin can also mint one on the Organisation Console's
    **Runners** page with **Hosted by** set to you, and send it over a channel you both
    trust, such as a password manager share. The Runner takes its host from the token: a
@@ -43,7 +43,7 @@ macOS (`tests/install/workstation.sh`).
 3. **A Contract whose Runner is hosted by you.** Only your Contracts with `runner_host:
    user` route to your Runner. If yours says the Organisation, ask the Admin to change it.
 4. **The install command.** **/me/runners** (after minting) and the Organisation
-   Console's Runners page show it for your Organisation, with the control plane URL filled
+   Console's Runners page show it, with your Runner's name and the control plane URL filled
    in. Copy it from there. The Runner learns its Temporal address when it registers;
    `--temporal-address` is a fallback for a control plane that does not send one.
 
@@ -54,11 +54,13 @@ uv tool install agentic-runner     # or: pipx install agentic-runner
 agentic-runner --version
 ```
 
-Then install one Runner per Organisation you work for. `acme` is your local name for it:
-lowercase letters, digits and `-`.
+Then install the Runner under the name you gave it on /me/runners. `alice-laptop` is its name:
+lowercase letters, digits and `-`. The console lists the Runner under it, and every command
+on this machine takes it. A second Runner here, for another Contract or Organisation, is a
+second `install` under another name.
 
 ```sh
-agentic-runner install acme --control-plane <control-plane URL from the Runners page>
+agentic-runner install alice-laptop --control-plane <control-plane URL from the Runners page>
 # Runner Registration Token (yours from /me/runners, or the Organisation Admin's for an Organisation Runner): ********
 ```
 
@@ -74,10 +76,10 @@ After the Organisation creates a new Pool Key, run `install` again with the new 
 
 `install` registers the Runner, then installs and starts its login agent:
 
-- **macOS:** `~/Library/LaunchAgents/agentic-runner.acme.plist`, loaded into your
+- **macOS:** `~/Library/LaunchAgents/agentic-runner.alice-laptop.plist`, loaded into your
   `gui/<uid>` session with `launchctl bootstrap`. It runs while you are logged in, which is
   what lets it use your login Keychain.
-- **Linux:** `~/.config/systemd/user/agentic-runner-acme.service`, enabled with
+- **Linux:** `~/.config/systemd/user/agentic-runner-alice-laptop.service`, enabled with
   `systemctl --user enable --now`, plus `loginctl enable-linger` for your own user so it
   keeps running after a reboot with nobody logged in.
 
@@ -85,7 +87,7 @@ The Runner captures the `PATH` you installed from. If you install a CLI later, r
 `agentic-runner install` again so the Runner can find it.
 
 To drive a CLI through its ACP bridge, name its kind on `install`:
-`--acp-cli-kinds codex_cli,claude_code`. The Runner keeps it in the Organisation's
+`--acp-cli-kinds codex_cli,claude_code`. The Runner keeps it in the Runner's
 `workstation.json`, and a later `install` without the flag keeps it too;
 `--acp-cli-kinds ''` turns ACP off. Set it this way, not in the plist or the unit file:
 `install` rewrites both. A kind with no pinned bridge is refused.
@@ -99,8 +101,8 @@ agentic-runner sign-in claude     # or: sign-in codex; with no argument it asks 
 ```
 
 It takes no ids: your Runner serves one Contract, and the Runner learned which from the
-control plane. If this computer runs Runners for more than one Organisation, add
-`--org acme`. For each CLI it offers two things:
+control plane. If this computer runs more than one Runner, add
+`--name alice-laptop`. For each CLI it offers two things:
 
 - **Your subscription.** The command runs the vendor's own sign-in as the Contract, in the
   Contract's own directory under the state root, connected to your terminal. It does not
@@ -118,7 +120,7 @@ control plane. If this computer runs Runners for more than one Organisation, add
   The command refuses a subscription when your Contract does not allow your own
   subscription, or you have not acknowledged the subscription terms in the console, and
   says which.
-- **An API key.** Typed without echo, and kept in this Organisation's store (the login
+- **An API key.** Typed without echo, and kept in this Runner's store (the login
   keychain on macOS) under the provider's key name: `ANTHROPIC_API_KEY` or
   `OPENAI_API_KEY`. `credential set` puts one there too. The Runner checks it with the
   provider within one heartbeat and serves it to your Agents through its LLM proxy; the
@@ -129,7 +131,7 @@ again, run the command again. A new sign-in replaces the old one.
 
 ## Give it work
 
-`install` ends with a `next` line, and `agentic-runner status acme` repeats it while the
+`install` ends with a `next` line, and `agentic-runner status alice-laptop` repeats it while the
 Runner is running:
 
 1. Open **/me/runners** in the console. Your Runner is listed there, online.
@@ -146,16 +148,16 @@ Contract's Runner to be hosted by you.
 ## Operate
 
 ```sh
-agentic-runner status acme    # process, identity, heartbeat age
-agentic-runner stop acme      # this Organisation only; every other one keeps running
-agentic-runner start acme
-printf %s "$VALUE" | agentic-runner credential set acme deploy_key   # a Credential Reference
-printf %s "$KEY" | agentic-runner credential set acme OPENAI_API_KEY    # your own LLM key
+agentic-runner status alice-laptop    # process, identity, heartbeat age
+agentic-runner stop alice-laptop      # this Runner only; every other one keeps running
+agentic-runner start alice-laptop
+printf %s "$VALUE" | agentic-runner credential set alice-laptop deploy_key   # a Credential Reference
+printf %s "$KEY" | agentic-runner credential set alice-laptop OPENAI_API_KEY    # your own LLM key
 ```
 
 `stop` drains: the Runner takes no new work and lets the Directive in flight finish.
 
-Each Organisation has its own directory under the state root
+Each Runner has its own directory under the state root, named after it
 (`~/Library/Application Support/agentic-runner/` on macOS, `~/.local/state/agentic-runner/`
 on Linux; `AGENTIC_RUNNER_WORKSTATION_ROOT` or `--root` changes it). It holds the Runner's
 identity, its Recipient Key, the Workspaces, the harness roots, Runner Hooks (`hooks/`),
@@ -172,8 +174,8 @@ destinations and folders. It adds to the Grants, the Agent Runtime Profile's net
 and the command policy. It never allows something they refuse. Each list is empty by
 default, and an empty list limits nothing.
 
-Write it in `config.toml` in the Organisation's directory (for example
-`~/Library/Application Support/agentic-runner/acme/config.toml`), then restart the Runner:
+Write it in `config.toml` in the Runner's directory (for example
+`~/Library/Application Support/agentic-runner/alice-laptop/config.toml`), then restart the Runner:
 
 ```toml
 [limits]
@@ -191,7 +193,7 @@ verbs = { "pr.merge" = "deny" }
 ```
 
 ```sh
-agentic-runner stop acme && agentic-runner start acme
+agentic-runner stop alice-laptop && agentic-runner start alice-laptop
 ```
 
 The Runner reads the limit only when it starts. It refuses to start, and says which entry,
@@ -251,28 +253,32 @@ computer it runs on, or in a folder your user cannot read.
 
 ```sh
 uv tool upgrade agentic-runner     # or: pipx upgrade agentic-runner
-agentic-runner stop acme && agentic-runner start acme
+agentic-runner stop alice-laptop && agentic-runner start alice-laptop
 ```
 
 There is no self-update. The control plane warns when a Runner falls one contracts minor
 behind and stops sending it new work at two.
 
+Before 3.27 the `install` argument was called the Organisation. A Runner installed then
+keeps running under that name after the upgrade, with no new `install`. The console lists it
+under that name once its control plane is on contracts 3.27.
+
 ### Switch to a new token
 
-Running `install` again over the same Organisation's directory keeps the identity it
+Running `install` again over the same Runner's directory keeps the identity it
 already holds: it prints `already registered …` and `token not used`, and the token you
 pasted never reaches the control plane. There is no `uninstall`. To swap an Organisation
 Runner for one hosted by you (or any Runner for a new token):
 
-1. `agentic-runner stop acme`.
-2. Move the Organisation's directory aside rather than deleting it, so the old identity,
+1. `agentic-runner stop alice-laptop`.
+2. Move the Runner's directory aside rather than deleting it, so the old identity,
    Recipient Key and credentials stay recoverable:
-   `mv "<state root>/acme" "<state root>/acme.organisation"`.
-3. `agentic-runner install acme …` again with the new token.
-4. Check `agentic-runner status acme` shows the new identity and a `next` line, and that
+   `mv "<state root>/alice-laptop" "<state root>/alice-laptop.organisation"`.
+3. `agentic-runner install alice-laptop …` again with the new token.
+4. Check `agentic-runner status alice-laptop` shows the new identity and a `next` line, and that
    the Runner shows on **/me/runners**. Then ask your Admin to revoke the old Runner on the
    Runners page.
 
-To remove a Runner: `agentic-runner stop acme`, delete the plist or the unit file, delete
-the Organisation's directory under the state root, then ask your Admin to revoke the
+To remove a Runner: `agentic-runner stop alice-laptop`, delete the plist or the unit file, delete
+the Runner's directory under the state root, then ask your Admin to revoke the
 Runner on the Runners page.

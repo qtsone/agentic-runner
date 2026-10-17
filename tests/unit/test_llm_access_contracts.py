@@ -116,3 +116,12 @@ def test_a_contracts_llm_access_report_round_trips() -> None:
     assert ContractLlmAccess.model_validate_json(report.model_dump_json()) == report
     with pytest.raises(ValidationError):
         ProviderKeyReport.model_validate({"provider": "openai", "held": True, "value": "sk-x"})
+
+
+def test_an_ack_names_its_contracts_version_only_to_a_runner_that_parses_it() -> None:
+    """QTS-1773: a Runner on 3.26 forbids the key, so a control plane below 3.27 -- None --
+    omits it, and the Runner reads its absence as "do not send `install.name`"."""
+
+    assert "contracts_version" not in HeartbeatAck.model_validate(_ack()).model_dump(mode="json")
+    ack = HeartbeatAck.model_validate(_ack(contracts_version="3.27.0"))
+    assert ack.model_dump(mode="json")["contracts_version"] == "3.27.0"

@@ -250,7 +250,7 @@ _VERIFIER_ACTIVITY_BUDGET_SECONDS = 20 * 60
 # chart's value and this must move together).
 _SHUTDOWN_HEADROOM_SECONDS = 60
 
-# What `agentic-runner status <org>` reads (PRD issue 47): the live pid, and a file the
+# What `agentic-runner status <name>` reads (PRD issue 47): the live pid, and a file the
 # process touches on every acknowledged heartbeat, whose mtime is the heartbeat age.
 PIDFILE_NAME = "runner.pid"
 HEARTBEAT_STAMP_NAME = "last-heartbeat"
@@ -849,6 +849,9 @@ class ControlPlaneStream:
     # control plane on 3.25 named them, and the LLM access report is sent only after.
     _llm_contracts: list[ContractLlmTerms] | None = None
     _pool: PoolTerms | None = None
+    # QTS-1773: the control plane's contracts version, from its ack; None until an ack from
+    # one on 3.27 or later, the first to send it and to parse `RunnerInstall.name`.
+    _control_plane_contracts: str | None = None
     _last_seen: tuple[float, datetime] | None = None
 
     def _observe_sleep(self, now: datetime) -> None:
@@ -976,6 +979,17 @@ class ControlPlaneStream:
             for terms in self._llm_contracts
         ]
 
+    def _install_report(self) -> RunnerInstall | None:
+        """Where a command reaches this Runner, sent once an ack named the Contracts -- a
+        control plane below 3.25 refuses the field -- and with its name only once an ack
+        came from a control plane on 3.27, since one below refuses that key (QTS-1773)."""
+
+        if self.install is None or self._llm_contracts is None:
+            return None
+        if self._control_plane_contracts is None:
+            return self.install.model_copy(update={"name": None})
+        return self.install
+
     def _credential_report(self) -> list[CredentialValidity]:
         """Per Contract the last ack named, whether each reference would resolve (§7).
 
@@ -1037,7 +1051,7 @@ class ControlPlaneStream:
             oauth_outcomes=self.oauth.take_outcomes() if self.oauth else [],
             runner_limit=self.runner_limit,
             llm_access=self._llm_access_report(),
-            install=self.install if self._llm_contracts is not None else None,
+            install=self._install_report(),
             pool_key_fingerprint=self.pool_key_fingerprint if self._pool is not None else None,
         )
         ack = await self.client.heartbeat(self.state, envelope)
@@ -1065,6 +1079,8 @@ class ControlPlaneStream:
         self._manifests = list(ack.credential_manifests)
         self._take_llm_contracts(ack.llm_contracts)
         self._take_pool(ack.pool)
+        if ack.contracts_version is not None:
+            self._control_plane_contracts = ack.contracts_version
         await self._sync_llm_slots()
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token

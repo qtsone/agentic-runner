@@ -123,7 +123,7 @@ def _skill_commands() -> list[list[str]]:
 
 def _fill(words: list[str], root: Path) -> list[str]:
     values = {
-        "<org>": "acme",
+        "<name>": "acme",
         "<control-plane-url>": CONTROL_PLANE,
         "<reference>": "OPENAI_API_KEY",
     }
@@ -142,7 +142,7 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     assert [words[:1] for words in commands] == [["install"], ["sign-in"], ["status"]]
 
     root = tmp_path / "state"
-    paths = workstation.OrgPaths(root=root, org="acme")
+    paths = workstation.RunnerPaths(root=root, name="acme")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "claude").write_text("#!/bin/sh\necho '2.1.279 (Claude Code)'\n")
@@ -198,9 +198,9 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
 
 
 async def _start_the_login_agent(
-    paths: workstation.OrgPaths, plane: FakeControlPlane, *, monkeypatch: pytest.MonkeyPatch
+    paths: workstation.RunnerPaths, plane: FakeControlPlane, *, monkeypatch: pytest.MonkeyPatch
 ) -> str:
-    """What the login agent ``install`` wrote does: ``run --org``, until it is heard once.
+    """What the login agent ``install`` wrote does: ``run --name``, until it is heard once.
 
     Returns the Temporal address the Runner connected to.
     """

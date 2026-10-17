@@ -2,7 +2,7 @@
 
 A contractor with two clients installs twice and runs two processes -- no supervisor
 over N Organisations. Each ``install`` registers against a fake control plane (served
-over real HTTP) and each ``agentic-runner run --org`` is a real OS process, exactly as
+over real HTTP) and each ``agentic-runner run --name`` is a real OS process, exactly as
 its login agent would exec it, polling a Temporal dev server. What this pins:
 
 * two state directories, two identities, two Runner Tokens;
@@ -144,12 +144,11 @@ async def test_two_organisations_run_as_two_processes_and_stopping_one_leaves_th
     processes: dict[str, subprocess.Popen[bytes]] = {}
 
     async with await WorkflowEnvironment.start_local() as env:
-        orgs = {org: workstation.OrgPaths(root=root, org=org) for org in ("acme", "globex")}
+        orgs = {org: workstation.RunnerPaths(root=root, name=org) for org in ("acme", "globex")}
         for org, paths in orgs.items():
             await workstation.install(
                 paths,
                 workstation.WorkstationSettings(
-                    org=org,
                     control_plane_url=control_plane,
                     temporal_address=env.client.service_client.config.target_host,
                     temporal_tls=False,
@@ -166,7 +165,7 @@ async def test_two_organisations_run_as_two_processes_and_stopping_one_leaves_th
             for org in orgs:
                 # What each login agent execs.
                 processes[org] = subprocess.Popen(
-                    [sys.executable, "-m", "agentic_runner.cli", "run", "--org", org]
+                    [sys.executable, "-m", "agentic_runner.cli", "run", "--name", org]
                     + ["--root", str(root), "--login-agent"],
                     # Its own runtime dir, so a concurrent run of this test cannot share
                     # the per-Organisation socket directory.

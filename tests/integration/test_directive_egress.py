@@ -23,7 +23,7 @@ from agentic_runner.callback import CALLBACK_TOKEN_ENV
 from agentic_runner.egress import EGRESS_REFUSED_SOURCE, destination_allowed
 from agentic_runner.mcp import McpPlan
 from agentic_runner.workers._runtime_support import apply_extra_env
-from agentic_runner.workstation import OrgPaths, WorkstationSettings, run_environment
+from agentic_runner.workstation import RunnerPaths, WorkstationSettings, run_environment
 from agentic_runner_contracts.runner_registration import EgressPosture, InstallChannel
 
 LISTED = "api.listed.example"
@@ -164,9 +164,8 @@ def test_a_workstation_reports_its_egress_posture_as_unenforced(tmp_path: Path) 
     """The host cannot hold a raw socket to the list, so it does not claim to."""
 
     environment = run_environment(
-        OrgPaths(root=tmp_path, org="acme"),
+        RunnerPaths(root=tmp_path, name="acme"),
         WorkstationSettings(
-            org="acme",
             control_plane_url="https://control.example",
             temporal_address="temporal.example:7233",
             cli_kind="codex_cli",

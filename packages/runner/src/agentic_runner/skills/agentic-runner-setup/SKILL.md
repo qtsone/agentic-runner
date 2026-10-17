@@ -8,7 +8,8 @@ license: AGPL-3.0-only
 
 You help a person who has never run a Runner. A **Runner** is the program that does their
 Agents' work: it runs Codex or Claude Code on a machine they choose and connects out to the
-Agentic OS control plane. It belongs to one **Organisation** (the company the work is for).
+Agentic OS control plane. It belongs to one **Organisation** (the company the work is for),
+and has a **name** the person chose for it in the console.
 
 The install documents in the `qtsone/agentic-runner` repository are the source for every
 command. Do not reconstruct a command from memory: open the section named in each step and
@@ -18,7 +19,9 @@ follow it.
 
 The prompt they pasted from the console holds these. Ask for any that is missing.
 
-- **Organisation**: a short local name for it, lowercase letters, digits and `-` (`acme`).
+- **Runner name**: the name the person gave the Runner in the console, lowercase letters,
+  digits and `-` (`alice-laptop`). A prompt from an older console calls it **Organisation**;
+  it is the same value.
 - **Control plane URL**: the Runner's `controlPlane.url`, copied from the console's
   Runners page. It is the only control plane address you use, and only as a value you
   pass to the Runner. Never call it or any other control plane address yourself.
@@ -75,13 +78,13 @@ missing.
 
 **This machine.** Follow
 https://github.com/qtsone/agentic-runner/blob/main/docs/workstation.md#install. Install the
-Runner, then show the person the command that registers it for the Organisation and ask
+Runner, then show the person the command that registers it under its name and ask
 them to run it in their own terminal. The Runner asks them for the Runner Registration Token there,
 without showing it:
 
 ```sh
 uv tool install agentic-runner
-agentic-runner install <org> --control-plane <control-plane-url>
+agentic-runner install <name> --control-plane <control-plane-url>
 ```
 
 You run the first line. Do not run the second yourself: wait until the person says it
@@ -113,7 +116,7 @@ agentic-runner sign-in claude
 ```
 
 `codex` in place of `claude` for Codex; with no argument it asks about each. Add
-`--org <org>` only if this machine runs Runners for several Organisations. On Docker it is
+`--name <name>` only if this machine runs more than one Runner. On Docker it is
 `docker exec -it <container> agentic-runner sign-in claude`, on Kubernetes
 `kubectl exec -it <pod> -c runner -- agentic-runner sign-in claude`.
 
@@ -130,7 +133,7 @@ it: it uses the Organisation's keys, which its admin puts in the Runner's own st
 On this machine, run every 10 seconds, for at most 3 minutes:
 
 ```sh
-agentic-runner status <org>
+agentic-runner status <name>
 ```
 
 The Runner is online when `process` says `running` and `heartbeat` shows a number of
@@ -141,7 +144,7 @@ it" section. If 3 minutes pass, stop and show the last output and the "Check it"
 
 One screen, nothing more:
 
-- the way, the Organisation and the Runner's identity line from `status`;
+- the way, the Runner's name and its identity line from `status`;
 - whether the LLM credential is in place, or the one thing the person still does in the
   console;
 - the `next` line `status` prints: where in the console to see the Runner and give it work.
