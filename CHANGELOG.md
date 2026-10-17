@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.28.1](https://github.com/qtsone/agentic-runner/compare/v3.28.0...v3.28.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **runner:** list every Runner when one install cannot be read (QTS-1910) ([#77](https://github.com/qtsone/agentic-runner/issues/77)) ([0e38068](https://github.com/qtsone/agentic-runner/commit/0e38068fd51cbfb932ac22c4e40f398fcc4b5f05)), closes [#76](https://github.com/qtsone/agentic-runner/issues/76)
+
 # [3.28.0](https://github.com/qtsone/agentic-runner/compare/v3.27.0...v3.28.0) (2026-10-17)
 
 

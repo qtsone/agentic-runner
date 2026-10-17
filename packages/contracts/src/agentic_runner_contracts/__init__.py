@@ -141,6 +141,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # plane's own. Additive and omitted while None. The control plane sends its version only
 # to a Runner whose heartbeat names contracts 3.27 or later, and the Runner reports its
 # name only once an ack named a control plane on 3.27 or later. Does not raise the floor.
-__version__ = "3.28.0"
+__version__ = "3.28.1"
 
 __all__ = ["__version__"]
