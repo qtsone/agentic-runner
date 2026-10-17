@@ -56,6 +56,7 @@ from agentic_runner.host_store import open_workstation_store
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.llm_contracts import load_llm_contracts
 from agentic_runner.pool_key import parse_pool_key, save_pool_key
+from agentic_runner.private_state import UnsafeStateError
 from agentic_runner.registration import load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES
@@ -677,12 +678,28 @@ def list_lines(root: Path) -> list[str]:
     names = installed_names(root)
     if not names:
         return [f"no workstation Runner is installed under {root}"]
-    rows = [_LIST_HEADER, *(_list_row(RunnerPaths(root=root, name=name)) for name in names)]
+    rows = [
+        _LIST_HEADER,
+        *(_list_row_or_reason(RunnerPaths(root=root, name=name)) for name in names),
+    ]
     widths = [max(len(row[column]) for row in rows) for column in range(len(_LIST_HEADER) - 1)]
     return [
         "  ".join([*(cell.ljust(width) for cell, width in zip(row, widths, strict=False)), row[-1]])
         for row in rows
     ]
+
+
+def _list_row_or_reason(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
+    """One install that cannot be read must not hide the others' rows (QTS-1910).
+
+    The first line only: a pydantic error runs to one line per field, and the row is one.
+    """
+
+    try:
+        return _list_row(paths)
+    except (OSError, ValueError, UnsafeStateError) as error:
+        reason = str(error).splitlines()[0] if str(error) else type(error).__name__
+        return (paths.name, "-", "-", "-", "-", f"unreadable: {reason}")
 
 
 def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:

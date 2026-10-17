@@ -347,6 +347,32 @@ def test_list_prints_one_row_per_runner_installed_here(
     assert len({row.index(CONTROL_PLANE) for row in [*rows]}) == 1
 
 
+def test_list_shows_why_an_install_cannot_be_read_and_still_lists_the_others(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """QTS-1910: one unsafe or invalid install used to end `list` in a traceback."""
+
+    root = tmp_path / "state"
+    organisation = uuid4()
+    _installed(root, "good", organisation=organisation)
+    unsafe = _installed(root, "open-to-group", organisation=organisation)
+    unsafe.state_dir.chmod(0o755)
+    invalid = _installed(root, "invalid")
+    invalid.settings_file.write_text('{"path": "/usr/bin"}')
+
+    assert cli.main(["list", "--root", str(root)]) == 0
+
+    _header, *rows = capsys.readouterr().out.splitlines()
+    assert [row.split()[:5] for row in rows] == [
+        ["good", str(organisation)[:8], "-", CONTROL_PLANE, "-"],
+        ["invalid", "-", "-", "-", "-"],
+        ["open-to-group", "-", "-", "-", "-"],
+    ]
+    assert rows[0].endswith("stopped")
+    assert "unreadable: 2 validation errors for WorkstationSettings" in rows[1]
+    assert f"unreadable: {unsafe.state_dir} is mode 0755, open to group or others" in rows[2]
+
+
 def test_list_on_a_machine_with_no_runner_says_where_it_looked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
