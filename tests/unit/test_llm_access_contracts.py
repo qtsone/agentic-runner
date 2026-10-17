@@ -125,3 +125,27 @@ def test_an_ack_names_its_contracts_version_only_to_a_runner_that_parses_it() ->
     assert "contracts_version" not in HeartbeatAck.model_validate(_ack()).model_dump(mode="json")
     ack = HeartbeatAck.model_validate(_ack(contracts_version="3.27.0"))
     assert ack.model_dump(mode="json")["contracts_version"] == "3.27.0"
+
+
+def test_an_ack_names_the_organisation_and_contracts_only_when_it_has_their_names() -> None:
+    """QTS-1909: a Runner below 3.29 forbids both keys, so an ack without the names sends
+    the body it already parses."""
+
+    unnamed = HeartbeatAck.model_validate(
+        _ack(llm_contracts=[{"contract_id": str(CONTRACT), "subscription": "allowed"}])
+    ).model_dump(mode="json")
+    assert "organisation_name" not in unnamed
+    assert unnamed["llm_contracts"] == [{"contract_id": str(CONTRACT), "subscription": "allowed"}]
+
+    named = HeartbeatAck.model_validate(
+        _ack(
+            organisation_name="Acme",
+            llm_contracts=[
+                {"contract_id": str(CONTRACT), "subscription": "allowed", "contract_name": "Web"}
+            ],
+        )
+    ).model_dump(mode="json")
+    assert named["organisation_name"] == "Acme"
+    assert named["llm_contracts"][0]["contract_name"] == "Web"
+    with pytest.raises(ValidationError):
+        HeartbeatAck.model_validate(_ack(organisation_name="x" * 256))

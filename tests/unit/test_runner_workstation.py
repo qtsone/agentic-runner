@@ -47,6 +47,7 @@ from agentic_runner.host_store import (
 )
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.llm_contracts import save_llm_contracts
+from agentic_runner.organisation_name import save_organisation_name
 from agentic_runner.pool_key import POOL_KEY_ENV, PoolKeyError, load_pool_key
 from agentic_runner.registration import RunnerState, load_state, save_state
 from agentic_runner.sealed_box import (
@@ -371,6 +372,39 @@ def test_list_shows_why_an_install_cannot_be_read_and_still_lists_the_others(
     assert rows[0].endswith("stopped")
     assert "unreadable: 2 validation errors for WorkstationSettings" in rows[1]
     assert f"unreadable: {unsafe.state_dir} is mode 0755, open to group or others" in rows[2]
+
+
+def test_list_names_the_organisation_and_contract_once_an_ack_named_them(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """QTS-1909: names from a control plane on 3.29, the ids from one below it. The name
+    is printed without its control characters: someone else typed it."""
+
+    root = tmp_path / "state"
+    acme, contract = uuid4(), uuid4()
+    named = _installed(root, "alice-laptop", organisation=acme)
+    save_organisation_name(named.state_dir, "Acme\x1b]0;owned\x07")
+    save_llm_contracts(
+        named.state_dir,
+        [
+            ContractLlmTerms(
+                contract_id=contract, subscription=SubscriptionRight.ALLOWED, contract_name="Web"
+            )
+        ],
+    )
+    unnamed = _installed(root, "billing", organisation=acme)
+    save_llm_contracts(
+        unnamed.state_dir,
+        [ContractLlmTerms(contract_id=contract, subscription=SubscriptionRight.ALLOWED)],
+    )
+
+    assert cli.main(["list", "--root", str(root)]) == 0
+
+    _, *rows = capsys.readouterr().out.splitlines()
+    assert [row.split()[:3] for row in rows] == [
+        ["alice-laptop", "Acme]0;owned", "Web"],
+        ["billing", str(acme)[:8], str(contract)[:8]],
+    ]
 
 
 def test_list_on_a_machine_with_no_runner_says_where_it_looked(
