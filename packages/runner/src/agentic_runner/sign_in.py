@@ -14,9 +14,10 @@ personal Runner serves one Contract, which the last heartbeat ack named
   ``codex login --device-auth`` with the code shown here. No code or token passes through
   the control plane.
 
-It refuses on a pool Runner, which uses only its pool's keys. It refuses a subscription
-when the ack says the Contract lacks the right or the person has not acknowledged, and
-says which.
+It refuses on a pool Runner, which uses only its pool's keys. It offers a subscription
+only when the ack says the Contract allows it; otherwise it says which of the right or
+the person's acknowledgment is missing, names the console page that turns it on, and
+offers the key (QTS-1776).
 """
 
 from __future__ import annotations
@@ -92,14 +93,21 @@ class SignIn:
 
     async def _one(self, cli_kind: str) -> int:
         label = _LABELS[cli_kind]
-        answer = self.ask(
-            f"{label}: sign in with your [s]ubscription, store an API [k]ey, or skip? [s/k/N] "
-        )
+        offer = self._subscription_offer()
+        if isinstance(offer, str):
+            # Offering `[s]` and then refusing it is what sent an Organisation Admin looking
+            # for a switch nothing named (QTS-1776).
+            self.say(f"{label}: {offer}")
+            answer = self.ask(f"{label}: store an API [k]ey, or skip? [k/N] ")
+        else:
+            answer = self.ask(
+                f"{label}: sign in with your [s]ubscription, store an API [k]ey, or skip? [s/k/N] "
+            )
         choice = answer.strip().lower()[:1]
         if choice == "k":
             return self._key(cli_kind)
-        if choice == "s":
-            return await self._subscription(cli_kind)
+        if choice == "s" and not isinstance(offer, str):
+            return await self._subscription(offer, cli_kind)
         self.say(f"{label}: skipped")
         return 0
 
@@ -118,39 +126,38 @@ class SignIn:
         )
         return 0
 
-    async def _subscription(self, cli_kind: str) -> int:
-        contract = self._contract()
-        if contract is None:
-            return 1
-        if contract.subscription == SubscriptionRight.NO_RIGHT:
-            self.say(
-                "refusing a subscription: your Contract does not allow your own subscription. "
-                "Ask an Organisation Admin to turn it on, or store an API key instead"
-            )
-            return 1
-        if contract.subscription == SubscriptionRight.NOT_ACKNOWLEDGED:
-            self.say(
-                "refusing a subscription: you have not acknowledged the subscription terms. "
-                "Acknowledge them on your Contract in the console, then run this again"
-            )
-            return 1
+    async def _subscription(self, contract: ContractLlmTerms, cli_kind: str) -> int:
         returncode = await self.subscription(str(contract.contract_id), cli_kind)
         if returncode != 0:
             self.say(f"{_LABELS[cli_kind]}: the sign-in exited {returncode}; nothing changed")
         return returncode
 
-    def _contract(self) -> ContractLlmTerms | None:
+    def _subscription_offer(self) -> ContractLlmTerms | str:
+        """The one Contract a subscription signs in, or why the ack offers none."""
+
         if self.contracts is None:
-            self.say(
-                "refusing a subscription: this Runner has not yet been told its Contract. "
-                "Start it, wait for its first heartbeat, and run this again (the control "
-                "plane must be on contracts 3.25 or later)"
+            return (
+                "no subscription yet: this Runner has not yet been told its Contract. Start "
+                "it, wait for its first heartbeat, and run this again (the control plane must "
+                "be on contracts 3.25 or later)"
             )
-            return None
         if len(self.contracts) != 1:
-            self.say(
-                f"refusing a subscription: a personal Runner serves one Contract, and the "
-                f"control plane named {len(self.contracts)}"
+            return (
+                "no subscription: a personal Runner serves one Contract, and the control "
+                f"plane named {len(self.contracts)}"
             )
-            return None
-        return self.contracts[0]
+        contract = self.contracts[0]
+        if contract.subscription == SubscriptionRight.NO_RIGHT:
+            # TODO(QTS-1744): name the Contract editor once the right moves onto the Contract.
+            return (
+                "your own subscription is off for this Runner. An Organisation Admin turns it "
+                "on in the console with Allow subscription sign-in, on this Runner under "
+                "Personal Runners on /orgs/<organisation>/runners"
+            )
+        if contract.subscription == SubscriptionRight.NOT_ACKNOWLEDGED:
+            return (
+                "your own subscription is on for this Runner, and you have not acknowledged "
+                "the subscription terms. Acknowledge them in the console on My Contracts "
+                "(/me/contracts), then run this again"
+            )
+        return contract

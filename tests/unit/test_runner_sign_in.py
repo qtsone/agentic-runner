@@ -6,8 +6,9 @@ What this pins, per acceptance criterion:
   key; with no argument the command asks about each Agent Runtime the Runner serves;
 * a key is read without echo, lands in the Runner's own store under the provider's key
   name, reaches the LLM proxy, and the next heartbeat reports it with its probe;
-* the command refuses on a pool Runner, and refuses a subscription when the ack says the
-  Contract lacks the right or the person has not acknowledged, naming which;
+* the command refuses on a pool Runner, and offers a subscription only when the ack says
+  the Contract allows it; otherwise it names which is missing and the console page that
+  turns it on, and offers the key (QTS-1776);
 * the vendor's sign-in runs for the one Contract the ack named.
 
 The vendor CLIs themselves are ``test_claude_sign_in.py``'s; here they are fakes.
@@ -173,30 +174,34 @@ async def test_a_subscription_runs_the_vendors_sign_in_for_the_one_contract(
 @pytest.mark.parametrize(
     ("right", "named"),
     [
-        (SubscriptionRight.NO_RIGHT, "does not allow your own subscription"),
-        (SubscriptionRight.NOT_ACKNOWLEDGED, "not acknowledged the subscription terms"),
+        (SubscriptionRight.NO_RIGHT, "/orgs/<organisation>/runners"),
+        (SubscriptionRight.NOT_ACKNOWLEDGED, "/me/contracts"),
+        (None, "not yet been told its Contract"),
     ],
 )
-async def test_a_subscription_is_refused_naming_what_the_ack_says_is_missing(
-    right: SubscriptionRight, named: str
+async def test_without_the_right_no_subscription_is_offered_and_the_page_is_named(
+    right: SubscriptionRight | None, named: str
 ) -> None:
+    """QTS-1776: the prompt offered `[s]`, then refused it without naming the page."""
+
     person = _Person(answers=["s"])
-    command, _, vendor = _sign_in(person, right=right)
+    command, store, vendor = _sign_in(person, right=right)
 
-    assert await command.run("claude") == 1
+    assert await command.run("claude") == 0
 
-    assert vendor.calls == []
+    assert person.prompts == ["Claude Code: store an API [k]ey, or skip? [k/N] "]
     assert any(named in line for line in person.read)
+    assert (store._values, vendor.calls) == ({}, [])
 
 
 @pytest.mark.asyncio
-async def test_a_subscription_waits_for_an_ack_that_names_the_contract() -> None:
-    person = _Person(answers=["s"])
-    command, _, vendor = _sign_in(person, right=None)
+async def test_without_the_right_the_key_is_still_offered() -> None:
+    person = _Person(answers=["k"], secrets=["sk-ant-api03-typed"])
+    command, store, vendor = _sign_in(person, right=SubscriptionRight.NO_RIGHT)
 
-    assert await command.run("codex") == 1
+    assert await command.run("claude") == 0
+    assert store.get("ANTHROPIC_API_KEY") == "sk-ant-api03-typed"
     assert vendor.calls == []
-    assert any("not yet been told its Contract" in line for line in person.read)
 
 
 @pytest.mark.asyncio
