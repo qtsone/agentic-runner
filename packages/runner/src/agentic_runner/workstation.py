@@ -880,6 +880,8 @@ def restart(
 
     previous = process_id(paths)
     _drive_service(paths, "restart", **driver)
+    # Taken after the call: `kickstart -k` and `systemctl restart` both return only once the
+    # old process has exited, so the drain spends none of it (CI probe, QTS-2172).
     deadline = clock() + timeout
     while (pid := process_id(paths)) is None or pid == previous:
         if clock() >= deadline:
