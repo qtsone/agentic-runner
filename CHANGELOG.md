@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.4](https://github.com/qtsone/agentic-runner/compare/v3.30.3...v3.30.4) (2026-10-21)
+
+
+### Bug Fixes
+
+* **runner:** a revoked workstation Runner stays stopped (QTS-2207) ([#85](https://github.com/qtsone/agentic-runner/issues/85)) ([82fc215](https://github.com/qtsone/agentic-runner/commit/82fc215640ea75683d85acdec404d8d3ea48f218))
+
 ## [3.30.3](https://github.com/qtsone/agentic-runner/compare/v3.30.2...v3.30.3) (2026-10-21)
 
 

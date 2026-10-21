@@ -145,6 +145,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `ContractLlmTerms.contract_name` (`DisplayName`). Additive and omitted while None. The
 # control plane sends them only to a Runner whose heartbeat names contracts 3.29 or later;
 # a Runner without them lists the ids. Does not raise the floor.
-__version__ = "3.30.3"
+__version__ = "3.30.4"
 
 __all__ = ["__version__"]
