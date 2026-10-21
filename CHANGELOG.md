@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.2](https://github.com/qtsone/agentic-runner/compare/v3.30.1...v3.30.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **runner:** launchd waits out the drain on macOS, as systemd does (QTS-2166) ([#82](https://github.com/qtsone/agentic-runner/issues/82)) ([fc1b243](https://github.com/qtsone/agentic-runner/commit/fc1b24327235aed582e3b49ce3669ff1be7c5969)), closes [#79](https://github.com/qtsone/agentic-runner/issues/79)
+
 ## [3.30.1](https://github.com/qtsone/agentic-runner/compare/v3.30.0...v3.30.1) (2026-10-21)
 
 
