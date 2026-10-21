@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.3](https://github.com/qtsone/agentic-runner/compare/v3.30.2...v3.30.3) (2026-10-21)
+
+
+### Bug Fixes
+
+* **runner:** stop and restart on macOS let a drain run past launchd's 60 s (QTS-2178) ([#84](https://github.com/qtsone/agentic-runner/issues/84)) ([c4ccc57](https://github.com/qtsone/agentic-runner/commit/c4ccc5732b45ae2bb29d28d0cd0c0abd38addf69)), closes [#83](https://github.com/qtsone/agentic-runner/issues/83) [#83](https://github.com/qtsone/agentic-runner/issues/83)
+
 ## [3.30.2](https://github.com/qtsone/agentic-runner/compare/v3.30.1...v3.30.2) (2026-10-21)
 
 
