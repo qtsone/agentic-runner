@@ -336,6 +336,26 @@ async def test_the_command_refuses_on_a_registered_pool_runner(
 
 
 @pytest.mark.asyncio
+async def test_an_environment_without_a_callback_url_is_refused_naming_the_field(
+    runner_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _registered(runner_env, "user")
+    save_llm_contracts(
+        runner_env,
+        [ContractLlmTerms(contract_id=CONTRACT, subscription=SubscriptionRight.ALLOWED)],
+    )
+    monkeypatch.delenv("INTERNAL_FASTAPI_BASE_URL")
+    monkeypatch.delenv(service.CONTROL_PLANE_ENV, raising=False)
+    monkeypatch.setattr(ClaudeSignIns, "sign_in", _unexpected)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "s")
+
+    assert await service.sign_in("claude", store=FakeCredentialStore()) == 2
+    assert "refusing to sign in: INTERNAL_FASTAPI_BASE_URL (Field required)" in (
+        capsys.readouterr().err
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_key_typed_into_sign_in_reaches_the_proxy_and_the_next_heartbeat(
     runner_env: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

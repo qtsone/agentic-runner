@@ -1301,14 +1301,17 @@ async def sign_in(which: str | None, *, store: KeyStore, method: str = OAUTH_TOK
         can = can_separate_uids()
         try:
             require_isolation_supported(mode, can_separate_uids=can)
+            # `run` gives the settings this default; a sign-in must build the same ones, or a
+            # workstation, whose environment sets only the control plane, is refused (QTS-2157).
+            _default_callback_url(os.environ.get(CONTROL_PLANE_ENV, "").strip())
             settings = get_worker_settings()
         except RunnerRegistrationError as error:
             print(f"refusing to sign in ({error.reason}): {error}", file=sys.stderr)
             return 1
-        except ValidationError:
+        except ValidationError as error:
             print(
-                "refusing to sign in: run this with the Runner's environment (`docker exec`, "
-                "`kubectl exec`, or on the workstation that runs it)",
+                f"refusing to sign in: {_invalid_settings(error)}; run this with the Runner's "
+                "environment (`docker exec`, `kubectl exec`, or on the workstation that runs it)",
                 file=sys.stderr,
             )
             return 2
@@ -1334,6 +1337,22 @@ async def sign_in(which: str | None, *, store: KeyStore, method: str = OAUTH_TOK
 
 
 _SIGN_IN_CLIS: Final[Mapping[str, str]] = {"claude_code": "claude", "codex_cli": "codex"}
+
+
+def _default_callback_url(control_plane: str) -> None:
+    # The control plane the activities call back is the one this process registered
+    # with, unless the operator points them at an internal address explicitly.
+    if control_plane:
+        os.environ.setdefault("INTERNAL_FASTAPI_BASE_URL", control_plane)
+
+
+def _invalid_settings(error: ValidationError) -> str:
+    """``INTERNAL_FASTAPI_BASE_URL (Field required)``, one per field, never the value."""
+
+    return ", ".join(
+        f"{'.'.join(str(part) for part in detail['loc'])} ({detail['msg']})"
+        for detail in error.errors(include_input=False, include_url=False)
+    )
 
 
 async def run(
@@ -1416,9 +1435,7 @@ async def _run(
     except (RunnerRegistrationError, UnsafeStateError) as error:
         print(f"refusing to start ({error.reason}): {error}", flush=True)
         return 1
-    # The control plane the activities call back is the one this process registered
-    # with, unless the operator points them at an internal address explicitly.
-    os.environ.setdefault("INTERNAL_FASTAPI_BASE_URL", control_plane)
+    _default_callback_url(control_plane)
     settings = get_worker_settings()
     try:
         attestation = with_profile_acp_cli_kinds(with_acp_bridges(attestation, settings), settings)
