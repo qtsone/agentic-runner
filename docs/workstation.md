@@ -97,10 +97,12 @@ To drive a CLI through its ACP bridge, name its kind on `install`:
 Give your Runner your LLM access with one command, in your terminal:
 
 ```sh
-agentic-runner sign-in claude     # or: sign-in codex; with no argument it asks about each
+agentic-runner sign-in claude     # Claude Code
+agentic-runner sign-in codex      # Codex
 ```
 
-It takes no ids: your Runner serves one Contract, and the Runner learned which from the
+Name the CLI: `sign-in` alone is refused and lists the two forms. It takes no ids: your
+Runner serves one Contract, and the Runner learned which from the
 control plane. If this computer runs more than one Runner, add
 `--name alice-laptop`; `agentic-runner list` shows their names. For each CLI it offers two things:
 

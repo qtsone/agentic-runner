@@ -142,7 +142,7 @@ def choose_auth_mode(
         raise AuthModeRefusedError(
             SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
             "no API key is present for this Contract and its harness root on this Runner holds "
-            "no login; sign it in on this Runner with `agentic-runner sign-in`",
+            "no login; sign it in on this Runner with `agentic-runner sign-in claude` (or `codex`)",
         )
     if AuthMode.SUBSCRIPTION not in runtime_modes:
         raise AuthModeRefusedError(
@@ -216,7 +216,8 @@ def require_named_access(
             raise AuthModeRefusedError(
                 SUBSCRIPTION_NOT_SIGNED_IN_RULE,
                 f"this Directive was routed to the person's subscription, and its sign-in on "
-                f"this Runner is {subscription.value}; run `agentic-runner sign-in` here",
+                f"this Runner is {subscription.value}; run `agentic-runner sign-in claude` (or "
+                "`codex`) here",
             )
         return AuthMode.SUBSCRIPTION
     if access.kind == LlmAccessKind.LLM_KEY:

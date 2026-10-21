@@ -179,8 +179,8 @@ kubectl -n agentic-runner exec -it runner-agentic-runner-0 -c runner -- \
   agentic-runner sign-in claude
 ```
 
-`sign-in codex` does the same for Codex; with no argument it asks about each one the
-Runner serves. It takes no ids: a personal Runner serves one Contract. For each it offers:
+`sign-in codex` does the same for Codex; `sign-in` alone is refused. It
+takes no ids: a personal Runner serves one Contract. It offers:
 
 - **Your subscription.** It runs the vendor's own sign-in, unmodified, as the Contract's
   own user in its harness root on that pod's volume: Claude Code's login (`--method

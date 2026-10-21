@@ -1284,8 +1284,8 @@ def _temporal_worker(client: Client, **kwargs: Any) -> Worker:
     return Worker(client, **kwargs)
 
 
-async def sign_in(which: str | None, *, store: KeyStore, method: str = OAUTH_TOKEN) -> int:
-    """``agentic-runner sign-in [claude|codex]`` (``sign_in.SignIn``), composed here.
+async def sign_in(which: str, *, store: KeyStore, method: str = OAUTH_TOKEN) -> int:
+    """``agentic-runner sign-in claude|codex`` (``sign_in.SignIn``), composed here.
 
     Runs with the Runner's environment (``kubectl exec``, ``docker exec``, or a
     workstation's own), so a subscription gets the uid and the harness root the Contract's

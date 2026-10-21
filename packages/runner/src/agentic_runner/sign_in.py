@@ -1,9 +1,10 @@
-"""``agentic-runner sign-in [claude|codex]``: a person gives their own Runner its LLM access.
+"""``agentic-runner sign-in claude|codex``: a person gives their own Runner its LLM access.
 
 One command for Claude Code and Codex, for a subscription or an API key, on a laptop, in
 ``docker exec -it`` or in ``kubectl exec -it`` (Spec: Runners rev 3). It takes no ids: a
 personal Runner serves one Contract, which the last heartbeat ack named
-(``llm_contracts``). With no argument it asks about each Agent Runtime the Runner serves.
+(``llm_contracts``). It names the one Agent Runtime it signs in: a bare ``sign-in`` read as
+a Claude Code sign-in, so the console script refuses it (QTS-2159).
 
 * **An API key** is read without echo and stored in the Runner's own store under the
   provider's key name (``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``). The running Runner reads
@@ -66,7 +67,7 @@ class SignIn:
     secret: Callable[[str], str]
     say: Callable[[str], None]
 
-    async def run(self, which: str | None) -> int:
+    async def run(self, which: str) -> int:
         if self.host_party != "user":
             hosted = f"hosted by {self.host_party!r}" if self.host_party else "not registered"
             self.say(
@@ -74,22 +75,14 @@ class SignIn:
                 "Runner their access; a pool Runner uses only its pool's keys"
             )
             return 1
-        kinds = [AGENT_RUNTIMES[which]] if which is not None else sorted(self.served)
-        missing = [kind for kind in kinds if kind not in self.served]
-        if missing:
+        kind = AGENT_RUNTIMES[which]
+        if kind not in self.served:
             self.say(
-                f"refusing to sign in: this Runner does not serve {_LABELS[missing[0]]}; "
+                f"refusing to sign in: this Runner does not serve {_LABELS[kind]}; "
                 "install its CLI on this Runner's PATH and restart it"
             )
             return 1
-        if not kinds:
-            self.say("this Runner serves no Agent Runtime: install `claude` or `codex` first")
-            return 1
-        for kind in kinds:
-            outcome = await self._one(kind)
-            if outcome != 0:
-                return outcome
-        return 0
+        return await self._one(kind)
 
     async def _one(self, cli_kind: str) -> int:
         label = _LABELS[cli_kind]

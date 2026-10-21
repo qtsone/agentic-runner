@@ -16,7 +16,7 @@ workstation Runner (PRD issue 47, ``workstation.py``): one login agent per Runne
 by the user who hosts it, with no ``sudo`` anywhere. ``<name>`` is the Runner's, the one the
 console lists it under (QTS-1773); a machine with one Runner needs none (QTS-1774).
 
-``sign-in [claude|codex]`` gives a person's own Runner their LLM access: their subscription,
+``sign-in claude|codex`` gives a person's own Runner their LLM access: their subscription,
 through the vendor's own sign-in in this terminal, or an API key stored in the Runner's
 own store (``sign_in.py``, Spec: Runners rev 3). No ids, and no code or token passes
 through the control plane.
@@ -256,12 +256,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     sign_in = subcommands.add_parser(
         "sign-in",
         help="give your own Runner your subscription or an API key, for Claude Code or Codex",
+        # The runtime is named, never defaulted: a bare `sign-in` read as a Claude sign-in
+        # because Claude Code was asked about first (QTS-2159). Usage lists one form each.
+        usage="%(prog)s claude [--method {oauth_token,claude_ai}] [--name NAME]\n"
+        "       %(prog)s codex [--name NAME]",
     )
     sign_in.add_argument(
         "runtime",
-        nargs="?",
         choices=tuple(AGENT_RUNTIMES),
-        help="one Agent Runtime; omitted asks about each one this Runner serves",
+        help="the Agent Runtime to sign in: claude (Claude Code) or codex (Codex)",
     )
     sign_in.add_argument(
         "--method",
