@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.30.1](https://github.com/qtsone/agentic-runner/compare/v3.30.0...v3.30.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **runner:** sign-in names its runtime, a bare sign-in is refused (QTS-2159) ([#81](https://github.com/qtsone/agentic-runner/issues/81)) ([e101d6a](https://github.com/qtsone/agentic-runner/commit/e101d6a763db63a0b0b57a12994f774a44df1495))
+
 # [3.30.0](https://github.com/qtsone/agentic-runner/compare/v3.29.0...v3.30.0) (2026-10-21)
 
 
