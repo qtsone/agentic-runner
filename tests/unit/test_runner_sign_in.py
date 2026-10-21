@@ -1,9 +1,9 @@
-"""``agentic-runner sign-in [claude|codex]`` on a person's own Runner (QTS-1736, rev 3).
+"""``agentic-runner sign-in claude|codex`` on a person's own Runner (QTS-1736, rev 3).
 
 What this pins, per acceptance criterion:
 
 * ``sign-in claude`` and ``sign-in codex`` take no ids, for a subscription and for an API
-  key; with no argument the command asks about each Agent Runtime the Runner serves;
+  key; with no argument the console script refuses and lists both forms (QTS-2159);
 * a key is read without echo, lands in the Runner's own store under the provider's key
   name, reaches the LLM proxy, and the next heartbeat reports it with its probe;
 * the command refuses on a pool Runner, and offers a subscription only when the ack says
@@ -216,23 +216,11 @@ async def test_a_failed_vendor_sign_in_is_its_exit_code() -> None:
 
 
 @pytest.mark.asyncio
-async def test_with_no_argument_it_asks_about_each_runtime_the_runner_serves() -> None:
-    person = _Person(answers=["k", "s"], secrets=["sk-ant-api03-typed"])
-    command, store, vendor = _sign_in(person)
-
-    assert await command.run(None) == 0
-
-    assert [prompt.split(":")[0] for prompt in person.prompts] == ["Claude Code", "Codex"]
-    assert store.get("ANTHROPIC_API_KEY") == "sk-ant-api03-typed"
-    assert vendor.calls == [(str(CONTRACT), "codex_cli")]
-
-
-@pytest.mark.asyncio
 async def test_a_skipped_runtime_changes_nothing() -> None:
-    person = _Person(answers=["", "n"])
+    person = _Person(answers=["n"])
     command, store, vendor = _sign_in(person)
 
-    assert await command.run(None) == 0
+    assert await command.run("codex") == 0
     assert (store._values, vendor.calls) == ({}, [])
 
 
@@ -445,6 +433,24 @@ def test_the_command_takes_no_contract_id(monkeypatch: pytest.MonkeyPatch) -> No
     assert refused.value.code == 2
 
 
+@pytest.mark.parametrize("argv", [["sign-in"], ["sign-in", "--name", "macbook"]])
+def test_the_command_refuses_a_missing_runtime_and_lists_both_forms(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """QTS-2159: a bare `sign-in` asked about Claude Code first and read as a Claude sign-in."""
+
+    monkeypatch.setattr(service, "sign_in", _unexpected)
+
+    with pytest.raises(SystemExit) as refused:
+        cli.main(argv)
+
+    assert refused.value.code == 2
+    err = capsys.readouterr().err
+    assert "agentic-runner sign-in claude [--method" in err
+    assert "agentic-runner sign-in codex [--name NAME]" in err
+    assert "required: runtime" in err
+
+
 def test_the_command_needs_a_terminal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -469,10 +475,10 @@ def test_in_a_container_the_command_writes_the_state_directorys_own_store(
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
 
     assert cli.main(["sign-in", "codex"]) == 0
-    assert cli.main(["sign-in", "--method", "claude_ai"]) == 0
+    assert cli.main(["sign-in", "claude", "--method", "claude_ai"]) == 0
 
     (first, store, method), (second, _, other_method) = calls
-    assert (first, method, second, other_method) == ("codex", "oauth_token", None, "claude_ai")
+    assert (first, method, second, other_method) == ("codex", "oauth_token", "claude", "claude_ai")
     assert store.root == runner_env / "credentials"
 
 

@@ -91,7 +91,7 @@ AGENTIC_RUNNER_VERSION=<version> docker compose up -d
     docker exec -it agentic-runner agentic-runner sign-in claude
     ```
 
-    `sign-in codex` does the same for Codex; with no argument it asks about each. It
+    `sign-in codex` does the same for Codex; `sign-in` alone is refused. It
     offers your subscription, through the vendor's own sign-in run as the Contract's own
     user in its harness root (Claude Code's login, or `codex login --device-auth` with the
     code shown in the terminal), or an API key, typed without echo and kept on the state

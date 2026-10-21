@@ -115,7 +115,7 @@ own terminal, the one command for their way of installing. On this machine:
 agentic-runner sign-in claude
 ```
 
-`codex` in place of `claude` for Codex; with no argument it asks about each. Add
+`codex` in place of `claude` for Codex; `sign-in` alone is refused. Add
 `--name <name>` only if this machine runs more than one Runner. On Docker it is
 `docker exec -it <container> agentic-runner sign-in claude`, on Kubernetes
 `kubectl exec -it <pod> -c runner -- agentic-runner sign-in claude`.
