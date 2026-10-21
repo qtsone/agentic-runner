@@ -168,6 +168,21 @@ def test_every_service_definition_is_user_level(tmp_path: Path, platform: str) -
         assert "<UserId>dev</UserId>" in text
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_the_service_manager_waits_out_the_drain(tmp_path: Path, platform: str) -> None:
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
+    definition = workstation.service_definition(
+        paths, _settings(paths, "/usr/bin:/bin"), platform=platform, home=tmp_path, uid=501
+    )
+
+    # QTS-2166: launchd's default ExitTimeOut is 20 s, systemd's TimeoutStopSec 90 s.
+    if platform == "darwin":
+        assert plistlib.loads(definition.content)["ExitTimeOut"] == 2100
+    else:
+        assert "\nTimeoutStopSec=2100\n" in definition.content.decode()
+    assert workstation.DRAIN_TIMEOUT_SECONDS == 2100
+
+
 def test_the_cli_floors_are_the_versions_the_runner_image_pins() -> None:
     dockerfile = (REPO / "Dockerfile.runner").read_text()
 
