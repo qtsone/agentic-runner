@@ -243,6 +243,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     assert cli.main(["status", "acme", "--root", str(paths.root)]) == 0
     assert "heartbeat" in capsys.readouterr().out
 
+    paths.pidfile.unlink()
     workstation.stop(paths, platform="darwin", home=home, run=commands)
     assert commands.ran[-1] == ["launchctl", "bootout", f"gui/{os.getuid()}/agentic-runner.acme"]
 
@@ -511,7 +512,13 @@ def _not_driven(_paths: workstation.RunnerPaths) -> None:
 @pytest.mark.parametrize(
     ("platform", "restart"),
     [
-        ("darwin", [["launchctl", "kickstart", "-k", "gui/501/agentic-runner.acme"]]),
+        (
+            "darwin",
+            [
+                ["launchctl", "kill", "SIGTERM", "gui/501/agentic-runner.acme"],
+                ["launchctl", "kickstart", "-k", "gui/501/agentic-runner.acme"],
+            ],
+        ),
         ("linux", [["systemctl", "--user", "restart", "agentic-runner-acme.service"]]),
         (
             "win32",
@@ -536,6 +543,10 @@ def test_restart_runs_the_service_managers_own_restart_and_waits_for_the_new_pro
     commands = Commands()
     polls: list[float] = []
 
+    def service_manager(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        live.discard(111)
+        return commands(command, **kwargs)
+
     def sleep(seconds: float) -> None:
         # The old process drains and the new one writes its version, then its pidfile.
         polls.append(seconds)
@@ -544,7 +555,7 @@ def test_restart_runs_the_service_managers_own_restart_and_waits_for_the_new_pro
         paths.pidfile.write_text("222")
 
     pid, version = workstation.restart(
-        paths, platform=platform, home=tmp_path / "home", run=commands, sleep=sleep
+        paths, platform=platform, home=tmp_path / "home", run=service_manager, sleep=sleep
     )
 
     assert commands.ran == restart
@@ -609,6 +620,100 @@ def test_restart_waits_for_the_new_process_only_once_the_drain_has_ended(
     )
 
     assert (pid, version) == (222, "3.29.0")
+
+
+def _draining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, drain: float
+) -> tuple[workstation.RunnerPaths, Commands, dict[str, Any]]:
+    """A Runner whose process takes ``drain`` seconds to exit once it gets SIGTERM."""
+
+    paths = _installed(tmp_path / "state", "acme")
+    paths.pidfile.write_text("111")
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    now = [0.0]
+    signalled: list[float] = []
+    commands = Commands()
+
+    def process_id(_paths: workstation.RunnerPaths) -> int | None:
+        return 111 if not signalled or now[0] < signalled[0] + drain else None
+
+    def service_manager(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["launchctl", "kill"]:
+            signalled.append(now[0])
+        return commands(command, **kwargs)
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(workstation, "process_id", process_id)
+    driver = {
+        "platform": "darwin",
+        "home": tmp_path / "home",
+        "run": service_manager,
+        "sleep": sleep,
+        "clock": lambda: now[0],
+    }
+    return paths, commands, {"driver": driver, "now": now}
+
+
+def test_stop_on_macos_lets_the_drain_run_past_launchds_60_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """launchd SIGKILLs its own stop after 60 s whatever ExitTimeOut says (QTS-2178), so the
+    Runner gets SIGTERM directly and launchd's `bootout` comes only after it has exited."""
+
+    paths, commands, fake = _draining(tmp_path, monkeypatch, drain=150)
+
+    workstation.stop(paths, **fake["driver"])
+
+    target = "gui/501/agentic-runner.acme"
+    assert commands.ran == [
+        ["launchctl", "kill", "SIGTERM", target],
+        ["launchctl", "bootout", target],
+    ]
+    assert fake["now"][0] >= 150
+
+
+def test_stop_on_macos_hands_a_drain_past_the_budget_to_launchd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, commands, fake = _draining(
+        tmp_path, monkeypatch, drain=workstation.DRAIN_TIMEOUT_SECONDS + 600
+    )
+
+    workstation.stop(paths, **fake["driver"])
+
+    assert commands.ran[-1] == ["launchctl", "bootout", "gui/501/agentic-runner.acme"]
+    assert fake["now"][0] == pytest.approx(workstation.DRAIN_TIMEOUT_SECONDS, abs=1)
+
+
+def test_stop_sends_no_signal_to_a_runner_that_is_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _installed(tmp_path / "state", "acme")
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    commands = Commands()
+
+    workstation.stop(paths, platform="darwin", home=tmp_path / "home", run=commands)
+
+    assert commands.ran == [["launchctl", "bootout", "gui/501/agentic-runner.acme"]]
+
+
+def test_stop_on_linux_leaves_the_drain_to_systemd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`systemctl stop` honours TimeoutStopSec in full (CI probe, QTS-2172)."""
+
+    paths = _installed(tmp_path / "state", "acme")
+    paths.pidfile.write_text("111")
+    monkeypatch.setattr(workstation, "process_id", lambda _p: 111)
+    commands = Commands()
+
+    workstation.stop(paths, platform="linux", home=tmp_path / "home", run=commands)
+
+    assert commands.ran == [
+        ["systemctl", "--user", "disable", "--now", "agentic-runner-acme.service"]
+    ]
 
 
 @pytest.fixture

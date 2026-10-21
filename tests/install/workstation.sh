@@ -7,7 +7,7 @@
 # process  `install --no-start`, then the exact command the login agent runs, as a plain
 #          process: what a Linux host without a user systemd instance (a CI runner) can do.
 # launchd  `install` writes the LaunchAgent and bootstraps it into gui/<uid>; the plist is
-#          linted and read back, and `stop` boots it out.
+#          linted and read back, and `stop` boots it out. Then tests/install/launchd_drain.py.
 #
 # The vendor CLI is a stub: `install` only needs one of `codex` / `claude` on PATH, and no
 # Directive runs here.
@@ -93,6 +93,9 @@ if [ "${mode}" = launchd ]; then
     sleep 1
   done
   agentic-runner status "${name}" --root "${root}" | grep -q 'process        not running'
+
+  echo "== restart and stop let a drain run past launchd's 60 s"
+  "${UV_TOOL_DIR}/agentic-runner/bin/python" "${repo}/tests/install/launchd_drain.py" "${work}"
 else
   kill -TERM "${runner_pid}"
   wait "${runner_pid}"
