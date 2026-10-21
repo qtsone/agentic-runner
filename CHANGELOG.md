@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.30.0](https://github.com/qtsone/agentic-runner/compare/v3.29.0...v3.30.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **runner:** sign-in on a workstation defaults the callback URL as run does (QTS-2157) ([#80](https://github.com/qtsone/agentic-runner/issues/80)) ([a056bed](https://github.com/qtsone/agentic-runner/commit/a056beda8f210cbd725465a8f72220b296b4cbdf))
+
+
+### Features
+
+* **runner:** restart an installed Runner, one or all (QTS-2158) ([#79](https://github.com/qtsone/agentic-runner/issues/79)) ([9b0e660](https://github.com/qtsone/agentic-runner/commit/9b0e660fb76d880a86e58a5f3eb7304c4e187294))
+
 # [3.29.0](https://github.com/qtsone/agentic-runner/compare/v3.28.1...v3.29.0) (2026-10-17)
 
 
