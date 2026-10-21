@@ -39,7 +39,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -114,7 +114,8 @@ ROOT_ENV: Final = "AGENTIC_RUNNER_WORKSTATION_ROOT"
 _LABEL_PREFIX: Final = "agentic-runner"
 # The drain waits out an in-flight Directive (issue 02), as the chart's
 # terminationGracePeriodSeconds does. Without it the service manager SIGKILLs the drain:
-# systemd after 90 s, launchd after 20 s (QTS-2166).
+# systemd after 90 s, launchd after 20 s (QTS-2166), and launchd caps it at 60 s however
+# high ExitTimeOut is set (QTS-2178), so on macOS `stop` and `restart` drain first.
 DRAIN_TIMEOUT_SECONDS: Final = 2100
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -463,6 +464,9 @@ class ServiceDefinition:
     start: list[list[str]]
     stop: list[list[str]]
     restart: list[list[str]]
+    # Sends SIGTERM outside the service manager's own stop, which `stop` and `restart` then
+    # run only once the process has drained. Empty where that stop already waits it out.
+    drain: list[list[str]] = field(default_factory=list)
 
 
 def runner_command(name: str, root: Path) -> list[str]:
@@ -527,6 +531,10 @@ def _launch_agent(
         # One call, not bootout then bootstrap: launchd refuses a bootstrap of a label it
         # still holds, and it holds it until the old process has drained.
         restart=[["launchctl", "kickstart", "-k", f"{domain}/{name}"]],
+        # launchd SIGKILLs a stop of its own after at most 60 s, whatever ExitTimeOut says,
+        # but leaves alone a process that exits on a signal it only forwarded (CI, QTS-2178).
+        # A clean exit is not restarted: KeepAlive above.
+        drain=[["launchctl", "kill", "SIGTERM", f"{domain}/{name}"]],
     )
 
 
@@ -879,9 +887,9 @@ def restart(
     """
 
     previous = process_id(paths)
-    _drive_service(paths, "restart", **driver)
-    # Taken after the call: `kickstart -k` and `systemctl restart` both return only once the
-    # old process has exited, so the drain spends none of it (CI probe, QTS-2172).
+    _drive_service(paths, "restart", sleep=sleep, clock=clock, **driver)
+    # Taken after the call: the drain and then `kickstart -k`, or `systemctl restart`, return
+    # only once the old process has exited, so the drain spends none of it (QTS-2172).
     deadline = clock() + timeout
     while (pid := process_id(paths)) is None or pid == previous:
         if clock() >= deadline:
@@ -899,9 +907,17 @@ def _drive_service(
     platform: str = sys.platform,
     home: Path | None = None,
     run: Run = subprocess.run,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> None:
     settings = WorkstationSettings.load(paths)
     definition = service_definition(paths, settings, platform=platform, home=home)
+    if verb != "start" and definition.drain and process_id(paths) is not None:
+        drive(definition.drain, run=run)
+        # Past the budget the service manager's stop below ends it, as systemd's would.
+        deadline = clock() + DRAIN_TIMEOUT_SECONDS
+        while process_id(paths) is not None and clock() < deadline:
+            sleep(1.0)
     drive(getattr(definition, verb), run=run)
 
 
