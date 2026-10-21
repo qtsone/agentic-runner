@@ -1,7 +1,7 @@
 """The workstation Runner: one login agent per Runner (PRD issue 47, map ticket 23).
 
-``agentic-runner install | start | stop | status <name>`` and ``list``. Everything a CI-runner
-precedent does on a developer machine and nothing a daemon would need:
+``agentic-runner install | start | stop | restart | status <name>`` and ``list``. Everything
+a CI-runner precedent does on a developer machine and nothing a daemon would need:
 
 * **One process per Runner** (23 item 3), each with its own state directory, identity,
   namespace, Runner Token, hooks, credential store and Workspaces under ``<root>/<name>/``.
@@ -37,11 +37,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 from xml.sax.saxutils import escape
 
 import httpx
@@ -91,11 +92,13 @@ __all__ = [
     "install",
     "install_channel",
     "installed_names",
+    "installed_runner",
     "list_lines",
     "locate_clis",
     "only_runner",
     "parse_acp_cli_kinds",
     "require_any_cli",
+    "restart",
     "run_environment",
     "run_process",
     "service_definition",
@@ -156,6 +159,16 @@ def installed_names(root: Path) -> list[str]:
         if re.fullmatch(RUNNER_NAME_PATTERN, path.name)
         and RunnerPaths(root=root, name=path.name).settings_file.is_file()
     )
+
+
+def installed_runner(root: Path, name: str) -> RunnerPaths:
+    """``<name>``, refused with the names installed here when it is not one of them."""
+
+    names = installed_names(root)
+    if name in names:
+        return RunnerPaths(root=root, name=name)
+    installed = ", ".join(names) if names else "none"
+    raise ValueError(f"no Runner named {name!r} is installed under {root}; installed: {installed}")
 
 
 def only_runner(root: Path, *, how: str = "name one") -> RunnerPaths:
@@ -444,6 +457,7 @@ class ServiceDefinition:
     install: list[list[str]]
     start: list[list[str]]
     stop: list[list[str]]
+    restart: list[list[str]]
 
 
 def runner_command(name: str, root: Path) -> list[str]:
@@ -504,6 +518,9 @@ def _launch_agent(
         install=[],
         start=[["launchctl", "bootstrap", domain, str(plist)]],
         stop=[["launchctl", "bootout", f"{domain}/{name}"]],
+        # One call, not bootout then bootstrap: launchd refuses a bootstrap of a label it
+        # still holds, and it holds it until the old process has drained.
+        restart=[["launchctl", "kickstart", "-k", f"{domain}/{name}"]],
     )
 
 
@@ -546,6 +563,7 @@ def _systemd_user_unit(
         ],
         start=[[*systemctl, "enable", "--now", unit_name]],
         stop=[[*systemctl, "disable", "--now", unit_name]],
+        restart=[[*systemctl, "restart", unit_name]],
     )
 
 
@@ -598,6 +616,10 @@ def _logon_task(
         stop=[
             ["schtasks", "/End", "/TN", task_name],
             ["schtasks", "/Change", "/TN", task_name, "/DISABLE"],
+        ],
+        restart=[
+            ["schtasks", "/End", "/TN", task_name],
+            ["schtasks", "/Run", "/TN", task_name],
         ],
     )
 
@@ -837,9 +859,36 @@ def stop(paths: RunnerPaths, **driver: Any) -> None:
     _drive_service(paths, "stop", **driver)
 
 
+def restart(
+    paths: RunnerPaths,
+    *,
+    timeout: float = 60.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    **driver: Any,
+) -> tuple[int, str]:
+    """Restart a running Runner and wait for its new process: ``(pid, version)``.
+
+    ``uv tool upgrade`` replaces the console script, not the process, so a login agent keeps
+    running the old version until this (QTS-2158). The process writes its version before
+    its pidfile, so a new pid means the version beside it is the new process's.
+    """
+
+    previous = process_id(paths)
+    _drive_service(paths, "restart", **driver)
+    deadline = clock() + timeout
+    while (pid := process_id(paths)) is None or pid == previous:
+        if clock() >= deadline:
+            raise RuntimeError(
+                f"no new process wrote {paths.pidfile} within {timeout:.0f}s; see {paths.log}"
+            )
+        sleep(0.5)
+    return pid, paths.started_version.read_text(encoding="utf-8").strip()
+
+
 def _drive_service(
     paths: RunnerPaths,
-    verb: str,
+    verb: Literal["start", "stop", "restart"],
     *,
     platform: str = sys.platform,
     home: Path | None = None,
@@ -847,7 +896,7 @@ def _drive_service(
 ) -> None:
     settings = WorkstationSettings.load(paths)
     definition = service_definition(paths, settings, platform=platform, home=home)
-    drive(definition.start if verb == "start" else definition.stop, run=run)
+    drive(getattr(definition, verb), run=run)
 
 
 def run_process(paths: RunnerPaths, *, login_agent: bool) -> int:

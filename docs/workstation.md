@@ -156,11 +156,14 @@ agentic-runner list                   # every Runner on this machine, and which 
 agentic-runner status alice-laptop    # process, identity, heartbeat age
 agentic-runner stop alice-laptop      # this Runner only; every other one keeps running
 agentic-runner start alice-laptop
+agentic-runner restart alice-laptop   # prints the new pid and version; --all restarts every running one
 printf %s "$VALUE" | agentic-runner credential set alice-laptop deploy_key   # a Credential Reference
 printf %s "$KEY" | agentic-runner credential set alice-laptop OPENAI_API_KEY    # your own LLM key
 ```
 
 `stop` drains: the Runner takes no new work and lets the Directive in flight finish.
+`restart` stops a running Runner the way `stop` does, then starts it again. It does not start
+a stopped Runner.
 
 With one Runner on this machine, every command here works without its name:
 `agentic-runner status`, `agentic-runner stop`, `agentic-runner sign-in claude`. With more
@@ -217,7 +220,7 @@ verbs = { "pr.merge" = "deny" }
 ```
 
 ```sh
-agentic-runner stop alice-laptop && agentic-runner start alice-laptop
+agentic-runner restart alice-laptop
 ```
 
 The Runner reads the limit only when it starts. It refuses to start, and says which entry,
@@ -277,8 +280,11 @@ computer it runs on, or in a folder your user cannot read.
 
 ```sh
 uv tool upgrade agentic-runner     # or: pipx upgrade agentic-runner
-agentic-runner stop alice-laptop && agentic-runner start alice-laptop
+agentic-runner restart --all
 ```
+
+Run `restart` after every upgrade. Until then, each Runner still runs the version it started
+on. `restart` prints each Runner's new pid and version, and `list` shows the version too.
 
 There is no self-update. The control plane warns when a Runner falls one contracts minor
 behind and stops sending it new work at two.

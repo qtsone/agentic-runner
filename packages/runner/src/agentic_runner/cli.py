@@ -11,7 +11,7 @@ namespace and queue this process was assigned. It is idempotent by state file --
 restart re-reads what is already there rather than registering a second Runner against
 the Organisation's cap.
 
-``install | start | stop | status <name>``, ``credential set`` and ``list`` are the
+``install | start | stop | restart | status <name>``, ``credential set`` and ``list`` are the
 workstation Runner (PRD issue 47, ``workstation.py``): one login agent per Runner, managed
 by the user who hosts it, with no ``sudo`` anywhere. ``<name>`` is the Runner's, the one the
 console lists it under (QTS-1773); a machine with one Runner needs none (QTS-1774).
@@ -215,6 +215,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         driven.add_argument("name", nargs="?", help=_INSTALLED_NAME_HELP)
         driven.add_argument("--root", default=None, type=Path)
 
+    restart = subcommands.add_parser(
+        "restart",
+        help="restart running workstation Runners on the agentic-runner installed now, as "
+        "after `uv tool upgrade`",
+    )
+    restart.add_argument("name", nargs="?", help=_INSTALLED_NAME_HELP)
+    which = restart.add_mutually_exclusive_group()
+    which.add_argument("--name", dest="name_flag", default=None, help=_INSTALLED_NAME_HELP)
+    which.add_argument("--all", action="store_true", help="every Runner running on this machine")
+    restart.add_argument("--root", default=None, type=Path)
+
     listed = subcommands.add_parser(
         "list", help="the workstation Runners installed on this machine, and which are running"
     )
@@ -368,6 +379,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(service.run(attestation=_image_attestation(), install=_run_install()))
     if arguments.command in {"install", "start", "stop", "credential"}:
         return _workstation(arguments)
+    if arguments.command == "restart":
+        return _restart(arguments)
     if arguments.command == "list":
         for line in workstation.list_lines(arguments.root or workstation.default_root()):
             print(line)
@@ -460,6 +473,49 @@ def _workstation(arguments: argparse.Namespace) -> int:
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1
+
+
+def _restart(arguments: argparse.Namespace) -> int:
+    """``restart <name> | --name <name> | --all``: exit 2 names the Runners installed here.
+
+    A stopped Runner is not started: it was stopped on purpose, and ``systemctl restart``
+    would start it where ``launchctl kickstart`` refuses to, so the two OSes would differ.
+    """
+
+    root = arguments.root or workstation.default_root()
+    name = arguments.name or arguments.name_flag
+    if arguments.all and name:
+        print("restart takes a name or --all, not both", file=sys.stderr)
+        return 2
+    try:
+        if arguments.all:
+            targets = [
+                workstation.RunnerPaths(root=root, name=installed)
+                for installed in workstation.installed_names(root)
+            ]
+            if not targets:
+                raise ValueError(f"no workstation Runner is installed under {root}")
+        elif name:
+            targets = [workstation.installed_runner(root, name)]
+        else:
+            targets = [workstation.only_runner(root, how="name one, or restart --all")]
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+    failed = False
+    for paths in targets:
+        if workstation.process_id(paths) is None:
+            print(f"{paths.name} is stopped; `agentic-runner start {paths.name}` starts it")
+            failed = failed or not arguments.all
+            continue
+        try:
+            pid, version = workstation.restart(paths)
+        except (FileNotFoundError, RuntimeError) as error:
+            print(f"{paths.name}: restart failed: {error}", file=sys.stderr)
+            failed = True
+            continue
+        print(f"restarted {paths.name}: pid {pid}, agentic-runner {version}")
+    return 1 if failed else 0
 
 
 def _image_attestation() -> HostAttestation:
