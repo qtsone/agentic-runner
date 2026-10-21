@@ -122,7 +122,7 @@ def bin_dir(tmp_path: Path) -> Path:
 
 
 def _all_commands(definition: workstation.ServiceDefinition) -> list[list[str]]:
-    return definition.install + definition.start + definition.stop
+    return definition.install + definition.start + definition.stop + definition.restart
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
@@ -487,6 +487,168 @@ def test_with_several_runners_installed_a_command_names_them_and_points_to_list(
 
 def _not_driven(_paths: workstation.RunnerPaths) -> None:
     raise AssertionError("no Runner was named")
+
+
+# ------------------------------------------------------------------ restart (QTS-2158)
+
+
+@pytest.mark.parametrize(
+    ("platform", "restart"),
+    [
+        ("darwin", [["launchctl", "kickstart", "-k", "gui/501/agentic-runner.acme"]]),
+        ("linux", [["systemctl", "--user", "restart", "agentic-runner-acme.service"]]),
+        (
+            "win32",
+            [
+                ["schtasks", "/End", "/TN", "\\agentic-runner\\acme"],
+                ["schtasks", "/Run", "/TN", "\\agentic-runner\\acme"],
+            ],
+        ),
+    ],
+)
+def test_restart_runs_the_service_managers_own_restart_and_waits_for_the_new_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str, restart: list[list[str]]
+) -> None:
+    """After `uv tool upgrade` the login agent still runs the old code (owner, QTS-1320)."""
+
+    paths = _installed(tmp_path / "state", "acme")
+    paths.pidfile.write_text("111")
+    paths.started_version.write_text("3.28.0")
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    live = {111}
+    monkeypatch.setattr(workstation, "process_id", lambda p: _live_pid(p, live))
+    commands = Commands()
+    polls: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        # The old process drains and the new one writes its version, then its pidfile.
+        polls.append(seconds)
+        live.add(222)
+        paths.started_version.write_text("3.29.0")
+        paths.pidfile.write_text("222")
+
+    pid, version = workstation.restart(
+        paths, platform=platform, home=tmp_path / "home", run=commands, sleep=sleep
+    )
+
+    assert commands.ran == restart
+    assert (pid, version) == (222, "3.29.0")
+    assert polls == [0.5]
+
+
+def _live_pid(paths: workstation.RunnerPaths, live: set[int]) -> int | None:
+    pid = int(paths.pidfile.read_text())
+    return pid if pid in live else None
+
+
+def test_restart_says_so_when_no_new_process_comes_up(tmp_path: Path) -> None:
+    paths = _installed(tmp_path / "state", "acme")
+    ticks = iter(range(100))
+
+    with pytest.raises(RuntimeError, match=r"within 60s; see .*runner\.log"):
+        workstation.restart(
+            paths,
+            platform="linux",
+            home=tmp_path / "home",
+            run=Commands(),
+            sleep=lambda _s: None,
+            clock=lambda: float(next(ticks)) * 10,
+        )
+
+
+@pytest.fixture
+def restarted(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    names: list[str] = []
+
+    def restart(paths: workstation.RunnerPaths) -> tuple[int, str]:
+        names.append(paths.name)
+        return 4000 + len(names), "3.29.0"
+
+    monkeypatch.setattr(workstation, "restart", restart)
+    monkeypatch.setattr(workstation, "process_id", lambda p: None if p.name == "parked" else 1)
+    return names
+
+
+@pytest.mark.parametrize("argv", [["restart", "billing"], ["restart", "--name", "billing"]])
+def test_restart_takes_the_runners_name_either_way_and_prints_the_new_pid_and_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], restarted: list[str], argv: list[str]
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop")
+    _installed(root, "billing")
+
+    assert cli.main([*argv, "--root", str(root)]) == 0
+
+    assert restarted == ["billing"]
+    assert capsys.readouterr().out == "restarted billing: pid 4001, agentic-runner 3.29.0\n"
+
+
+def test_restart_all_restarts_every_running_runner_and_leaves_a_stopped_one_stopped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], restarted: list[str]
+) -> None:
+    root = tmp_path / "state"
+    for name in ("alice-laptop", "billing", "parked"):
+        _installed(root, name)
+
+    assert cli.main(["restart", "--all", "--root", str(root)]) == 0
+
+    assert restarted == ["alice-laptop", "billing"]
+    assert capsys.readouterr().out.splitlines() == [
+        "restarted alice-laptop: pid 4001, agentic-runner 3.29.0",
+        "restarted billing: pid 4002, agentic-runner 3.29.0",
+        "parked is stopped; `agentic-runner start parked` starts it",
+    ]
+
+
+def test_restart_of_a_name_not_installed_exits_2_and_lists_the_installed_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], restarted: list[str]
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop")
+    _installed(root, "billing")
+
+    assert cli.main(["restart", "acme", "--root", str(root)]) == 2
+
+    assert restarted == []
+    assert capsys.readouterr().err.strip() == (
+        f"no Runner named 'acme' is installed under {root}; installed: alice-laptop, billing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "error"),
+    [
+        (["restart"], "alice-laptop, billing: name one, or restart --all"),
+        (["restart", "billing", "--all"], "a name or --all, not both"),
+    ],
+)
+def test_restart_with_several_runners_needs_one_name_or_all(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restarted: list[str],
+    argv: list[str],
+    error: str,
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop")
+    _installed(root, "billing")
+
+    assert cli.main([*argv, "--root", str(root)]) == 2
+
+    assert restarted == []
+    assert error in capsys.readouterr().err
+
+
+def test_restart_of_a_stopped_runner_by_name_fails_and_says_how_to_start_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], restarted: list[str]
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "parked")
+
+    assert cli.main(["restart", "--root", str(root)]) == 1
+
+    assert restarted == []
+    assert "`agentic-runner start parked`" in capsys.readouterr().out
 
 
 def test_sign_in_needs_no_name_with_one_runner_and_lists_them_with_several(
