@@ -81,6 +81,7 @@ from agentic_runner_contracts.runner_registration import (
 __all__ = [
     "CLI_FLOORS",
     "CLI_NAMES",
+    "DRAIN_TIMEOUT_SECONDS",
     "ROOT_ENV",
     "CliMissingError",
     "RunnerPaths",
@@ -111,6 +112,10 @@ __all__ = [
 ROOT_ENV: Final = "AGENTIC_RUNNER_WORKSTATION_ROOT"
 
 _LABEL_PREFIX: Final = "agentic-runner"
+# The drain waits out an in-flight Directive (issue 02), as the chart's
+# terminationGracePeriodSeconds does. Without it the service manager SIGKILLs the drain:
+# systemd after 90 s, launchd after 20 s (QTS-2166).
+DRAIN_TIMEOUT_SECONDS: Final = 2100
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -507,6 +512,7 @@ def _launch_agent(
             "RunAtLoad": True,
             # Restart a crash, not a clean `stop`: SIGTERM drains and exits 0.
             "KeepAlive": {"SuccessfulExit": False},
+            "ExitTimeOut": DRAIN_TIMEOUT_SECONDS,
             "ProcessType": "Background",
             "StandardOutPath": str(paths.log),
             "StandardErrorPath": str(paths.log),
@@ -544,9 +550,7 @@ def _systemd_user_unit(
         f"Environment={_systemd_quote('PATH=' + settings.path)}\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
-        # The drain waits out an in-flight Directive (issue 02); systemd's default 90 s
-        # would SIGKILL it.
-        "TimeoutStopSec=2100\n"
+        f"TimeoutStopSec={DRAIN_TIMEOUT_SECONDS}\n"
         "KillMode=mixed\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"

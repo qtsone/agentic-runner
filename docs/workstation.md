@@ -167,6 +167,12 @@ printf %s "$KEY" | agentic-runner credential set alice-laptop OPENAI_API_KEY    
 `restart` stops a running Runner the way `stop` does, then starts it again. It does not start
 a stopped Runner.
 
+On macOS, a Runner installed before 3.30.1 lets launchd kill the drain after 20 seconds, so
+`stop` and `restart` cut a Directive in flight short. launchd reads the drain budget only
+when it loads the login agent, so `restart` does not fix it. When the Runner has no
+Directive in flight, run `agentic-runner stop <name>`, then the `install` line again. The
+Runner then waits up to 35 minutes for its Directive, as on Linux.
+
 With one Runner on this machine, every command here works without its name:
 `agentic-runner status`, `agentic-runner stop`, `agentic-runner sign-in claude`. With more
 than one, a command without a name lists them and asks you to name one.
