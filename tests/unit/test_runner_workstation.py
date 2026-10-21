@@ -58,6 +58,7 @@ from agentic_runner.sealed_box import (
     seal,
 )
 from agentic_runner.testing import FakeControlPlane
+from agentic_runner.workers.claude_sign_in import ClaudeSignIns
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
     ContractLlmTerms,
@@ -525,6 +526,57 @@ def test_sign_in_needs_no_name_with_one_runner_and_lists_them_with_several(
     assert "alice-laptop, billing: name one with --name" in error
     assert "`agentic-runner list`" in error
     assert len(signed) == 1
+
+
+def test_a_subscription_sign_in_needs_only_the_workstation_run_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real `run_environment`, nothing else: it once lacked the callback URL (QTS-2157)."""
+
+    root = tmp_path / "state"
+    paths = _installed(root, "alice-laptop")
+    save_state(
+        paths.state_dir,
+        RunnerState(
+            runner_id=uuid4(),
+            identity_id="id",
+            private_key_pem="unused",
+            temporal_namespace="org-x",
+            task_queue="runner.x",
+            host_party="user",
+        ),
+    )
+    contract = uuid4()
+    save_llm_contracts(
+        paths.state_dir,
+        [ContractLlmTerms(contract_id=contract, subscription=SubscriptionRight.ALLOWED)],
+    )
+    # `sign-in` exports the Runner's environment into its own; set-then-delete records each
+    # name so the fixture restores it, and leaves the test with exactly that environment.
+    for name in [
+        *workstation.run_environment(paths, _settings(paths, "")),
+        "INTERNAL_FASTAPI_BASE_URL",
+    ]:
+        monkeypatch.setenv(name, os.environ.get(name, ""))
+        if name != "PATH":
+            monkeypatch.delenv(name)
+    called_back: list[str] = []
+
+    async def claude(_self: ClaudeSignIns, contract_id: str, *, method: str) -> int:
+        called_back.append(str(service.get_worker_settings().INTERNAL_FASTAPI_BASE_URL))
+        return 0
+
+    monkeypatch.setattr(ClaudeSignIns, "sign_in", claude)
+    monkeypatch.setattr(service, "can_separate_uids", lambda: False)
+    monkeypatch.setattr(service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "s")
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+    monkeypatch.setenv(workstation.ROOT_ENV, str(root))
+    monkeypatch.setattr(cli, "_in_container", lambda: False)
+    monkeypatch.setattr(cli, "open_workstation_store", lambda *_a, **_k: _FileStore())
+
+    assert cli.main(["sign-in", "claude", "--name", "alice-laptop"]) == 0
+    assert called_back == [f"{CONTROL_PLANE}/"]
 
 
 def test_a_bare_run_on_a_machine_with_installed_runners_says_to_start_one(
