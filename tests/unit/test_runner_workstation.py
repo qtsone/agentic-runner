@@ -451,6 +451,32 @@ def test_the_runner_writes_the_version_it_started_on(
     assert paths.started_version.read_text() == agentic_runner.__version__
 
 
+@pytest.mark.parametrize(
+    ("service_exit", "agent_exit"), [(service.REVOKED_EXIT_CODE, 0), (1, 1), (0, 0)]
+)
+def test_a_revoked_runner_exits_clean_so_its_login_agent_stays_down(
+    tmp_path: Path,
+    bin_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    service_exit: int,
+    agent_exit: int,
+) -> None:
+    # Every service manager here restarts a non-zero exit; a revoked Runner restarted that
+    # way heartbeated into a 403 every ~10 s (QTS-2207). Any other failure still restarts.
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
+    paths.create()
+    _settings(paths, str(bin_dir)).save(paths)
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+
+    async def run(**_: Any) -> int:
+        return service_exit
+
+    monkeypatch.setattr(service, "run", run)
+    monkeypatch.setattr(workstation, "open_workstation_store", lambda *_a, **_k: _FileStore())
+
+    assert workstation.run_process(paths, login_agent=True) == agent_exit
+
+
 class _FileStore:
     kind = StoreKind.FILE
 
