@@ -572,6 +572,45 @@ def test_restart_says_so_when_no_new_process_comes_up(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_restart_waits_for_the_new_process_only_once_the_drain_has_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """`kickstart -k` and `systemctl restart` both return only when the old process has
+    exited (CI probe, QTS-2172), so a drain spends none of the 60 s that `restart` gives the
+    new process to come up."""
+
+    paths = _installed(tmp_path / "state", "acme")
+    paths.pidfile.write_text("111")
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    live = {111}
+    monkeypatch.setattr(workstation, "process_id", lambda p: _live_pid(p, live))
+    now = [0.0]
+    commands = Commands()
+
+    def service_manager(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        now[0] += workstation.DRAIN_TIMEOUT_SECONDS
+        live.discard(111)
+        return commands(command, **kwargs)
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+        live.add(222)
+        paths.started_version.write_text("3.29.0")
+        paths.pidfile.write_text("222")
+
+    pid, version = workstation.restart(
+        paths,
+        platform=platform,
+        home=tmp_path / "home",
+        run=service_manager,
+        sleep=sleep,
+        clock=lambda: now[0],
+    )
+
+    assert (pid, version) == (222, "3.29.0")
+
+
 @pytest.fixture
 def restarted(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     names: list[str] = []
