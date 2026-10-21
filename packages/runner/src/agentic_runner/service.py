@@ -250,6 +250,10 @@ _VERIFIER_ACTIVITY_BUDGET_SECONDS = 20 * 60
 # returns before Kubernetes SIGKILLs the pod at terminationGracePeriodSeconds (the
 # chart's value and this must move together).
 _SHUTDOWN_HEADROOM_SECONDS = 60
+# What `run` exits with once the control plane revokes this Runner: non-zero, as the
+# conformance suite asks, and its own value so a workstation login agent can tell it from a
+# crash its service manager should restart (QTS-2207).
+REVOKED_EXIT_CODE = 3
 
 # What `agentic-runner status <name>` reads (PRD issue 47): the live pid, and a file the
 # process touches on every acknowledged heartbeat, whose mtime is the heartbeat age.
@@ -1692,7 +1696,7 @@ async def _serve_registered(
             raise
         except Exception as error:  # noqa: BLE001 - keep trying until the control plane answers
             if _revoked(error):
-                return 1
+                return REVOKED_EXIT_CODE
             _logger.warning("heartbeat failed before start: %s", error)
             await _before_stop(asyncio.sleep(interval), stop)
 
@@ -1767,7 +1771,7 @@ async def _serve_registered(
                     await task
             await run_runner_lifecycle_hook(hooks, HookName.RUNNER_SHUTDOWN)
             await _report_stop(link, lifecycle)
-    return 1 if revoked.is_set() else 0
+    return REVOKED_EXIT_CODE if revoked.is_set() else 0
 
 
 def _revoked(error: Exception) -> bool:

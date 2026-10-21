@@ -943,4 +943,8 @@ def run_process(paths: RunnerPaths, *, login_agent: bool) -> int:
     # A workstation's hostname can name its person, so it is never reported (rev 3); the
     # name it was installed as is the person's choice, and the console lists it (QTS-1773).
     install = RunnerInstall(target=InstallTarget.WORKSTATION, name=paths.name)
-    return asyncio.run(service.run(host_store=store, attestation=attestation, install=install))
+    code = asyncio.run(service.run(host_store=store, attestation=attestation, install=install))
+    # launchd, systemd and the logon task all restart a non-zero exit, and a revocation is
+    # final: restarted, the Runner dialled a control plane that refused it every ~10 s until
+    # someone stopped it by hand (QTS-2207). A clean exit keeps it down until the next login.
+    return 0 if code == service.REVOKED_EXIT_CODE else code

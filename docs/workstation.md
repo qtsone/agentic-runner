@@ -173,6 +173,10 @@ On macOS, launchd itself stops a Runner after at most 60 seconds, so `stop` and 
 ask the Runner to drain first and call launchd only once it has exited. Logging out or
 shutting down the Mac still gives a Directive in flight only those 60 seconds.
 
+A Runner revoked on the Runners page stops, and its login agent does not restart it.
+`runner.log` ends with `revoked by the control plane`. At your next login it starts, is
+refused once and stops again, until you remove it (see [Upgrade and remove](#upgrade-and-remove)).
+
 With one Runner on this machine, every command here works without its name:
 `agentic-runner status`, `agentic-runner stop`, `agentic-runner sign-in claude`. With more
 than one, a command without a name lists them and asks you to name one.
