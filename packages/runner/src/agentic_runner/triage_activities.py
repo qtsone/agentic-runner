@@ -9,15 +9,19 @@ the same turn in-process (``user_sources.ProxyTriage``).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from uuid import UUID
 
 import httpx
 from temporalio import activity
 
+from agentic_runner.connections import contract_refusal
 from agentic_runner.llm_proxy import LlmProxy
 from agentic_runner_contracts.activity_io import TriageTurnInput, TriageTurnOutput
 from agentic_runner_contracts.runner_registration import ContractLlmTerms
+
+_logger = logging.getLogger(__name__)
 
 
 async def run_triage_turn(
@@ -87,6 +91,7 @@ class RunnerTriageActivities:
         host_party: str | None = None,
         llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
         client: httpx.AsyncClient | None = None,
+        connection_organisation: Callable[[], UUID | None] | None = None,
     ) -> None:
         self._proxy = proxy
         self._model = model
@@ -94,25 +99,40 @@ class RunnerTriageActivities:
         self._host_party = host_party
         self._llm_contracts = llm_contracts
         self._client = client
+        # As on the Ralph activities: a connection spends only its own Organisation's
+        # Contracts' LLM slots (Spec: Runners rev 14).
+        self._connection_organisation = connection_organisation
 
     def activity_callables(self) -> list[Callable[..., object]]:
         return [self.run_triage_turn]
 
     @activity.defn(name="run_triage_turn")
     async def run_triage_turn(self, request: TriageTurnInput) -> TriageTurnOutput:
+        contract_id = _optional_uuid(request.intake_lead_contract_id)
+        if (refusal := self._connection_refusal(contract_id)) is not None:
+            # No answer is the turn's own failure mode: the keyword classifier decides.
+            _logger.warning("triage turn refused: %s for Contract %s", refusal, contract_id)
+            return TriageTurnOutput(raw_text=None)
         raw_text = await run_triage_turn(
             self._proxy,
             model=self._model,
             timeout_seconds=self._timeout_seconds,
             prompt=request.prompt,
             directive_id=request.directive_id,
-            contract_id=_optional_uuid(request.intake_lead_contract_id),
+            contract_id=contract_id,
             agent_id=_optional_uuid(request.intake_lead_agent_id),
             reserve_max_tokens=request.reserve_max_tokens,
             delivered_only=self._pool_runner_before_named_access(),
             client=self._client,
         )
         return TriageTurnOutput(raw_text=raw_text)
+
+    def _connection_refusal(self, contract_id: UUID | None) -> str | None:
+        organisation = self._connection_organisation() if self._connection_organisation else None
+        if organisation is None:
+            return None
+        terms = (self._llm_contracts() if self._llm_contracts is not None else None) or ()
+        return contract_refusal(organisation, terms, contract_id)
 
     def _pool_runner_before_named_access(self) -> bool:
         """A pool Runner's store key stays out of the turn until an ack names the

@@ -21,6 +21,11 @@ through the vendor's own sign-in in this terminal, or an API key stored in the R
 own store (``sign_in.py``, Spec: Runners rev 3). No ids, and no code or token passes
 through the control plane.
 
+``login [name]`` makes this Runner the person's with a device flow -- a code shown here,
+confirmed in the browser, no token copied -- and ``connect [organisation]`` asks for a
+connection to an Organisation they belong to (Spec: Runners rev 14). One Runner then takes
+the work of every Organisation it is connected to, under one concurrency limit.
+
 ``skill install | print`` hands the setup skill to the person's own Claude Code or Codex
 (``skill.py``, console-v2 issue 21).
 
@@ -42,6 +47,7 @@ import os
 import re
 import socket
 import sys
+import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -108,6 +114,8 @@ _NAME_HELP = (
     "machine takes it"
 )
 _INSTALLED_NAME_HELP = "the Runner's name; omitted when this machine runs one Runner"
+# `login` on a workstation with no name: the console then lists it under this one.
+DEFAULT_LOGIN_NAME = "runner"
 
 
 def _old_org_flag(parser: argparse.ArgumentParser) -> None:
@@ -208,6 +216,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     install.add_argument("--no-start", action="store_true", help="write the agent, do not start")
     install.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
+    login = subcommands.add_parser(
+        "login",
+        help="make this Runner yours: confirm a code in the browser, no token to copy",
+    )
+    login.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help=f"{_NAME_HELP}; default `{DEFAULT_LOGIN_NAME}` on a workstation, `RUNNER_NAME` "
+        "in a container",
+    )
+    login.add_argument(
+        "--control-plane", default=os.environ.get(CONTROL_PLANE_ENV), help="control plane URL"
+    )
+    login.add_argument("--temporal-plaintext", action="store_true", help=argparse.SUPPRESS)
+    login.add_argument("--no-start", action="store_true", help="write the agent, do not start")
+    login.add_argument("--no-browser", action="store_true", help="show the link, do not open it")
+    login.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
+
+    connect = subcommands.add_parser(
+        "connect", help="connect your Runner to an Organisation you belong to"
+    )
+    connect.add_argument(
+        "organisation", nargs="?", help="the Organisation's name or id; omitted lists yours"
+    )
+    connect.add_argument("--name", default=None, help=_INSTALLED_NAME_HELP)
+    connect.add_argument("--root", default=None, type=Path, help=argparse.SUPPRESS)
+
     for service_verb in ("start", "stop"):
         driven = subcommands.add_parser(
             service_verb, help=f"{service_verb} one workstation Runner's login agent"
@@ -380,6 +416,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 2
         return asyncio.run(service.run(attestation=_image_attestation(), install=_run_install()))
+    if arguments.command == "login":
+        return _login(arguments)
+    if arguments.command == "connect":
+        return _connect(arguments)
     if arguments.command in {"install", "start", "stop", "credential"}:
         return _workstation(arguments)
     if arguments.command == "restart":
@@ -595,6 +635,101 @@ def _sign_in(arguments: argparse.Namespace) -> int:
     else:
         store = service.own_store(load_config())
     return asyncio.run(service.sign_in(arguments.runtime, store=store, method=arguments.method))
+
+
+def _login(arguments: argparse.Namespace) -> int:
+    """``login [name]``: a workstation Runner gets its login agent, as ``install`` gives one;
+    in a container the identity goes to the state directory ``run`` reads."""
+
+    if not arguments.control_plane:
+        print(f"--control-plane (or {CONTROL_PLANE_ENV}) is required", file=sys.stderr)
+        return 2
+
+    def say(line: str) -> None:
+        print(line, flush=True)
+
+    def open_browser(url: str) -> object:
+        return None if arguments.no_browser or _in_container() else webbrowser.open(url)
+
+    try:
+        if _in_container():
+            name = arguments.name or _container_name()
+            _, outcome = asyncio.run(
+                service.login(
+                    state_dir=_state_dir(),
+                    control_plane=arguments.control_plane,
+                    name=workstation.validate_name(name) if name else None,
+                    say=say,
+                    open_browser=open_browser,
+                )
+            )
+            print(outcome)
+            return 0
+        paths = workstation.RunnerPaths(
+            root=arguments.root or workstation.default_root(),
+            name=workstation.validate_name(arguments.name or DEFAULT_LOGIN_NAME),
+        )
+        settings = workstation.WorkstationSettings(
+            control_plane_url=arguments.control_plane,
+            temporal_tls=not arguments.temporal_plaintext,
+            path=os.environ.get("PATH", ""),
+            install_channel=workstation.install_channel(),
+            acp_cli_kinds=_acp_cli_kinds(None, paths),
+        )
+        lines = asyncio.run(
+            workstation.login(
+                paths,
+                settings,
+                say=say,
+                open_browser=open_browser,
+                start_service=not arguments.no_start,
+            )
+        )
+    except (
+        workstation.CliMissingError,
+        RunnerRegistrationError,
+        RuntimeError,
+        ValueError,
+    ) as error:
+        print(f"login refused: {error}", file=sys.stderr)
+        return 1
+    for line in lines:
+        print(line)
+    return 0
+
+
+def _connect(arguments: argparse.Namespace) -> int:
+    if arguments.name or not _in_container():
+        try:
+            paths = _runner_paths(arguments, how="name one with --name")
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 2
+        state_dir = paths.state_dir
+        control_plane = workstation.WorkstationSettings.load(paths).control_plane_url
+    else:
+        state_dir = _state_dir()
+        control_plane = os.environ.get(CONTROL_PLANE_ENV, "").strip()
+    try:
+        return asyncio.run(
+            service.connect(
+                state_dir=state_dir,
+                control_plane=control_plane,
+                organisation=arguments.organisation,
+                ask=input,
+                say=lambda line: print(line, file=sys.stderr),
+            )
+        )
+    except RunnerRegistrationError as error:
+        print(f"connect refused ({error.reason}): {error}", file=sys.stderr)
+        return 1
+
+
+def _container_name() -> str | None:
+    """The name a container Runner reports: ``RUNNER_NAME``, else none for the control plane
+    to choose, since a container id is no name a person picked."""
+
+    return os.environ.get("RUNNER_NAME", "").strip() or None
 
 
 def _install(arguments: argparse.Namespace, paths: workstation.RunnerPaths) -> int:

@@ -92,6 +92,8 @@ SNAPSHOT_PUSH_MAX: Final = 64
 CREDENTIAL_MANIFESTS_MAX: Final = 64
 CREDENTIAL_REFERENCES_MAX: Final = 64
 
+CONNECTIONS_MAX: Final = 64
+
 _EXCEPTION_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 # ``path/to/module.py:123`` and nothing else -- no function name, no source line, no
 # message. A frame that carries a repository path still carries only a path shape, which
@@ -301,6 +303,31 @@ class RunnerIdentityMaterial(BaseModel):
     private_key_pem: str
 
 
+class RunnerConnection(BaseModel):
+    """One Organisation this Runner takes work from (Spec: Runners rev 14).
+
+    A person's Runner has one per Organisation they connected it to; an Organisation's own
+    Runner has exactly one, made at registration. Each is a namespace, the
+    ``runner.{runner_id}`` queue in it and the Runner Token the Temporal gateway admits
+    there, and nothing else: an Organisation sees only its own connection.
+
+    ``runner_token`` is None where the control plane hands none out -- the answer to
+    ``connect``, and the ack of a held Runner, which keeps the token it holds until it
+    expires (as :attr:`HeartbeatAck.runner_token`). ``paused`` takes no new work and lets
+    what it has finish.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    organisation_id: UUID
+    organisation_name: DisplayName | None = None
+    temporal_namespace: str
+    task_queue: str
+    runner_token: str | None = None
+    runner_token_expires_at: datetime | None = None
+    paused: bool = False
+
+
 class BootstrapResponse(BaseModel):
     """The identity, the namespace, the first Runner Token and where to poll."""
 
@@ -329,6 +356,22 @@ class BootstrapResponse(BaseModel):
     # carries it. Blank from a control plane that predates the field; the Runner then
     # falls back to its own `TEMPORAL_ADDRESS`.
     temporal_address: str = ""
+    # Spec: Runners rev 14: who operates this Runner (None: the Organisation's own, which a
+    # Runner Registration Token registers) and its one connection, the namespace, queue and
+    # token above. None from a control plane below 3.31. The response forbids extra keys,
+    # so the control plane sends them only to a Runner whose bootstrap names contracts 3.31
+    # or later.
+    operator_user_profile_id: UUID | None = None
+    connections: list[RunnerConnection] | None = Field(default=None, max_length=1)
+
+    @model_serializer(mode="wrap")
+    def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
+        body = handler(self)
+        if isinstance(body, dict):
+            for name in ("operator_user_profile_id", "connections"):
+                if body.get(name) is None:
+                    body.pop(name, None)
+        return body
 
 
 class SelfTestFailure(StrEnum):
@@ -695,12 +738,21 @@ class ContractLlmTerms(BaseModel):
     # QTS-1909: for `agentic-runner list`. None from a control plane below 3.29; the ack
     # forbids extra keys, so the control plane sends it only to a Runner on 3.29 or later.
     contract_name: DisplayName | None = None
+    # Spec: Runners rev 14: the connection this Contract is served through, so `sign-in` on
+    # a Runner with several asks which, by the Organisation's name. None from a control
+    # plane below 3.31, which sends it only to a Runner on 3.31 or later. An ack that names
+    # `connections` must name it on every Contract: such a Runner serves a Contract only on
+    # its own Organisation's connection, and refuses one without it.
+    organisation_id: UUID | None = None
+    organisation_name: DisplayName | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unsent_name(self, handler: SerializerFunctionWrapHandler) -> Any:
         body = handler(self)
-        if isinstance(body, dict) and body.get("contract_name") is None:
-            body.pop("contract_name", None)
+        if isinstance(body, dict):
+            for name in ("contract_name", "organisation_id", "organisation_name"):
+                if body.get(name) is None:
+                    body.pop(name, None)
         return body
 
 
@@ -1047,19 +1099,38 @@ class HeartbeatAck(BaseModel):
     # `agentic-runner list`. None from a control plane below 3.29; the ack forbids extra
     # keys, so the control plane sends it only to a Runner on 3.29 or later.
     organisation_name: DisplayName | None = None
+    # Spec: Runners rev 14: who operates this Runner (None: the Organisation's own) and every
+    # Organisation it takes work from. Authoritative, like `sealed_credentials`: the Runner
+    # polls exactly these, starts on a new one and drains one that is gone. An empty list
+    # says it is connected nowhere and takes no work. None from a control plane below 3.31;
+    # the Runner then polls the one namespace it registered in, with `runner_token`. The
+    # ack forbids extra keys, so the control plane sends both only to a Runner on 3.31 or
+    # later.
+    operator_user_profile_id: UUID | None = None
+    connections: list[RunnerConnection] | None = Field(default=None, max_length=CONNECTIONS_MAX)
 
     @model_serializer(mode="wrap")
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A Runner on 3.18 forbids extra keys, so an ack with nothing to ask sends the
         # body that Runner already parses; likewise `tags` for a Runner on 3.19,
         # `llm_contracts` for one on 3.24, `pool` for one on 3.25, `contracts_version`
-        # for one on 3.26 and `organisation_name` for one on 3.28. An empty tag set or
-        # Contract list is still sent: it says the Runner has no Tags, or serves no Contract.
+        # for one on 3.26, `organisation_name` for one on 3.28 and the operator and
+        # connections for one on 3.30. An empty tag set, Contract list or connection list is
+        # still sent: it says the Runner has no Tags, serves no Contract, or is connected
+        # nowhere.
         body = handler(self)
         if isinstance(body, dict):
             if not body.get("credential_manifests"):
                 body.pop("credential_manifests", None)
-            for name in ("tags", "llm_contracts", "pool", "contracts_version", "organisation_name"):
+            for name in (
+                "tags",
+                "llm_contracts",
+                "pool",
+                "contracts_version",
+                "organisation_name",
+                "operator_user_profile_id",
+                "connections",
+            ):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body

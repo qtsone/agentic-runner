@@ -32,9 +32,11 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol
-from uuid import UUID
+from typing import Any, Final, Literal
+from urllib.parse import SplitResult, urlsplit
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from pydantic import ValidationError
@@ -51,9 +53,16 @@ from agentic_runner import __version__ as runner_version
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.attempts import AttemptRecords
 from agentic_runner.auth_mode import runs_subscriptions
+from agentic_runner.build import build_id
 from agentic_runner.child_watcher import install_stop_tolerant_child_watcher
 from agentic_runner.config import RunnerConfig
 from agentic_runner.config import load as load_config
+from agentic_runner.connections import (
+    ConnectionSlots,
+    ConnectionWorkers,
+    GracefulWorker,
+    MachineSlots,
+)
 from agentic_runner.credentials import (
     CredentialResolver,
     DirectoryCredentialStore,
@@ -151,7 +160,14 @@ from agentic_runner.workers.settings import WorkerSettings, get_worker_settings
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.channel_messages import TranscriptDelivery
 from agentic_runner_contracts.llm_access import PROVIDER_KEY_NAMES, provider_for
+from agentic_runner_contracts.public_metadata import NAMESPACE_PREFIX
 from agentic_runner_contracts.routing import RunnerRoutingIdentity
+from agentic_runner_contracts.runner_login import (
+    AUTHORIZATION_PENDING,
+    EXPIRED_TOKEN,
+    SLOW_DOWN,
+    DeviceLoginRequest,
+)
 from agentic_runner_contracts.runner_registration import (
     RECENT_OUTCOMES_MAX,
     AcpBridgeVersion,
@@ -173,6 +189,7 @@ from agentic_runner_contracts.runner_registration import (
     ProviderKeyReport,
     RecipientKey,
     ResourcePressure,
+    RunnerConnection,
     RunnerInstall,
     RunnerLimitReport,
     RuntimeSubscriptionReport,
@@ -396,6 +413,217 @@ async def register(
         f"on {state.task_queue}; contracts floor {response.contracts_floor} "
         f"({response.floor_state.value}); Recipient Key {fingerprint}"
     )
+
+
+# RFC 8628 §3.5: each `slow_down` adds five seconds to the polling interval.
+_SLOW_DOWN_SECONDS = 5
+
+
+async def login(
+    *,
+    state_dir: Path,
+    control_plane: str,
+    name: str | None,
+    say: Callable[[str], None],
+    open_browser: Callable[[str], object],
+    client: httpx.AsyncClient | None = None,
+    isolation: IsolationMode | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> tuple[RunnerState, str]:
+    """``agentic-runner login``: a device flow makes this Runner the person's (rev 14).
+
+    The Runner shows a code and opens the browser; the person signs in and confirms, and
+    the control plane creates the Runner with them as its operator and no connection. No
+    token is copied: the device code never leaves this process. A state directory that
+    already holds a Runner is refused, as ``install`` refuses to register over one.
+    """
+
+    existing = load_state(state_dir)
+    if existing is not None:
+        raise RunnerRegistrationError(
+            "already_registered",
+            f"{state_dir} already holds Runner {existing.runner_id}; `connect` it to an "
+            "Organisation, or log in under another name",
+        )
+    recipient, _ = recipient_key(state_dir)
+    registration = RunnerRegistrationClient(base_url=control_plane, client=client)
+    tags = parse_tags(os.environ.get(TAGS_ENV, ""))
+    max_concurrent = _max_concurrent_directives()
+    authorization = await registration.start_login(
+        DeviceLoginRequest(
+            name=name,
+            tags=tags,
+            isolation_mode=isolation or isolation_mode(),
+            contracts_version=contracts_version,
+            runner_version=runner_version,
+            recipient_key=recipient,
+            max_concurrent_directives=max_concurrent,
+            build_id=build_id(),
+        )
+    )
+    page = _verification_page(
+        authorization.verification_uri_complete or authorization.verification_uri, control_plane
+    )
+    say(f"code           {_printable(authorization.user_code)}")
+    say(f"confirm at     {page}")
+    open_browser(page)
+    interval = float(authorization.interval)
+    deadline = monotonic() + authorization.expires_in
+    while True:
+        await sleep(interval)
+        try:
+            response = await registration.finish_login(authorization.device_code)
+            break
+        except RunnerRegistrationError as error:
+            if error.reason == SLOW_DOWN:
+                interval += _SLOW_DOWN_SECONDS
+            elif error.reason != AUTHORIZATION_PENDING:
+                raise
+        if monotonic() >= deadline:
+            raise RunnerRegistrationError(
+                EXPIRED_TOKEN, "the code expired before it was confirmed; run login again"
+            )
+    state = RunnerState(
+        **response.identity.model_dump(),
+        task_queue=response.task_queue,
+        operator_user_profile_id=response.operator_user_profile_id,
+        tags=dict(tags),
+        max_concurrent_directives=max_concurrent,
+        heartbeat_interval_seconds=response.heartbeat_interval_seconds,
+        temporal_address=response.temporal_address,
+    )
+    save_state(state_dir, state)
+    return state, (
+        f"logged in {response.name} ({state.runner_id}); connect it to an Organisation with "
+        "`agentic-runner connect`"
+    )
+
+
+async def connect(
+    *,
+    state_dir: Path,
+    control_plane: str,
+    organisation: str | None,
+    ask: Callable[[str], str],
+    say: Callable[[str], None],
+    client: httpx.AsyncClient | None = None,
+) -> int:
+    """``agentic-runner connect [organisation]``: ask for a connection (rev 14).
+
+    ``organisation`` is an Organisation's id or its name; without it, the Organisations
+    the operator belongs to are listed and one is asked for. The running Runner takes the
+    connection up from its next heartbeat ack, so nothing here touches Temporal.
+    """
+
+    state = load_state(state_dir)
+    if state is None or state.operator_user_profile_id is None:
+        say(
+            "refusing to connect: only a Runner you logged in with `agentic-runner login` "
+            "connects to Organisations; an Organisation's own Runner has its one connection"
+        )
+        return 1
+    registration = RunnerRegistrationClient(base_url=control_plane, client=client)
+    listed = (await registration.organisations(state)).organisations
+    if not listed:
+        say("you belong to no Organisation yet; connect once someone invites you")
+        return 1
+    if organisation is None:
+        for number, entry in enumerate(listed, start=1):
+            note = f" ({entry.refusal})" if entry.refusal else ""
+            if entry.connected:
+                note = " (connected)"
+            say(f"  [{number}] {_printable(entry.name)}{note}")
+        answer = ask("Organisation to connect to [number]: ").strip()
+        chosen = _numbered(listed, answer)
+    else:
+        chosen = next((e for e in listed if organisation in {str(e.organisation_id), e.name}), None)
+    if chosen is None:
+        say("refusing to connect: no such Organisation among yours")
+        return 1
+    if chosen.connected:
+        say(f"already connected to {_printable(chosen.name)}")
+        return 0
+    if chosen.refusal:
+        say(f"refusing to connect to {_printable(chosen.name)}: {chosen.refusal}")
+        return 1
+    await registration.connect(state, chosen.organisation_id)
+    say(
+        f"connected to {_printable(chosen.name)}; the Runner polls its work from its next heartbeat"
+    )
+    return 0
+
+
+def _verification_page(page: str, control_plane: str) -> str:
+    """The page the control plane asks the person to confirm on, once it is safe to open.
+
+    The browser opens whatever the answer names, so a spoofed or hostile control plane
+    could launch a ``file:`` or custom-scheme URL, or a look-alike sign-in page. Only
+    ``https`` (``http`` on loopback, for the fake control plane) on the control plane's
+    own host, or a parent domain of it, is opened: the console sits at the parent of the
+    Runner edge (``agentic.<zone>`` over ``api.agentic.<zone>``, ADR-0016).
+    """
+
+    target = urlsplit(page)
+    host = (target.hostname or "").lower()
+    dialled = (urlsplit(control_plane).hostname or "").lower()
+    secure = target.scheme == "https" or (target.scheme == "http" and _loopback(host))
+    parent = _address(dialled) is None and "." in host and dialled.endswith(f".{host}")
+    own = host == dialled or parent
+    if not (secure and own and _plain_authority(target)) or _printable(page) != page:
+        raise RunnerRegistrationError(
+            "verification_uri_refused",
+            f"refusing to open {_printable(page)!r}: the control plane at {dialled} must "
+            "send an https page on its own domain",
+        )
+    return page
+
+
+def _plain_authority(target: SplitResult) -> bool:
+    """Whether the authority is a bare host and port, so a browser reads the host we checked.
+
+    Python and a WHATWG browser split userinfo (``@``) and a backslash differently:
+    ``https://evil.example\\@control-plane.test`` is ``control-plane.test`` to
+    ``urlsplit`` and ``evil.example`` to the browser.
+    """
+
+    netloc = target.netloc.lower()
+    if target.username is not None or target.password is not None:
+        return False
+    if "@" in netloc or "\\" in netloc:
+        return False
+    host = target.hostname or ""
+    bare = f"[{host}]" if ":" in host else host
+    try:
+        port = target.port
+    except ValueError:
+        return False
+    return netloc in {bare, f"{bare}:{port}"} if port is not None else netloc == bare
+
+
+def _loopback(host: str) -> bool:
+    address = _address(host)
+    return host == "localhost" or (address is not None and address.is_loopback)
+
+
+def _address(host: str) -> IPv4Address | IPv6Address | None:
+    try:
+        return ip_address(host)
+    except ValueError:
+        return None
+
+
+def _numbered[T](items: Sequence[T], answer: str) -> T | None:
+    """The item a person picked by its 1-based number, or None for anything else."""
+
+    if answer.isdigit() and 0 < int(answer) <= len(items):
+        return items[int(answer) - 1]
+    return None
+
+
+def _printable(name: str) -> str:
+    # A name someone typed in the console: an escape sequence in it would reach the terminal.
+    return "".join(character for character in name if character.isprintable())
 
 
 # ------------------------------------------------------------------ composition
@@ -642,13 +870,6 @@ def graceful_shutdown_timeout(settings: WorkerSettings) -> timedelta:
     )
 
 
-class GracefulWorker(Protocol):
-    """The subset of ``temporalio.worker.Worker`` the shutdown drain depends on."""
-
-    async def run(self) -> None: ...
-    async def shutdown(self) -> None: ...
-
-
 async def run_worker_until_terminated(
     worker: GracefulWorker, *, stop: asyncio.Event | None = None
 ) -> None:
@@ -861,6 +1082,9 @@ class ControlPlaneStream:
     # until this process first writes it, so the first ack replaces what a previous one left.
     _organisation_name: str | None | Literal["unwritten"] = "unwritten"
     _last_seen: tuple[float, datetime] | None = None
+    # Rev 14: the connections the last ack named; None until an ack from a control plane
+    # on 3.31 or later named them.
+    _connections: list[RunnerConnection] | None = None
 
     def _observe_sleep(self, now: datetime) -> None:
         """A wall clock that ran ahead of the monotonic one is a suspend (23 item 4).
@@ -1094,6 +1318,8 @@ class ControlPlaneStream:
         if ack.runner_token is not None:
             self.runner_token = ack.runner_token
             self.runner_token_expires_at = ack.runner_token_expires_at
+        if ack.connections is not None:
+            self._connections = list(ack.connections)
         self.tag_set_version = ack.tag_set_version
         if ack.hold_reason:
             _logger.warning("control plane holds new Directives: %s", ack.hold_reason)
@@ -1133,6 +1359,29 @@ class ControlPlaneStream:
         for contract_id, slot in self._delivered - set(plaintext):
             self.credentials.drop(contract_id, slot)
         self._delivered = set(plaintext)
+
+    def connections(self) -> list[RunnerConnection]:
+        """What this Runner polls: the last ack's connections (rev 14), or, from a control
+        plane below 3.31, the one namespace it registered in with the ack's Runner Token.
+        A Runner ``login`` made and nobody connected polls nothing."""
+
+        if self._connections is not None:
+            return list(self._connections)
+        if not self.state.temporal_namespace or self.runner_token is None:
+            return []
+        return [
+            RunnerConnection(
+                organisation_id=_namespace_organisation(self.state.temporal_namespace),
+                temporal_namespace=self.state.temporal_namespace,
+                task_queue=self.state.task_queue,
+                runner_token=self.runner_token,
+                runner_token_expires_at=self.runner_token_expires_at,
+            )
+        ]
+
+    @property
+    def acks_connections(self) -> bool:
+        return self._connections is not None
 
     @property
     def llm_contracts(self) -> list[ContractLlmTerms] | None:
@@ -1330,6 +1579,7 @@ async def sign_in(which: str, *, store: KeyStore, method: str = OAUTH_TOKEN) -> 
 
     return await SignIn(
         host_party=(state.host_party if state is not None else "") or None,
+        operated=state is not None and state.operator_user_profile_id is not None,
         contracts=load_llm_contracts(state_dir),
         served=[kind for kind, cli in _SIGN_IN_CLIS.items() if shutil.which(cli)],
         store=store,
@@ -1539,6 +1789,10 @@ async def _serve(
         print(f"refusing to start ({error.reason}): {error}", flush=True)
         return 1
     print(outcome, flush=True)
+    if os.environ.get(MAX_CONCURRENT_DIRECTIVES_ENV, "").strip():
+        # Rev 14: the machine's limit is its own config, read at every start, not only the
+        # value it registered or logged in with.
+        state = state.model_copy(update={"max_concurrent_directives": _max_concurrent_directives()})
     temporal_address = state.temporal_address or settings.TEMPORAL_ADDRESS
     if not temporal_address:
         print(
@@ -1700,53 +1954,70 @@ async def _serve_registered(
             _logger.warning("heartbeat failed before start: %s", error)
             await _before_stop(asyncio.sleep(interval), stop)
 
-    client = await _before_stop(
-        connect(
-            temporal_address,
-            namespace=state.temporal_namespace,
-            api_key=stream.runner_token,
-            tls=os.environ.get(TEMPORAL_TLS_ENV, "").strip().lower() in {"1", "true", "yes"},
-        ),
-        stop,
-    )
+    tls = os.environ.get(TEMPORAL_TLS_ENV, "").strip().lower() in {"1", "true", "yes"}
     hooks = build_hook_runner(config)
     async with (
         proxy,
         RunnerFastApiClient(str(settings.INTERNAL_FASTAPI_BASE_URL), state=state) as fastapi,
     ):
-        worker = worker_factory(
-            client,
-            task_queue=state.task_queue,
-            activities=_activities(
-                fastapi,
-                settings=settings,
-                config=config,
-                state=state,
-                isolation=isolation,
-                agent_runtimes=runtimes,
-                directives_in_flight=in_flight,
-                hooks=hooks,
-                proxy=proxy,
-                credentials=credentials,
-                link=link,
-                token_source=stream,
-                messages=messages,
-                tool_servers=tool_servers,
-                usage_windows=usage_windows,
-                runner_limit=runner_limit,
-                llm_contracts=lambda: stream.llm_contracts,
-                llm_keys=llm_keys,
-                # The wake signal rides the connection this process polls with: one
-                # namespace, the Organisation's own (PRD issue 52, map ticket 15 §2).
-                signaller=TemporalWorkflowSignaller(client),
-            ),
-            interceptors=[load],
-            graceful_shutdown_timeout=graceful_shutdown_timeout(settings),
-            max_concurrent_activities=state.max_concurrent_directives,
+
+        async def connect_client(namespace: str, token: str) -> Client:
+            return await connect(temporal_address, namespace=namespace, api_key=token, tls=tls)
+
+        def build_worker(
+            client: Client, connection: RunnerConnection, slots: ConnectionSlots
+        ) -> GracefulWorker:
+            return worker_factory(
+                client,
+                task_queue=connection.task_queue,
+                activities=_activities(
+                    fastapi,
+                    settings=settings,
+                    config=config,
+                    state=state,
+                    isolation=isolation,
+                    agent_runtimes=runtimes,
+                    directives_in_flight=in_flight,
+                    hooks=hooks,
+                    proxy=proxy,
+                    credentials=credentials,
+                    link=link,
+                    token_source=stream,
+                    messages=messages,
+                    tool_servers=tool_servers,
+                    usage_windows=usage_windows,
+                    runner_limit=runner_limit,
+                    llm_contracts=lambda: stream.llm_contracts,
+                    llm_keys=llm_keys,
+                    # The wake signal rides the connection the Directive came in on: its
+                    # Organisation's own namespace (PRD issue 52, map ticket 15 §2).
+                    signaller=TemporalWorkflowSignaller(client),
+                    # A legacy connection's Organisation is read off its namespace's name;
+                    # only an ack that names connections says which Contracts are whose.
+                    connection_organisation=lambda: (
+                        connection.organisation_id if stream.acks_connections else None
+                    ),
+                ),
+                interceptors=[load],
+                graceful_shutdown_timeout=graceful_shutdown_timeout(settings),
+                tuner=machine.tuner(slots),
+            )
+
+        # Rev 14: one limit for the machine, whatever the number of connections.
+        machine = MachineSlots(state.max_concurrent_directives)
+        workers = ConnectionWorkers(
+            machine=machine,
+            connect_client=connect_client,
+            build_worker=build_worker,  # type: ignore[arg-type]
         )
+        try:
+            await _before_stop(workers.reconcile(stream.connections()), stop)
+        except _StoppedBeforeStartError:
+            await workers.shutdown()
+            raise
         revoked = asyncio.Event()
         beat = asyncio.create_task(
-            _heartbeat_forever(link, stream, client, interval, stop=stop, revoked=revoked)
+            _heartbeat_forever(link, stream, workers, interval, stop=stop, revoked=revoked)
         )
         poll = asyncio.create_task(_poll_sources_forever(stream.sources, _source_poll_seconds()))
         self_test = asyncio.create_task(
@@ -1762,7 +2033,7 @@ async def _serve_registered(
         readiness.ready = True
         await run_runner_lifecycle_hook(hooks, HookName.RUNNER_STARTUP)
         try:
-            await run_worker_until_terminated(worker, stop=stop)
+            await _serve_until_stopped(workers, stop)
         finally:
             readiness.ready = False
             for task in sweeps:
@@ -1772,6 +2043,15 @@ async def _serve_registered(
             await run_runner_lifecycle_hook(hooks, HookName.RUNNER_SHUTDOWN)
             await _report_stop(link, lifecycle)
     return REVOKED_EXIT_CODE if revoked.is_set() else 0
+
+
+def _namespace_organisation(namespace: str) -> UUID:
+    """The Organisation an ``org-{id}`` namespace isolates; any other name keys as itself."""
+
+    try:
+        return UUID(namespace.removeprefix(NAMESPACE_PREFIX))
+    except ValueError:
+        return uuid5(NAMESPACE_URL, namespace)
 
 
 def _revoked(error: Exception) -> bool:
@@ -1797,10 +2077,28 @@ async def _report_stop(link: HeartbeatLink, lifecycle: LifecycleOutbox) -> None:
         _logger.warning("stop not reported yet (%s); the next start carries it", error)
 
 
+async def _serve_until_stopped(workers: ConnectionWorkers, stop: asyncio.Event) -> None:
+    """Poll until SIGTERM (or ``stop``), then drain every connection's Worker: stop
+    polling, let the running activities finish. A Worker that fails on its own stops the
+    process with its error, as the one Worker's did before connections."""
+
+    stopped = asyncio.ensure_future(stop.wait())
+    failed = asyncio.ensure_future(workers.failed.wait())
+    try:
+        await asyncio.wait({stopped, failed}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        stopped.cancel()
+        failed.cancel()
+    _logger.info("draining in-flight activities before exit")
+    await workers.shutdown()
+    if workers.error is not None:
+        raise workers.error
+
+
 async def _heartbeat_forever(
     link: HeartbeatLink,
     stream: ControlPlaneStream,
-    client: Client,
+    workers: ConnectionWorkers,
     interval: float,
     *,
     stop: asyncio.Event,
@@ -1811,12 +2109,13 @@ async def _heartbeat_forever(
     Staleness is the link's own property (issue 44): after three minutes of failures the
     verb seams refuse on their own, so there is nothing for this loop to do about a
     failure except try again on the next tick. A revocation is the exception: it drains
-    the Worker exactly as SIGTERM would, and the process exits non-zero.
+    the Workers exactly as SIGTERM would, and the process exits non-zero. Each ack's
+    connections are reconciled into the Workers (rev 14): a new one starts polling, a
+    renewed token reaches its client, and a gone one drains.
     """
 
     while True:
         await asyncio.sleep(interval)
-        token_before = stream.runner_token
         try:
             await link.exchange()
         except Exception as error:  # noqa: BLE001 - any failed exchange is a lost beat
@@ -1826,8 +2125,10 @@ async def _heartbeat_forever(
                 return
             _logger.warning("heartbeat failed: %s", error)
             continue
-        if stream.runner_token is not None and stream.runner_token != token_before:
-            client.api_key = stream.runner_token
+        try:
+            await workers.reconcile(stream.connections())
+        except Exception as error:  # noqa: BLE001 - a connection that cannot open retries
+            _logger.warning("a connection could not start: %s", error)
 
 
 def _source_poll_seconds() -> float:
@@ -1935,6 +2236,7 @@ def _activities(
     runner_limit: AppliedRunnerLimit | None = None,
     llm_contracts: Callable[[], list[ContractLlmTerms] | None] | None = None,
     llm_keys: LlmKeyOpener | None = None,
+    connection_organisation: Callable[[], UUID | None] | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -1986,6 +2288,7 @@ def _activities(
         runner_limit=runner_limit,
         llm_contracts=llm_contracts,
         llm_keys=llm_keys,
+        connection_organisation=connection_organisation,
     )
     return [
         *ralph.activity_callables(),
@@ -1995,5 +2298,6 @@ def _activities(
             timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
             host_party=state.host_party,
             llm_contracts=llm_contracts,
+            connection_organisation=connection_organisation,
         ).activity_callables(),
     ]

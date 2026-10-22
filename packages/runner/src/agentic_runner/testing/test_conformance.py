@@ -3,19 +3,25 @@
 Each one starts the installed Runner as a process against the fake control plane and a
 local Temporal dev server, and checks one thing an operator relies on: it registers once,
 it heartbeats signed, it runs a Directive dispatched to its own queue, it stops when
-revoked, and it drains on SIGTERM. A fork that passes these has a Runner the platform can
-drive; ``docs/conformance.md`` says what they do not cover.
+revoked, it drains on SIGTERM, and a person's Runner logged in and connected to two
+Organisations answers in each one's namespace. A fork that passes these has a Runner the
+platform can drive; ``docs/conformance.md`` says what they do not cover.
 """
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
+import httpx
 import pytest
+from temporalio.client import Client, WorkflowFailureError
+from temporalio.exceptions import ActivityError, ApplicationError
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from agentic_runner import __version__ as runner_version
+from agentic_runner import service
 from agentic_runner.registration import RUNNER_REVOKED_REASON
 from agentic_runner.testing.plugin import (
     RunnerLauncher,
@@ -26,6 +32,7 @@ from agentic_runner.testing.plugin import (
 from agentic_runner.testing.workflow import RoundTripWorkflow
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.activity_io import ContractResidueInput
+from agentic_runner_contracts.public_metadata import namespace as organisation_namespace
 from agentic_runner_contracts.public_metadata import runner_task_queue
 from agentic_runner_contracts.routing import DirectiveRouting
 from agentic_runner_contracts.runner_registration import IsolationMode, LifecycleKind
@@ -102,7 +109,8 @@ async def test_a_directive_dispatched_to_the_runner_queue_comes_back_answered(
         )
         await until_ready(fake_control_plane, runner)
         [runner_id] = plane.runner_ids
-        contract_id = str(uuid4())
+        # The Contract the ack names: a connection serves only its own Organisation's.
+        contract_id = str(plane.contract_id)
         request = ContractResidueInput(
             contract_id=contract_id,
             routing=DirectiveRouting(runner_id=str(runner_id), host_party=plane.host_party),
@@ -130,6 +138,88 @@ async def test_a_directive_dispatched_to_the_runner_queue_comes_back_answered(
 
     assert answer.contract_id == contract_id
     assert answer.workspaces_wiped == 0
+
+
+async def _round_trip(client: Client, runner_id: Any, host_party: str, contract_id: str) -> str:
+    request = ContractResidueInput(
+        contract_id=contract_id,
+        routing=DirectiveRouting(runner_id=str(runner_id), host_party=host_party),
+    )
+    async with Worker(
+        client,
+        task_queue="conformance-workflows",
+        workflows=[RoundTripWorkflow],
+        workflow_runner=SandboxedWorkflowRunner(
+            restrictions=SandboxRestrictions.default.with_passthrough_modules(
+                "agentic_runner", "agentic_runner_contracts"
+            )
+        ),
+    ):
+        answer = await client.execute_workflow(
+            RoundTripWorkflow.run,
+            args=[runner_task_queue(runner_id), request],
+            id=f"conformance-{uuid4()}",
+            task_queue="conformance-workflows",
+        )
+    assert answer.contract_id == contract_id
+    return answer.contract_id
+
+
+@pytest.mark.asyncio
+async def test_a_persons_runner_answers_in_each_organisation_it_is_connected_to(
+    fake_control_plane: ServedControlPlane, runner_launcher: RunnerLauncher
+) -> None:
+    """Rev 14: `login`, `connect` twice, and one process polls `runner.{id}` in both."""
+
+    plane = fake_control_plane.plane
+    plane.confirm_logins = True
+    acme, globex = plane.organisations
+    state_dir = runner_launcher.root / "state"
+    async with httpx.AsyncClient() as http:
+        state, _ = await service.login(
+            state_dir=state_dir,
+            control_plane=fake_control_plane.url,
+            name="laptop",
+            say=print,
+            open_browser=lambda _: None,
+            client=http,
+            isolation=IsolationMode.NONE,
+        )
+        for organisation in (acme, globex):
+            assert (
+                await service.connect(
+                    state_dir=state_dir,
+                    control_plane=fake_control_plane.url,
+                    organisation=str(organisation),
+                    ask=input,
+                    say=print,
+                    client=http,
+                )
+                == 0
+            )
+    other = organisation_namespace(globex)
+    async with await start_temporal(plane.namespace, other) as temporal:
+        target = temporal.client.service_client.config.target_host
+        runner = runner_launcher.start(
+            control_plane_url=fake_control_plane.url, temporal_address=target
+        )
+        await until_ready(fake_control_plane, runner)
+        in_other = await Client.connect(target, namespace=other)
+
+        acme_contract = str(plane.contract_for(acme))
+        await _round_trip(temporal.client, state.runner_id, plane.host_party, acme_contract)
+        await _round_trip(
+            in_other, state.runner_id, plane.host_party, str(plane.contract_for(globex))
+        )
+        # Delivered in Globex's namespace, Acme's Contract is refused, not served.
+        with pytest.raises(WorkflowFailureError) as refused:
+            await _round_trip(in_other, state.runner_id, plane.host_party, acme_contract)
+        assert isinstance(refused.value.cause, ActivityError)
+        assert isinstance(refused.value.cause.cause, ApplicationError)
+        assert refused.value.cause.cause.type == "contract_of_another_organisation"
+
+        assert runner.terminate() == 0
+    assert plane.bootstraps[0].token.startswith("device-code-"), "no token used"
 
 
 @pytest.mark.asyncio

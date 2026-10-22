@@ -19,6 +19,11 @@ It refuses on a pool Runner, which uses only its pool's keys. It offers a subscr
 only when the ack says the Contract allows it; otherwise it says which of the right or
 the person's acknowledgment is missing, names the console page that turns it on, and
 offers the key (QTS-1776).
+
+A person's Runner connected to several Organisations serves one Contract per connection
+(Spec: Runners rev 14). A subscription then asks which connection it signs in, by the
+Organisation's name, and each connection keeps its own sign-in in its own harness root: an
+employer's team seat in one, the person's own plan in another. A key serves them all.
 """
 
 from __future__ import annotations
@@ -66,9 +71,11 @@ class SignIn:
     ask: Callable[[str], str]
     secret: Callable[[str], str]
     say: Callable[[str], None]
+    # Rev 14: a Runner `login` made, which has an operator and no host party.
+    operated: bool = False
 
     async def run(self, which: str) -> int:
-        if self.host_party != "user":
+        if not (self.operated or self.host_party == "user"):
             hosted = f"hosted by {self.host_party!r}" if self.host_party else "not registered"
             self.say(
                 f"refusing to sign in: this Runner is {hosted}. `sign-in` gives a person's own "
@@ -100,7 +107,11 @@ class SignIn:
         if choice == "k":
             return self._key(cli_kind)
         if choice == "s" and not isinstance(offer, str):
-            return await self._subscription(offer, cli_kind)
+            contract = self._which(offer, label)
+            if contract is None:
+                self.say(f"{label}: no such connection, nothing changed")
+                return 1
+            return await self._subscription(contract, cli_kind)
         self.say(f"{label}: skipped")
         return 0
 
@@ -125,8 +136,20 @@ class SignIn:
             self.say(f"{_LABELS[cli_kind]}: the sign-in exited {returncode}; nothing changed")
         return returncode
 
-    def _subscription_offer(self) -> ContractLlmTerms | str:
-        """The one Contract a subscription signs in, or why the ack offers none."""
+    def _which(self, allowed: Sequence[ContractLlmTerms], label: str) -> ContractLlmTerms | None:
+        """The connection a subscription signs in: the one there is, or the one asked for."""
+
+        if len(allowed) == 1:
+            return allowed[0]
+        for number, contract in enumerate(allowed, start=1):
+            self.say(f"  [{number}] {_connection_label(contract)}")
+        answer = self.ask(f"{label}: sign in for which Organisation? [number] ").strip()
+        if answer.isdigit() and 0 < int(answer) <= len(allowed):
+            return allowed[int(answer) - 1]
+        return None
+
+    def _subscription_offer(self) -> list[ContractLlmTerms] | str:
+        """The Contracts a subscription may sign in, one per connection, or why none."""
 
         if self.contracts is None:
             return (
@@ -134,10 +157,17 @@ class SignIn:
                 "it, wait for its first heartbeat, and run this again (the control plane must "
                 "be on contracts 3.25 or later)"
             )
-        if len(self.contracts) != 1:
+        if not self.contracts:
             return (
-                "no subscription: a personal Runner serves one Contract, and the control "
-                f"plane named {len(self.contracts)}"
+                "no subscription: this Runner is connected to no Organisation yet; connect it "
+                "with `agentic-runner connect`, wait for its next heartbeat and run this again"
+            )
+        allowed = [c for c in self.contracts if c.subscription == SubscriptionRight.ALLOWED]
+        if allowed:
+            return allowed
+        if len(self.contracts) > 1:
+            return "your own subscription is off or not acknowledged in " + ", ".join(
+                f"{_connection_label(c)} ({_REFUSED[c.subscription]})" for c in self.contracts
             )
         contract = self.contracts[0]
         if contract.subscription == SubscriptionRight.NO_RIGHT:
@@ -153,4 +183,21 @@ class SignIn:
                 "the subscription terms. Acknowledge them in the console on My Contracts "
                 "(/me/contracts), then run this again"
             )
-        return contract
+        raise AssertionError(contract.subscription)  # ALLOWED returned above
+
+
+_REFUSED: Final[Mapping[SubscriptionRight, str]] = {
+    SubscriptionRight.NO_RIGHT: "an Organisation Admin has not turned it on",
+    SubscriptionRight.NOT_ACKNOWLEDGED: "acknowledge the terms on /me/contracts",
+    SubscriptionRight.ALLOWED: "allowed",
+}
+
+
+def _connection_label(contract: ContractLlmTerms) -> str:
+    """The Organisation by its name, else its id's first characters; never an escape
+    sequence someone typed into a name in the console."""
+
+    name = contract.organisation_name or contract.contract_name
+    if name:
+        return "".join(character for character in name if character.isprintable())
+    return str(contract.organisation_id or contract.contract_id)[:8]

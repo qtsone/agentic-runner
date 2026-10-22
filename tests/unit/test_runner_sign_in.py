@@ -236,6 +236,107 @@ async def test_a_pool_runner_refuses_before_asking_anything(host_party: str | No
     assert any("pool Runner uses only its pool's keys" in line for line in person.read)
 
 
+# ------------------------------------------------------------------ several connections (rev 14)
+
+EMPLOYER = ContractLlmTerms(
+    contract_id=uuid4(),
+    subscription=SubscriptionRight.ALLOWED,
+    organisation_id=uuid4(),
+    organisation_name="Employer",
+)
+OWN = ContractLlmTerms(
+    contract_id=uuid4(),
+    subscription=SubscriptionRight.ALLOWED,
+    organisation_id=uuid4(),
+    organisation_name="Own\x1b[31m Dev",
+)
+
+
+def _logged_in(person: _Person, contracts: list[ContractLlmTerms]) -> tuple[SignIn, _Vendor]:
+    vendor = _Vendor()
+    command = SignIn(
+        host_party=None,
+        operated=True,
+        contracts=contracts,
+        served=BOTH,
+        store=FakeCredentialStore(),
+        subscription=vendor,
+        ask=person.ask,
+        secret=person.secret,
+        say=person.say,
+    )
+    return command, vendor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("answer", "chosen"), [("1", EMPLOYER), ("2", OWN)])
+async def test_with_two_connections_a_subscription_asks_which_and_signs_in_that_one(
+    answer: str, chosen: ContractLlmTerms
+) -> None:
+    """Each connection keeps its own sign-in: the vendor's runs in the chosen one's Contract."""
+
+    person = _Person(answers=["s", answer])
+    command, vendor = _logged_in(person, [EMPLOYER, OWN])
+
+    assert await command.run("claude") == 0
+
+    assert vendor.calls == [(str(chosen.contract_id), "claude_code")]
+    assert person.prompts[-1] == "Claude Code: sign in for which Organisation? [number] "
+    # Listed by the Organisation's name, with nothing a console user typed reaching the
+    # terminal as an escape sequence.
+    assert "  [1] Employer" in person.read
+    assert "  [2] Own[31m Dev" in person.read
+
+
+@pytest.mark.asyncio
+async def test_with_two_connections_only_the_allowed_one_is_offered_without_asking() -> None:
+    refused = OWN.model_copy(update={"subscription": SubscriptionRight.NO_RIGHT})
+    person = _Person(answers=["s"])
+    command, vendor = _logged_in(person, [EMPLOYER, refused])
+
+    assert await command.run("codex") == 0
+
+    assert vendor.calls == [(str(EMPLOYER.contract_id), "codex_cli")]
+
+
+@pytest.mark.asyncio
+async def test_with_no_connection_allowing_it_each_organisation_says_why() -> None:
+    person = _Person(answers=["n"])
+    command, vendor = _logged_in(
+        person,
+        [
+            EMPLOYER.model_copy(update={"subscription": SubscriptionRight.NO_RIGHT}),
+            OWN.model_copy(update={"subscription": SubscriptionRight.NOT_ACKNOWLEDGED}),
+        ],
+    )
+
+    assert await command.run("claude") == 0
+
+    assert person.prompts == ["Claude Code: store an API [k]ey, or skip? [k/N] "]
+    [why] = [line for line in person.read if "Employer" in line]
+    assert "has not turned it on" in why and "/me/contracts" in why
+    assert vendor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_logged_in_runner_connected_nowhere_offers_only_the_key() -> None:
+    person = _Person(answers=["n"])
+    command, _ = _logged_in(person, [])
+
+    assert await command.run("claude") == 0
+
+    assert any("agentic-runner connect" in line for line in person.read)
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_connection_number_changes_nothing() -> None:
+    person = _Person(answers=["s", "9"])
+    command, vendor = _logged_in(person, [EMPLOYER, OWN])
+
+    assert await command.run("claude") == 1
+    assert vendor.calls == []
+
+
 @pytest.mark.asyncio
 async def test_a_runtime_this_runner_does_not_serve_is_refused() -> None:
     person = _Person(answers=[])

@@ -92,6 +92,34 @@ To drive a CLI through its ACP bridge, name its kind on `install`:
 `--acp-cli-kinds ''` turns ACP off. Set it this way, not in the plist or the unit file:
 `install` rewrites both. A kind with no pinned bridge is refused.
 
+## Or log in a Runner of your own
+
+A Runner can also be yours rather than one Organisation's, the way a GitHub App is: you
+log it in once and connect it to each Organisation you belong to. No token to mint or paste.
+This needs a control plane on contracts 3.31 or later; an older one refuses `login`.
+
+```sh
+agentic-runner login alice-laptop --control-plane <control-plane URL>
+# code           ABCD-EFGH
+# confirm at     https://<console>/device?code=ABCD-EFGH
+```
+
+`login` opens your browser on that page; sign in and confirm the code. The Runner is then
+yours, connected to no Organisation yet, and `login` installs and starts its login agent as
+`install` does. You hold at most 5 Runners. Then connect it:
+
+```sh
+agentic-runner connect            # lists your Organisations and asks which
+agentic-runner connect Acme       # or name one
+```
+
+An Organisation can turn "Members can connect their own Runners" off; `connect` then says so.
+The running Runner starts taking that Organisation's work within one heartbeat. One Runner
+serves all its connections under one limit for the machine,
+`AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES` (1 by default): the first work in takes a free
+slot. Pause or disconnect a connection on **/me/runners**; a paused one takes no new work
+and finishes what it has.
+
 ## Sign in to Codex and Claude Code
 
 Give your Runner your LLM access with one command, in your terminal:
@@ -104,7 +132,10 @@ agentic-runner sign-in codex      # Codex
 Name the CLI: `sign-in` alone is refused and lists the two forms. It takes no ids: your
 Runner serves one Contract, and the Runner learned which from the
 control plane. If this computer runs more than one Runner, add
-`--name alice-laptop`; `agentic-runner list` shows their names. For each CLI it offers two things:
+`--name alice-laptop`; `agentic-runner list` shows their names. A Runner you logged in and
+connected to several Organisations asks which one a subscription is for: each connection
+keeps its own sign-in, so your employer's team seat serves its work and your own plan yours.
+For each CLI it offers two things:
 
 - **Your subscription.** The command runs the vendor's own sign-in as the Contract, in the
   Contract's own directory under the state root, connected to your terminal. It does not

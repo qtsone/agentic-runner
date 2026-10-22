@@ -248,6 +248,44 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
     assert commands.ran[-1] == ["launchctl", "bootout", f"gui/{os.getuid()}/agentic-runner.acme"]
 
 
+@pytest.mark.asyncio
+async def test_login_makes_the_runner_the_persons_and_installs_its_login_agent(
+    tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QTS-2252: `install` with a device flow in place of the pasted token."""
+
+    monkeypatch.delenv("AGENTIC_RUNNER_REGISTRATION_TOKEN", raising=False)
+    home = tmp_path / "home"
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="laptop")
+    plane = FakeControlPlane(confirm_logins=True)
+    commands = Commands()
+    shown: list[str] = []
+    opened: list[str] = []
+
+    async with httpx.AsyncClient(transport=plane.transport()) as http:
+        lines = await workstation.login(
+            paths,
+            _settings(paths, str(bin_dir)),
+            say=shown.append,
+            open_browser=opened.append,
+            platform="darwin",
+            home=home,
+            run=commands,
+            http_client=http,
+        )
+
+    assert plane.bootstraps[0].token.startswith("device-code-"), "no token pasted"
+    [request] = plane.logins
+    assert (request.name, request.isolation_mode) == ("laptop", "none")
+    assert opened == ["https://control-plane.test/device?code=CODE-0001"]
+    plist = home / "Library/LaunchAgents/agentic-runner.laptop.plist"
+    assert commands.ran == [["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)]]
+    assert lines[0].startswith("logged in laptop")
+    assert lines[-1].startswith("started")
+    status = workstation.status_lines(paths)
+    assert "in each Organisation it serves" in status[2]
+
+
 def test_install_names_its_argument_as_the_runners_name(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
