@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.31.0](https://github.com/qtsone/agentic-runner/compare/v3.30.4...v3.31.0) (2026-10-22)
+
+
+### Features
+
+* **runner:** login, connections to several Organisations, one machine limit (QTS-2252) ([#86](https://github.com/qtsone/agentic-runner/issues/86)) ([fc9c93d](https://github.com/qtsone/agentic-runner/commit/fc9c93d4826a9f0f58a9870a1dc3f18cad0c01be))
+
 ## [3.30.4](https://github.com/qtsone/agentic-runner/compare/v3.30.3...v3.30.4) (2026-10-21)
 
 
