@@ -740,7 +740,9 @@ class ContractLlmTerms(BaseModel):
     contract_name: DisplayName | None = None
     # Spec: Runners rev 14: the connection this Contract is served through, so `sign-in` on
     # a Runner with several asks which, by the Organisation's name. None from a control
-    # plane below 3.31, which sends it only to a Runner on 3.31 or later.
+    # plane below 3.31, which sends it only to a Runner on 3.31 or later. An ack that names
+    # `connections` must name it on every Contract: such a Runner serves a Contract only on
+    # its own Organisation's connection, and refuses one without it.
     organisation_id: UUID | None = None
     organisation_name: DisplayName | None = None
 

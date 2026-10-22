@@ -277,7 +277,7 @@ async def test_login_makes_the_runner_the_persons_and_installs_its_login_agent(
     assert plane.bootstraps[0].token.startswith("device-code-"), "no token pasted"
     [request] = plane.logins
     assert (request.name, request.isolation_mode) == ("laptop", "none")
-    assert opened == ["https://console.test/device?code=CODE-0001"]
+    assert opened == ["https://control-plane.test/device?code=CODE-0001"]
     plist = home / "Library/LaunchAgents/agentic-runner.laptop.plist"
     assert commands.ran == [["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)]]
     assert lines[0].startswith("logged in laptop")

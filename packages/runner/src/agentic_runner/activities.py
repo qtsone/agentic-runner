@@ -73,6 +73,7 @@ from agentic_runner.callback import (
     VerbRequest,
     VerbResponse,
 )
+from agentic_runner.connections import contract_refusal
 from agentic_runner.credentials import (
     CREDENTIAL_RESOLVED_SOURCE,
     CREDENTIAL_UNRESOLVABLE_SOURCE,
@@ -1737,8 +1738,15 @@ class RunnerRalphActivities:
         runner_limit: AppliedRunnerLimit | None = None,
         llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
         llm_keys: LlmKeyOpener | None = None,
+        connection_organisation: Callable[[], UUID | None] | None = None,
     ) -> None:
         self._fastapi_client = fastapi_client
+        # The Organisation whose connection this Worker polls (Spec: Runners rev 14). One
+        # process holds every connected Organisation's credentials, harness roots and
+        # Workspaces, so a Directive is served only under a Contract of its own
+        # connection's Organisation (`_assert_connection_serves`). None, or a callable
+        # answering None, on a Runner polling only the namespace it registered in.
+        self._connection_organisation = connection_organisation
         # Opens the pool's LLM Keys with the Pool Key (Spec: Runners rev 3). None, or one
         # holding no Pool Key, fails every `llm_key` Directive closed.
         self._llm_keys = llm_keys
@@ -1890,6 +1898,59 @@ class RunnerRalphActivities:
         if self._routing_identity is None or acked is None:
             return self._routing_identity
         return replace(self._routing_identity, tags=acked)
+
+    async def _assert_connection_serves(
+        self, work_record_id: str, contract_id: str | None, *, workspace_path: str = ""
+    ) -> None:
+        """Fail closed unless the Contract belongs to this Worker's connection's
+        Organisation (Spec: Runners rev 14, QTS-2252).
+
+        Called once the Contract is known and before any Workspace, credential or
+        harness root is touched: a Directive delivered in one Organisation's namespace
+        that names another's Contract -- or another Contract's Workspace -- would
+        otherwise run under credentials and a sign-in that Organisation never gave it.
+        Not retryable: the same task on the same connection is refused again.
+        """
+
+        organisation = self._connection_organisation() if self._connection_organisation else None
+        if organisation is None:
+            return
+        terms = (self._llm_contracts() if self._llm_contracts is not None else None) or ()
+        reason = contract_refusal(organisation, terms, _optional_uuid(contract_id))
+        if (
+            reason is None
+            and workspace_path
+            and not self._within_contract_workspaces(workspace_path, contract_id)
+        ):
+            reason = "workspace_of_another_contract"
+        if reason is None:
+            return
+        refusal = ApplicationError(
+            f"refused: {reason} on the connection to Organisation {organisation}",
+            type=reason,
+            non_retryable=True,
+        )
+        if not work_record_id:
+            raise refusal
+        await _raise_recorded(
+            refusal,
+            self._fastapi_client,
+            work_record_id,
+            source=_ROUTING_EVIDENCE_SOURCE,
+            actor=self._actor(),
+            payload={
+                "event": "directive.routing_refused",
+                "reason": reason,
+                "organisation_id": str(organisation),
+                "contract_id": contract_id,
+            },
+        )
+
+    def _within_contract_workspaces(self, workspace_path: str, contract_id: str | None) -> bool:
+        if self._workspace_root is None:
+            return False
+        contract_root = self._workspace_root.resolve() / contract_path_segment(contract_id)
+        return Path(workspace_path).resolve().is_relative_to(contract_root)
 
     def _actor(self) -> str:
         return (
@@ -3834,6 +3895,9 @@ class RunnerRalphActivities:
 
         runtime_context = await self._runtime_context_resolver.resolve(
             work_record_id, agent_id=agent_id or None
+        )
+        await self._assert_connection_serves(
+            work_record_id, runtime_context.contract_id, workspace_path=workspace_path
         )
         resolved_workspace = Path(workspace_path) if workspace_path else None
         if resolved_workspace is None and self._workspace_root is not None:
@@ -5990,6 +6054,7 @@ class RunnerRalphActivities:
         """
 
         await self._assert_routed(request)
+        await self._assert_connection_serves("", request.contract_id or None)
         isolation = self._contract_isolation
         segment = contract_path_segment(request.contract_id or None)
         held = (

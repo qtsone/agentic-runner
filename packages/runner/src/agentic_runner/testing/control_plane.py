@@ -457,7 +457,7 @@ class FakeControlPlane:
         if method == "POST" and path == BOOTSTRAP_PATH:
             return self._bootstrap(body)
         if method == "POST" and path == LOGIN_DEVICE_PATH:
-            return self._start_login(body)
+            return self._start_login(headers, body)
         if method == "POST" and path == LOGIN_TOKEN_PATH:
             return self._finish_login(body)
         if method == "GET" and path == ORGANISATIONS_PATH:
@@ -573,7 +573,15 @@ class FakeControlPlane:
         if self.subscription is None:
             return None
         if runner.operator is None:
-            return [ContractLlmTerms(contract_id=self.contract_id, subscription=self.subscription)]
+            # Wherever the ack names connections it names each Contract's Organisation:
+            # the Runner serves a Contract only on its own Organisation's connection.
+            return [
+                ContractLlmTerms(
+                    contract_id=self.contract_id,
+                    subscription=self.subscription,
+                    organisation_id=self._own_organisation() if self.connections_on_ack else None,
+                )
+            ]
         # One Contract per connection: the operator's own in that Organisation.
         return [
             ContractLlmTerms(
@@ -618,7 +626,7 @@ class FakeControlPlane:
             if c.organisation_id == organisation_id
         )
 
-    def _start_login(self, body: bytes) -> _Answer:
+    def _start_login(self, headers: Mapping[str, str], body: bytes) -> _Answer:
         request = _parse(DeviceLoginRequest, body)
         device_code = f"device-code-{uuid4()}"
         user_code = f"CODE-{len(self._logins) + 1:04d}"
@@ -626,8 +634,9 @@ class FakeControlPlane:
         authorization = DeviceAuthorization(
             device_code=device_code,
             user_code=user_code,
-            verification_uri="https://console.test/device",
-            verification_uri_complete=f"https://console.test/device?code={user_code}",
+            # On the host the Runner dialled: it opens no page anywhere else.
+            verification_uri=f"https://{headers['host']}/device",
+            verification_uri_complete=f"https://{headers['host']}/device?code={user_code}",
             expires_in=600,
             interval=1,
         )

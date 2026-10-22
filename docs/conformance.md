@@ -37,10 +37,10 @@ with `isolation: none`, against the fake control plane and a local Temporal serv
 |---|---|
 | register | register once, with its own runner and contracts versions. After a restart it reads its identity back from the state directory and does not register again. |
 | heartbeat | heartbeat with every request signed by the identity it was given, and report its own `runner.{runner_id}` queue. |
-| Directive round trip | take one activity from its `runner.{runner_id}` queue and return the answer. A test workflow dispatches `wipe_contract_residue` there. |
+| Directive round trip | take one activity from its `runner.{runner_id}` queue and return the answer. A test workflow dispatches `wipe_contract_residue` there, for the Contract the ack names. |
 | revoke | stop with a non-zero exit when the control plane refuses its heartbeat with `runner_revoked`. |
 | drain | exit 0 on `SIGTERM`, and send one last heartbeat that reports the stop. |
-| a person's Runner | log in with the device flow (no token), be connected to two Organisations, and answer a Directive dispatched in each one's namespace from one process. |
+| a person's Runner | log in with the device flow (no token), be connected to two Organisations, and answer a Directive dispatched in each one's namespace from one process. A Directive that names a Contract of the other Organisation is refused. |
 
 The fake checks what the platform checks on the Runner's routes: the bootstrap body, the
 Ed25519 signature on every signed request, revocation and the hosted queue. It refuses

@@ -43,15 +43,35 @@ from temporalio.worker import (
     WorkerTuner,
 )
 
-from agentic_runner_contracts.runner_registration import RunnerConnection
+from agentic_runner_contracts.runner_registration import ContractLlmTerms, RunnerConnection
 
 __all__ = [
     "ConnectionSlots",
     "ConnectionWorkers",
     "MachineSlots",
+    "contract_refusal",
 ]
 
 _logger = logging.getLogger(__name__)
+
+
+def contract_refusal(
+    organisation: UUID, terms: Sequence[ContractLlmTerms], contract_id: UUID | None
+) -> str | None:
+    """Why a connection to ``organisation`` must not serve ``contract_id``, or None.
+
+    One process holds every connected Organisation's credentials, harness roots and
+    Workspaces, so a task delivered in one Organisation's namespace is served only under a
+    Contract the ack places in that Organisation. Only the ack can say whose a Contract is:
+    one it does not name, or names without an Organisation, is refused too.
+    """
+
+    served = next((term for term in terms if term.contract_id == contract_id), None)
+    if served is None or served.organisation_id is None:
+        return "contract_not_served"
+    if served.organisation_id != organisation:
+        return "contract_of_another_organisation"
+    return None
 
 
 class MachineSlots:
@@ -176,8 +196,8 @@ class TemporalClient(Protocol):
 
 # Opens a Temporal client for one namespace with one Runner Token.
 ConnectClient = Callable[[str, str], Awaitable[TemporalClient]]
-# Builds one connection's Worker from its client, queue and slot supplier.
-BuildWorker = Callable[[TemporalClient, str, ConnectionSlots], GracefulWorker]
+# Builds one connection's Worker from its client, the connection and its slot supplier.
+BuildWorker = Callable[[TemporalClient, RunnerConnection, ConnectionSlots], GracefulWorker]
 
 
 @dataclass
@@ -259,7 +279,7 @@ class ConnectionWorkers:
             return
         slots = self.machine.connection()
         slots.paused = connection.paused
-        worker = self.build_worker(client, connection.task_queue, slots)
+        worker = self.build_worker(client, connection, slots)
         task = asyncio.create_task(worker.run())
         task.add_done_callback(self._watch)
         self._running[connection.organisation_id] = _Running(

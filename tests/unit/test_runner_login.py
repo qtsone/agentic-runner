@@ -7,6 +7,8 @@ What this pins:
   nowhere -- with no token copied anywhere;
 * an expired code, a state directory that already holds a Runner, and a sixth Runner of
   one person are refused by name;
+* the page the control plane names is opened only over https on its own domain (or the
+  console's, its parent), and nothing it sends reaches the terminal as an escape sequence;
 * ``connect`` lists the Organisations the operator belongs to, connects to the one picked
   by number or by name, names a refusal (the Organisation's setting), and refuses on an
   Organisation's own Runner.
@@ -14,6 +16,7 @@ What this pins:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -24,6 +27,7 @@ from agentic_runner import service
 from agentic_runner.registration import RunnerRegistrationError, RunnerState, load_state
 from agentic_runner.testing import FakeControlPlane
 from agentic_runner.testing.control_plane import DEFAULT_OPERATOR, DEFAULT_ORGANISATIONS
+from agentic_runner_contracts.runner_login import LOGIN_DEVICE_PATH
 
 CONTROL_PLANE = "http://control-plane.test"
 ACME, GLOBEX = DEFAULT_ORGANISATIONS
@@ -116,7 +120,7 @@ async def test_login_waits_for_the_person_to_confirm_the_code_and_makes_the_runn
 
     # The code shown, and the browser opened on the page that confirms it.
     assert "code           CODE-0001" in terminal.read
-    assert terminal.opened == ["https://console.test/device?code=CODE-0001"]
+    assert terminal.opened == ["https://control-plane.test/device?code=CODE-0001"]
     # Two polls refused as pending before the confirmation, then the identity.
     assert [r.reason for r in plane.refusals] == ["authorization_pending"] * 2
     assert state == load_state(tmp_path)
@@ -165,6 +169,72 @@ async def test_a_persons_sixth_runner_is_refused(tmp_path: Path) -> None:
 
     assert refused.value.reason == "runner_limit"
     assert load_state(tmp_path / "sixth") is None
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "file:///etc/passwd",
+        "x-custom-scheme://confirm",
+        "javascript:alert(1)",
+        "http://control-plane.test/device",
+        "https://control-plane.test.evil.example/device",
+        "https://evil-control-plane.test/device",
+        "https://test/device",
+        "https://control-plane.test/device?code=\x1b]0;owned\x07",
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_page_off_the_control_planes_own_https_domain_is_neither_shown_nor_opened(
+    tmp_path: Path, page: str
+) -> None:
+    plane = FakeControlPlane(confirm_logins=True)
+    answered = plane.transport()
+
+    def hostile(request: httpx.Request) -> httpx.Response:
+        response = answered.handle_request(request)
+        if request.url.path != LOGIN_DEVICE_PATH:
+            return response
+        body = json.loads(response.read())
+        body["verification_uri"] = body["verification_uri_complete"] = page
+        return httpx.Response(200, json=body)
+
+    terminal = _Terminal()
+    with pytest.raises(RunnerRegistrationError) as refused:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(hostile)) as http:
+            await service.login(
+                state_dir=tmp_path,
+                control_plane=CONTROL_PLANE,
+                name="laptop",
+                say=terminal.say,
+                open_browser=terminal.open_browser,
+                client=http,
+            )
+
+    assert refused.value.reason == "verification_uri_refused"
+    assert terminal.opened == []
+    assert terminal.read == []
+    assert "\x1b" not in str(refused.value)
+    assert load_state(tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    ("control_plane", "page"),
+    [
+        ("https://api.agentic.qts.one", "https://agentic.qts.one/runners/device?code=AB"),
+        ("https://api.agentic.qts.one", "https://api.agentic.qts.one/device"),
+        ("http://127.0.0.1:8080", "http://127.0.0.1:8080/device"),
+        ("http://localhost:8080", "http://localhost/device"),
+    ],
+)
+def test_the_console_at_the_parent_of_the_runner_edge_or_a_loopback_page_is_opened(
+    control_plane: str, page: str
+) -> None:
+    assert service._verification_page(page, control_plane) == page
+
+
+def test_a_user_code_with_an_escape_sequence_reaches_the_terminal_without_it() -> None:
+    assert service._printable("AB\x1b[2JCD") == "AB[2JCD"
 
 
 # ------------------------------------------------------------------ connect

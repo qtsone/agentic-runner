@@ -32,8 +32,10 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Final, Literal
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
@@ -460,8 +462,10 @@ async def login(
             build_id=build_id(),
         )
     )
-    page = authorization.verification_uri_complete or authorization.verification_uri
-    say(f"code           {authorization.user_code}")
+    page = _verification_page(
+        authorization.verification_uri_complete or authorization.verification_uri, control_plane
+    )
+    say(f"code           {_printable(authorization.user_code)}")
     say(f"confirm at     {page}")
     open_browser(page)
     interval = float(authorization.interval)
@@ -548,6 +552,43 @@ async def connect(
         f"connected to {_printable(chosen.name)}; the Runner polls its work from its next heartbeat"
     )
     return 0
+
+
+def _verification_page(page: str, control_plane: str) -> str:
+    """The page the control plane asks the person to confirm on, once it is safe to open.
+
+    The browser opens whatever the answer names, so a spoofed or hostile control plane
+    could launch a ``file:`` or custom-scheme URL, or a look-alike sign-in page. Only
+    ``https`` (``http`` on loopback, for the fake control plane) on the control plane's
+    own host, or a parent domain of it, is opened: the console sits at the parent of the
+    Runner edge (``agentic.<zone>`` over ``api.agentic.<zone>``, ADR-0016).
+    """
+
+    target = urlsplit(page)
+    host = (target.hostname or "").lower()
+    dialled = (urlsplit(control_plane).hostname or "").lower()
+    secure = target.scheme == "https" or (target.scheme == "http" and _loopback(host))
+    parent = _address(dialled) is None and "." in host and dialled.endswith(f".{host}")
+    own = host == dialled or parent
+    if not (secure and own) or _printable(page) != page:
+        raise RunnerRegistrationError(
+            "verification_uri_refused",
+            f"refusing to open {_printable(page)!r}: the control plane at {dialled} must "
+            "send an https page on its own domain",
+        )
+    return page
+
+
+def _loopback(host: str) -> bool:
+    address = _address(host)
+    return host == "localhost" or (address is not None and address.is_loopback)
+
+
+def _address(host: str) -> IPv4Address | IPv6Address | None:
+    try:
+        return ip_address(host)
+    except ValueError:
+        return None
 
 
 def _numbered[T](items: Sequence[T], answer: str) -> T | None:
@@ -1317,6 +1358,10 @@ class ControlPlaneStream:
         ]
 
     @property
+    def acks_connections(self) -> bool:
+        return self._connections is not None
+
+    @property
     def llm_contracts(self) -> list[ContractLlmTerms] | None:
         return None if self._llm_contracts is None else list(self._llm_contracts)
 
@@ -1897,10 +1942,12 @@ async def _serve_registered(
         async def connect_client(namespace: str, token: str) -> Client:
             return await connect(temporal_address, namespace=namespace, api_key=token, tls=tls)
 
-        def build_worker(client: Client, task_queue: str, slots: ConnectionSlots) -> GracefulWorker:
+        def build_worker(
+            client: Client, connection: RunnerConnection, slots: ConnectionSlots
+        ) -> GracefulWorker:
             return worker_factory(
                 client,
-                task_queue=task_queue,
+                task_queue=connection.task_queue,
                 activities=_activities(
                     fastapi,
                     settings=settings,
@@ -1923,6 +1970,11 @@ async def _serve_registered(
                     # The wake signal rides the connection the Directive came in on: its
                     # Organisation's own namespace (PRD issue 52, map ticket 15 §2).
                     signaller=TemporalWorkflowSignaller(client),
+                    # A legacy connection's Organisation is read off its namespace's name;
+                    # only an ack that names connections says which Contracts are whose.
+                    connection_organisation=lambda: (
+                        connection.organisation_id if stream.acks_connections else None
+                    ),
                 ),
                 interceptors=[load],
                 graceful_shutdown_timeout=graceful_shutdown_timeout(settings),
@@ -2162,6 +2214,7 @@ def _activities(
     runner_limit: AppliedRunnerLimit | None = None,
     llm_contracts: Callable[[], list[ContractLlmTerms] | None] | None = None,
     llm_keys: LlmKeyOpener | None = None,
+    connection_organisation: Callable[[], UUID | None] | None = None,
 ) -> list[Callable[..., Any]]:
     github_client = GitHubAppClient(
         app_id=os.getenv("GITHUB_APP_ID"),
@@ -2213,6 +2266,7 @@ def _activities(
         runner_limit=runner_limit,
         llm_contracts=llm_contracts,
         llm_keys=llm_keys,
+        connection_organisation=connection_organisation,
     )
     return [
         *ralph.activity_callables(),
@@ -2222,5 +2276,6 @@ def _activities(
             timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
             host_party=state.host_party,
             llm_contracts=llm_contracts,
+            connection_organisation=connection_organisation,
         ).activity_callables(),
     ]

@@ -146,8 +146,8 @@ def _workers() -> tuple[ConnectionWorkers, list[_Worker]]:
     async def connect_client(namespace: str, token: str) -> _Client:
         return _Client(namespace, token)
 
-    def build_worker(client: Any, task_queue: str, slots: ConnectionSlots) -> _Worker:
-        worker = _Worker(client, task_queue, slots)
+    def build_worker(client: Any, connection: RunnerConnection, slots: ConnectionSlots) -> _Worker:
+        worker = _Worker(client, connection.task_queue, slots)
         built.append(worker)
         return worker
 
@@ -272,8 +272,8 @@ async def test_a_connection_that_cannot_open_holds_back_no_other() -> None:
             raise ConnectionError("namespace unreachable")
         return _Client(namespace, token)
 
-    def build_worker(client: Any, task_queue: str, slots: ConnectionSlots) -> _Worker:
-        built.append(_Worker(client, task_queue, slots))
+    def build_worker(client: Any, connection: RunnerConnection, slots: ConnectionSlots) -> _Worker:
+        built.append(_Worker(client, connection.task_queue, slots))
         return built[-1]
 
     workers = ConnectionWorkers(MachineSlots(1), connect_client, build_worker)
@@ -298,8 +298,8 @@ async def test_a_shutdown_while_a_client_opens_starts_no_worker() -> None:
         await release.wait()
         return _Client(namespace, token)
 
-    def build_worker(client: Any, task_queue: str, slots: ConnectionSlots) -> _Worker:
-        built.append(_Worker(client, task_queue, slots))
+    def build_worker(client: Any, connection: RunnerConnection, slots: ConnectionSlots) -> _Worker:
+        built.append(_Worker(client, connection.task_queue, slots))
         return built[-1]
 
     workers = ConnectionWorkers(MachineSlots(1), connect_client, build_worker)
