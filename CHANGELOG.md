@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.31.1](https://github.com/qtsone/agentic-runner/compare/v3.31.0...v3.31.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* **contracts:** the Persona catalogue 'user' replaces 'account' (QTS-2303) ([#87](https://github.com/qtsone/agentic-runner/issues/87)) ([27e7375](https://github.com/qtsone/agentic-runner/commit/27e7375b4434ab6c11aa4ef888e9b7874b8a7eaa))
+
 # [3.31.0](https://github.com/qtsone/agentic-runner/compare/v3.30.4...v3.31.0) (2026-10-22)
 
 
