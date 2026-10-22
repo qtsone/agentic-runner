@@ -145,6 +145,16 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `ContractLlmTerms.contract_name` (`DisplayName`). Additive and omitted while None. The
 # control plane sends them only to a Runner whose heartbeat names contracts 3.29 or later;
 # a Runner without them lists the ids. Does not raise the floor.
+# 3.31.0 (QTS-2252, Spec: Runners rev 14): a person's Runner and its connections.
+# `runner_login` -- the device-flow login (`DeviceLoginRequest`, `DeviceAuthorization`,
+# `DeviceTokenRequest`, `LoginResponse`) and `connect` (`ConnectableOrganisations`,
+# `ConnectRequest`) with their paths; `RunnerConnection` on `BootstrapResponse.connections`
+# and `HeartbeatAck.connections`, with `operator_user_profile_id` on both; and
+# `ContractLlmTerms.organisation_id` / `organisation_name`. Additive and omitted while None.
+# Both bodies forbid extra keys, so the control plane sends the new fields only to a Runner
+# whose bootstrap or heartbeat names contracts 3.31 or later; a Runner given no connections
+# polls the one namespace it registered in, as before. Does not raise the floor, but only a
+# Runner on 3.31 can log in or serve more than one Organisation.
 __version__ = "3.30.4"
 
 __all__ = ["__version__"]
