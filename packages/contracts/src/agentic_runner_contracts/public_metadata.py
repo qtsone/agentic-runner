@@ -54,7 +54,7 @@ DATA_CLASSES = ("public", "internal", "confidential", "restricted")
 # Declaration order, which is also the order a Runtime Profile's Personas are ranked in
 # (see `primary_persona`): the Specialisation a fleet exists for comes first.
 SPECIALISATIONS = ("development", "triage", "review", "ops")
-PERSONA_CATALOGUES = ("platform", "organisation", "account")
+PERSONA_CATALOGUES = ("platform", "organisation", "user")
 PLATFORM_CATALOGUE = "platform"
 
 # The closed, review-gated Search Attribute catalogue (map ticket 07 §5). `organisation_id`
