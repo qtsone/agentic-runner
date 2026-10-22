@@ -147,13 +147,6 @@ class RunnerState(BaseModel):
     # without one.
     operator_user_profile_id: UUID | None = None
 
-    @property
-    def operated(self) -> bool:
-        """Whether a person operates this Runner: one ``login`` made, or one a token
-        registered as user-hosted before rev 14."""
-
-        return self.operator_user_profile_id is not None or self.host_party == "user"
-
     def signer(self) -> Ed25519PrivateKey:
         key = serialization.load_pem_private_key(
             self.private_key_pem.encode("utf-8"), password=None

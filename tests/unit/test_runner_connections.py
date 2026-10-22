@@ -240,3 +240,74 @@ async def test_a_worker_that_fails_on_its_own_is_the_process_failure() -> None:
 
     await asyncio.wait_for(workers.failed.wait(), timeout=1)
     assert isinstance(workers.error, RuntimeError)
+
+
+class _CleanExitWorker(_Worker):
+    async def run(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_returns_on_its_own_ends_the_process_too() -> None:
+    async def connect_client(namespace: str, token: str) -> _Client:
+        return _Client(namespace, token)
+
+    workers = ConnectionWorkers(MachineSlots(1), connect_client, _CleanExitWorker)  # type: ignore[arg-type]
+
+    await workers.reconcile([_connection(uuid4())])
+
+    await asyncio.wait_for(workers.failed.wait(), timeout=1)
+    assert workers.error is None
+
+
+@pytest.mark.asyncio
+async def test_a_connection_that_cannot_open_holds_back_no_other() -> None:
+    """One unreachable namespace must not stop the others' tokens being renewed."""
+
+    broken, working = uuid4(), uuid4()
+    built: list[_Worker] = []
+
+    async def connect_client(namespace: str, token: str) -> _Client:
+        if namespace == f"org-{broken}":
+            raise ConnectionError("namespace unreachable")
+        return _Client(namespace, token)
+
+    def build_worker(client: Any, task_queue: str, slots: ConnectionSlots) -> _Worker:
+        built.append(_Worker(client, task_queue, slots))
+        return built[-1]
+
+    workers = ConnectionWorkers(MachineSlots(1), connect_client, build_worker)
+    await workers.reconcile([_connection(working, "t1")])
+
+    await workers.reconcile([_connection(broken, "b1"), _connection(working, "t2")])
+
+    [worker] = built
+    assert worker.client.api_key == "t2"
+    assert set(workers.polled) == {working}
+    await workers.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_while_a_client_opens_starts_no_worker() -> None:
+    opened = asyncio.Event()
+    release = asyncio.Event()
+    built: list[_Worker] = []
+
+    async def connect_client(namespace: str, token: str) -> _Client:
+        opened.set()
+        await release.wait()
+        return _Client(namespace, token)
+
+    def build_worker(client: Any, task_queue: str, slots: ConnectionSlots) -> _Worker:
+        built.append(_Worker(client, task_queue, slots))
+        return built[-1]
+
+    workers = ConnectionWorkers(MachineSlots(1), connect_client, build_worker)
+    starting = asyncio.create_task(workers.reconcile([_connection(uuid4())]))
+    await opened.wait()
+
+    await workers.shutdown()
+    release.set()
+    await starting
+
+    assert built == []

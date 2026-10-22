@@ -716,9 +716,11 @@ async def test_a_logged_in_runner_polls_each_connection_under_one_machine_limit(
 
     _environment(monkeypatch, tmp_path, isolation="none")
     monkeypatch.delenv("AGENTIC_RUNNER_REGISTRATION_TOKEN")
-    monkeypatch.setenv("AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES", "2")
+    monkeypatch.setenv("AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES", "1")
     plane = FakeControlPlane(confirm_logins=True)
     state = await _logged_in(plane, tmp_path)
+    # The limit is the machine's config at every start, not the one it logged in with.
+    monkeypatch.setenv("AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES", "2")
     acme, globex = DEFAULT_ORGANISATIONS
     harness = Harness(plane)
 

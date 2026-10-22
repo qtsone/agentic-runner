@@ -1722,6 +1722,10 @@ async def _serve(
         print(f"refusing to start ({error.reason}): {error}", flush=True)
         return 1
     print(outcome, flush=True)
+    if os.environ.get(MAX_CONCURRENT_DIRECTIVES_ENV, "").strip():
+        # Rev 14: the machine's limit is its own config, read at every start, not only the
+        # value it registered or logged in with.
+        state = state.model_copy(update={"max_concurrent_directives": _max_concurrent_directives()})
     temporal_address = state.temporal_address or settings.TEMPORAL_ADDRESS
     if not temporal_address:
         print(

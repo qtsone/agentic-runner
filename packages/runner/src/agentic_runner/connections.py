@@ -11,13 +11,15 @@ poll holds its reservation for up to a minute; counting reservations against the
 would let one idle connection's poll starve every other. So a reservation is granted while
 the slots in use on the machine, plus this connection's own unused reservations, are below
 the limit. One connection alone therefore never exceeds the limit, exactly as
-``max_concurrent_activities`` did; across connections, two polls already outstanding can
-each bring a task in the same instant. The control plane is what prevents that: it routes
-to a Runner by its load across all its connections, counted from its own Work Records, so
-it does not send a second Directive to a full machine. This is the backstop.
+``max_concurrent_activities`` did; across connections, polls already outstanding can each
+bring an activity in the same instant, so N connections can briefly run limit + N - 1. The
+spec puts the machine-wide limit in routing ("Routing counts the Runner's load across all
+its connections ... so least-loaded and the limit see the whole machine"): the control
+plane does not send a Directive to a full machine. This is the backstop.
 
-**Pause.** A paused connection reserves nothing, so its Worker stops polling while what it
-already runs finishes.
+**Pause.** A paused connection makes no new reservation, so its Worker stops polling once
+the polls already outstanding return, while what it already runs finishes. The control
+plane routes nothing to a paused connection, so those polls come back empty.
 """
 
 from __future__ import annotations
@@ -210,6 +212,9 @@ class ConnectionWorkers:
         return {key: running.connection for key, running in self._running.items()}
 
     async def reconcile(self, connections: Sequence[RunnerConnection]) -> None:
+        """Follow one ack. A connection that cannot open is logged and retried on the next
+        beat; it never holds back the others, whose tokens must keep being renewed."""
+
         if self._closed:
             # Beats go on through a drain; their acks start nothing new.
             return
@@ -217,21 +222,25 @@ class ConnectionWorkers:
         for key in set(self._running) - set(wanted):
             self._drain(key)
         for key, connection in wanted.items():
-            running = self._running.get(key)
-            if running is None:
-                if connection.runner_token is None:
-                    # A connection's first ack always carries its token; one that did not
-                    # is retried on the next beat rather than dialled without one.
-                    continue
-                await self._start(connection)
-                continue
-            if connection.runner_token is not None and (
-                connection.runner_token != running.client.api_key
-            ):
-                running.client.api_key = connection.runner_token
-            if connection.paused != running.slots.paused:
-                running.slots.paused = connection.paused
-            running.connection = connection
+            if (running := self._running.get(key)) is not None:
+                self._update(running, connection)
+        for key, connection in wanted.items():
+            # A connection's first ack always carries its token; one that did not is retried
+            # on the next beat rather than dialled without one.
+            if key not in self._running and connection.runner_token is not None:
+                try:
+                    await self._start(connection)
+                except Exception as error:  # noqa: BLE001 - retried on the next beat
+                    _logger.warning("cannot poll %s yet: %s", connection.temporal_namespace, error)
+
+    def _update(self, running: _Running, connection: RunnerConnection) -> None:
+        if connection.runner_token is not None and (
+            connection.runner_token != running.client.api_key
+        ):
+            running.client.api_key = connection.runner_token
+        if connection.paused != running.slots.paused:
+            running.slots.paused = connection.paused
+        running.connection = connection
 
     async def shutdown(self) -> None:
         """Drain every Worker; returns once each has finished what it was running."""
@@ -240,11 +249,14 @@ class ConnectionWorkers:
         for key in list(self._running):
             self._drain(key)
         if self._draining:
-            await asyncio.gather(*self._draining, return_exceptions=True)
+            await asyncio.gather(*self._draining)
 
     async def _start(self, connection: RunnerConnection) -> None:
         assert connection.runner_token is not None
         client = await self.connect_client(connection.temporal_namespace, connection.runner_token)
+        if self._closed:
+            # Shut down while the client opened: a Worker started now would never drain.
+            return
         slots = self.machine.connection()
         slots.paused = connection.paused
         worker = self.build_worker(client, connection.task_queue, slots)
@@ -261,17 +273,23 @@ class ConnectionWorkers:
 
         async def drain() -> None:
             await running.worker.shutdown()
-            await running.task
+            try:
+                await running.task
+            except Exception:
+                # Gone already, so nothing waits on it; the drain is still the process's
+                # own, and the reason must reach its log.
+                _logger.exception(
+                    "the Worker for %s failed while draining", running.connection.temporal_namespace
+                )
 
         task = asyncio.create_task(drain())
         self._draining.add(task)
         task.add_done_callback(self._draining.discard)
 
     def _watch(self, task: asyncio.Task[Any]) -> None:
-        # A Worker that stops on its own -- not drained -- is the process's failure, as the
-        # one Worker's `run()` raising was before connections.
+        # A Worker that stops on its own -- not drained -- ends the process, as the one
+        # Worker's `run()` returning or raising did before connections.
         if task.cancelled() or all(r.task is not task for r in self._running.values()):
             return
-        if (error := task.exception()) is not None:
-            self.error = error
-            self.failed.set()
+        self.error = task.exception()
+        self.failed.set()
