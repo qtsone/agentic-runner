@@ -40,6 +40,7 @@ with `isolation: none`, against the fake control plane and a local Temporal serv
 | Directive round trip | take one activity from its `runner.{runner_id}` queue and return the answer. A test workflow dispatches `wipe_contract_residue` there. |
 | revoke | stop with a non-zero exit when the control plane refuses its heartbeat with `runner_revoked`. |
 | drain | exit 0 on `SIGTERM`, and send one last heartbeat that reports the stop. |
+| a person's Runner | log in with the device flow (no token), be connected to two Organisations, and answer a Directive dispatched in each one's namespace from one process. |
 
 The fake checks what the platform checks on the Runner's routes: the bootstrap body, the
 Ed25519 signature on every signed request, revocation and the hosted queue. It refuses
@@ -74,6 +75,12 @@ To run a Directive on an API key, deliver the key with `--deliver OPENAI_API_KEY
 Recipient Key and answers the runtime context for its one Contract. It also serves
 `/v1` as the LLM provider: point the Runner there with `AGENTIC_RUNNER_OPENAI_BASE_URL`,
 and `/stats` lists the credential each provider call presented.
+
+The fake also serves `agentic-runner login` and `connect`. A login waits for
+`FakeControlPlane.confirm_login(user_code)`, or confirms at its first poll with
+`--confirm-logins`, since a script has no browser. The person belongs to two Organisations,
+`Acme` and `Globex` (`FakeControlPlane.organisations`), and every ack names the Runner's
+connections; `pause` and `disconnect` change them.
 
 In your own tests, the extra's pytest plugin gives you two fixtures:
 `fake_control_plane` (the fake on a free port, with `.plane` and `.url`) and
