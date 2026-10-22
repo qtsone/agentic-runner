@@ -182,6 +182,9 @@ async def test_a_persons_sixth_runner_is_refused(tmp_path: Path) -> None:
         "https://evil-control-plane.test/device",
         "https://test/device",
         "https://control-plane.test/device?code=\x1b]0;owned\x07",
+        "https://evil.example\\@control-plane.test/device",
+        "https://evil.example@control-plane.test/device",
+        "https://user:secret@control-plane.test/device",
     ],
 )
 @pytest.mark.asyncio
@@ -225,6 +228,7 @@ async def test_a_page_off_the_control_planes_own_https_domain_is_neither_shown_n
         ("https://api.agentic.qts.one", "https://api.agentic.qts.one/device"),
         ("http://127.0.0.1:8080", "http://127.0.0.1:8080/device"),
         ("http://localhost:8080", "http://localhost/device"),
+        ("http://[::1]:8080", "http://[::1]:8080/device"),
     ],
 )
 def test_the_console_at_the_parent_of_the_runner_edge_or_a_loopback_page_is_opened(

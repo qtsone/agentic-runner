@@ -35,7 +35,7 @@ from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from typing import Any, Final, Literal
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
@@ -570,13 +570,35 @@ def _verification_page(page: str, control_plane: str) -> str:
     secure = target.scheme == "https" or (target.scheme == "http" and _loopback(host))
     parent = _address(dialled) is None and "." in host and dialled.endswith(f".{host}")
     own = host == dialled or parent
-    if not (secure and own) or _printable(page) != page:
+    if not (secure and own and _plain_authority(target)) or _printable(page) != page:
         raise RunnerRegistrationError(
             "verification_uri_refused",
             f"refusing to open {_printable(page)!r}: the control plane at {dialled} must "
             "send an https page on its own domain",
         )
     return page
+
+
+def _plain_authority(target: SplitResult) -> bool:
+    """Whether the authority is a bare host and port, so a browser reads the host we checked.
+
+    Python and a WHATWG browser split userinfo (``@``) and a backslash differently:
+    ``https://evil.example\\@control-plane.test`` is ``control-plane.test`` to
+    ``urlsplit`` and ``evil.example`` to the browser.
+    """
+
+    netloc = target.netloc.lower()
+    if target.username is not None or target.password is not None:
+        return False
+    if "@" in netloc or "\\" in netloc:
+        return False
+    host = target.hostname or ""
+    bare = f"[{host}]" if ":" in host else host
+    try:
+        port = target.port
+    except ValueError:
+        return False
+    return netloc in {bare, f"{bare}:{port}"} if port is not None else netloc == bare
 
 
 def _loopback(host: str) -> bool:
