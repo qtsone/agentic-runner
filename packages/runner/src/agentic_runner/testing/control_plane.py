@@ -29,6 +29,15 @@ holds for it; :attr:`FakeControlPlane.llm_access` keeps each report. ``subscript
 
 Contracts 3.26: :attr:`FakeControlPlane.pool` is the ack's pool and its current Pool Key;
 None, the default, answers for a personal Runner or a control plane below 3.26.
+
+Contracts 3.31 (Spec: Runners rev 14): every ack names the Runner's connections. A Runner a
+Runner Registration Token registered has one, to :attr:`FakeControlPlane.namespace`'s
+Organisation, carrying the ack's own Runner Token. A Runner ``login`` made is the
+:attr:`FakeControlPlane.operator`'s, connected nowhere until ``connect`` asks for one of
+:attr:`FakeControlPlane.organisations`; each connection names one Contract in the ack's
+``llm_contracts``. The device flow waits for :meth:`FakeControlPlane.confirm_login`, or
+confirms at the first poll with ``confirm_logins`` (the served mode, which a shell script
+cannot confirm). ``connections_on_ack=False`` answers as a control plane below 3.31.
 """
 
 from __future__ import annotations
@@ -62,7 +71,24 @@ from agentic_runner.registration import (
 )
 from agentic_runner.sealed_box import seal
 from agentic_runner_contracts import __version__ as contracts_version
+from agentic_runner_contracts.public_metadata import namespace as organisation_namespace
 from agentic_runner_contracts.public_metadata import runner_task_queue
+from agentic_runner_contracts.runner_login import (
+    AUTHORIZATION_PENDING,
+    CONNECTIONS_PATH,
+    EXPIRED_TOKEN,
+    LOGIN_DEVICE_PATH,
+    LOGIN_TOKEN_PATH,
+    ORGANISATIONS_PATH,
+    RUNNER_LIMIT_REASON,
+    ConnectableOrganisation,
+    ConnectableOrganisations,
+    ConnectRequest,
+    DeviceAuthorization,
+    DeviceLoginRequest,
+    DeviceTokenRequest,
+    LoginResponse,
+)
 from agentic_runner_contracts.runner_registration import (
     BootstrapRequest,
     BootstrapResponse,
@@ -73,6 +99,7 @@ from agentic_runner_contracts.runner_registration import (
     HeartbeatAck,
     HeartbeatEnvelope,
     PoolTerms,
+    RunnerConnection,
     RunnerIdentityMaterial,
     SubscriptionRight,
 )
@@ -90,6 +117,7 @@ from agentic_runner_contracts.sealed_credential import SealedCredential, deliver
 
 __all__ = [
     "DEFAULT_AGENT_ID",
+    "DEFAULT_OPERATOR",
     "DEFAULT_CONTRACT_ID",
     "DEFAULT_NAMESPACE",
     "RUNNER_PREFIX",
@@ -107,6 +135,14 @@ DEFAULT_AGENT_ID = UUID("00000000-0000-4000-8000-0000000000a1")
 # The namespace the chart, Docker and workstation tests start their Temporal dev server
 # with: one Organisation, whose id is the first non-nil UUID.
 DEFAULT_NAMESPACE = "org-00000000-0000-0000-0000-000000000001"
+# The person `login` signs in as, and the Organisations they belong to.
+DEFAULT_OPERATOR = UUID("00000000-0000-4000-8000-0000000000e1")
+DEFAULT_ORGANISATIONS: Mapping[UUID, str] = {
+    UUID("00000000-0000-0000-0000-000000000001"): "Acme",
+    UUID("00000000-0000-0000-0000-000000000002"): "Globex",
+}
+# A person holds at most this many live Runners (rev 14).
+RUNNERS_PER_PERSON = 5
 _EVIDENCE_PATH_SUFFIX = "/evidence"
 _RUNTIME_CONTEXT_PATH_SUFFIX = "/runtime-context"
 _DIRECTIVE_USAGE_PATH = f"{RUNNER_PREFIX}/usage/work-records/"
@@ -157,10 +193,26 @@ class _RefusedError(Exception):
 
 
 @dataclass
+class _Connection:
+    organisation_id: UUID
+    paused: bool = False
+
+
+@dataclass
 class _Registered:
     public_key: Ed25519PublicKey
     revoked: bool = False
     tokens: int = 0
+    operator: UUID | None = None
+    connections: list[_Connection] = field(default_factory=list)
+
+
+@dataclass
+class _PendingLogin:
+    request: DeviceLoginRequest
+    user_code: str
+    confirmed: bool = False
+    expired: bool = False
 
 
 @dataclass
@@ -184,6 +236,13 @@ class FakeControlPlane:
     # subscription; None leaves `llm_contracts` out, as a control plane below 3.25 does.
     subscription: SubscriptionRight | None = SubscriptionRight.NO_RIGHT
     pool: PoolTerms | None = None
+    # Rev 14: who `login` signs in as, the Organisations they belong to (id: name), and
+    # why one refuses a connection (id: reason, as the setting the console names).
+    operator: UUID = DEFAULT_OPERATOR
+    organisations: Mapping[UUID, str] = field(default_factory=lambda: dict(DEFAULT_ORGANISATIONS))
+    connect_refusals: Mapping[UUID, str] = field(default_factory=dict)
+    confirm_logins: bool = False
+    connections_on_ack: bool = True
 
     bootstraps: list[BootstrapRequest] = field(default_factory=list)
     runner_ids: list[UUID] = field(default_factory=list)
@@ -196,6 +255,7 @@ class FakeControlPlane:
     slots: list[dict[str, Any]] = field(default_factory=list)
     usage: list[dict[str, Any]] = field(default_factory=list)
     llm_access: list[dict[str, Any]] = field(default_factory=list)
+    logins: list[DeviceLoginRequest] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -205,6 +265,7 @@ class FakeControlPlane:
         # One ciphertext per (Recipient Key, slot): the ack is authoritative, and a fresh
         # seal every beat would read as a new value at the same version.
         self._sealed: dict[tuple[str, str], str] = {}
+        self._logins: dict[str, _PendingLogin] = {}
 
     # ---------------------------------------------------------------- the test's levers
 
@@ -213,6 +274,37 @@ class FakeControlPlane:
 
         with self._lock:
             self._registered[runner_id].revoked = True
+
+    def confirm_login(self, user_code: str) -> None:
+        """The person confirms ``user_code`` in the browser."""
+
+        with self._lock:
+            next(p for p in self._logins.values() if p.user_code == user_code).confirmed = True
+
+    def expire_logins(self) -> None:
+        """Every code still waiting runs out, as one does after ``expires_in``."""
+
+        with self._lock:
+            for pending in self._logins.values():
+                pending.expired = True
+
+    def pause(self, runner_id: UUID, organisation_id: UUID, *, paused: bool = True) -> None:
+        """The operator pauses (or resumes) one connection; the next ack says so."""
+
+        with self._lock:
+            self._connection(runner_id, organisation_id).paused = paused
+
+    def disconnect(self, runner_id: UUID, organisation_id: UUID) -> None:
+        """One connection removed; the next ack no longer names it."""
+
+        with self._lock:
+            runner = self._registered[runner_id]
+            runner.connections.remove(self._connection(runner_id, organisation_id))
+
+    def contract_for(self, organisation_id: UUID) -> UUID:
+        """The operator's Contract in ``organisation_id``, as the ack's terms name it."""
+
+        return UUID(int=organisation_id.int ^ self.operator.int)
 
     def deliver(self, slot: str, value: str) -> None:
         """A funder delivers ``value`` to ``contract_id`` under ``slot``, at version 1."""
@@ -234,6 +326,11 @@ class FakeControlPlane:
             return {
                 "bootstraps": len(self.bootstraps),
                 "runner_ids": [str(runner_id) for runner_id in self.runner_ids],
+                "logins": len(self.logins),
+                "connections": {
+                    str(runner_id): [str(c.organisation_id) for c in runner.connections]
+                    for runner_id, runner in self._registered.items()
+                },
                 "recipient_key_ids": sorted({b.recipient_key.key_id for b in self.bootstraps}),
                 "isolation_modes": sorted({b.isolation_mode.value for b in self.bootstraps}),
                 "heartbeats": len(self.heartbeats),
@@ -359,6 +456,14 @@ class FakeControlPlane:
             )
         if method == "POST" and path == BOOTSTRAP_PATH:
             return self._bootstrap(body)
+        if method == "POST" and path == LOGIN_DEVICE_PATH:
+            return self._start_login(body)
+        if method == "POST" and path == LOGIN_TOKEN_PATH:
+            return self._finish_login(body)
+        if method == "GET" and path == ORGANISATIONS_PATH:
+            return self._organisations(method, target, headers, body)
+        if method == "POST" and path == CONNECTIONS_PATH:
+            return self._connect(method, target, headers, body)
         if method == "POST" and path == HEARTBEAT_PATH:
             return self._heartbeat(method, target, headers, body)
         if method == "POST" and path == DIRECTIVE_TOKEN_PATH:
@@ -392,20 +497,15 @@ class FakeControlPlane:
         request = _parse(BootstrapRequest, body)
         runner_id = uuid4()
         key = Ed25519PrivateKey.generate()
-        self._registered[runner_id] = _Registered(public_key=key.public_key())
+        self._registered[runner_id] = _Registered(
+            public_key=key.public_key(),
+            connections=[_Connection(organisation_id=self._own_organisation())],
+        )
         self.bootstraps.append(request)
         self.runner_ids.append(runner_id)
         print(f"bootstrap {runner_id} isolation={request.isolation_mode.value}", flush=True)
         response = BootstrapResponse(
-            identity=RunnerIdentityMaterial(
-                runner_id=runner_id,
-                identity_id=f"identity-{runner_id}",
-                private_key_pem=key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.PKCS8,
-                    serialization.NoEncryption(),
-                ).decode("ascii"),
-            ),
+            identity=_identity(runner_id, key),
             temporal_namespace=self.namespace,
             task_queue=runner_task_queue(runner_id),
             runner_token=f"runner-token-{runner_id}-0",
@@ -446,9 +546,10 @@ class FakeControlPlane:
             for report in envelope.llm_access or []
         )
         runner.tokens += 1
+        token = f"runner-token-{runner_id}-{runner.tokens}"
         ack = HeartbeatAck(
             runner_id=runner_id,
-            runner_token=f"runner-token-{runner_id}-{runner.tokens}",
+            runner_token=token,
             runner_token_expires_at=datetime.now(UTC) + _TOKEN_TTL,
             floor_state=FloorState.OK,
             contracts_floor=self.contracts_floor,
@@ -457,16 +558,161 @@ class FakeControlPlane:
             # Every Usage Record committed, so the Runner's outbox drops exactly these.
             usage_accepted=[f"{u.directive_id}:{u.sequence}" for u in envelope.usage],
             sealed_credentials=self._sealed_credentials(runner_id),
-            llm_contracts=(
-                None
-                if self.subscription is None
-                else [
-                    ContractLlmTerms(contract_id=self.contract_id, subscription=self.subscription)
-                ]
-            ),
+            llm_contracts=self._llm_contracts(runner),
             pool=self.pool,
+            operator_user_profile_id=runner.operator if self.connections_on_ack else None,
+            connections=(
+                [self._connection_terms(runner_id, c, token) for c in runner.connections]
+                if self.connections_on_ack
+                else None
+            ),
         )
         return _Answer(200, ack.model_dump(mode="json"))
+
+    def _llm_contracts(self, runner: _Registered) -> list[ContractLlmTerms] | None:
+        if self.subscription is None:
+            return None
+        if runner.operator is None:
+            return [ContractLlmTerms(contract_id=self.contract_id, subscription=self.subscription)]
+        # One Contract per connection: the operator's own in that Organisation.
+        return [
+            ContractLlmTerms(
+                contract_id=self.contract_for(c.organisation_id),
+                subscription=self.subscription,
+                organisation_id=c.organisation_id,
+                organisation_name=self.organisations.get(c.organisation_id),
+            )
+            for c in runner.connections
+        ]
+
+    def _connection_terms(
+        self, runner_id: UUID, connection: _Connection, token: str
+    ) -> RunnerConnection:
+        organisation_id = connection.organisation_id
+        return RunnerConnection(
+            organisation_id=organisation_id,
+            organisation_name=self.organisations.get(organisation_id),
+            temporal_namespace=(
+                self.namespace
+                if organisation_id == self._own_organisation()
+                else organisation_namespace(organisation_id)
+            ),
+            task_queue=runner_task_queue(runner_id),
+            # One token per namespace, as the Temporal gateway admits one per connection.
+            runner_token=f"{token}-{organisation_id}"
+            if self._registered[runner_id].operator is not None
+            else token,
+            runner_token_expires_at=datetime.now(UTC) + _TOKEN_TTL,
+            paused=connection.paused,
+        )
+
+    def _own_organisation(self) -> UUID:
+        """The Organisation of :attr:`namespace`, where a token registers a Runner."""
+
+        return UUID(self.namespace.removeprefix("org-"))
+
+    def _connection(self, runner_id: UUID, organisation_id: UUID) -> _Connection:
+        return next(
+            c
+            for c in self._registered[runner_id].connections
+            if c.organisation_id == organisation_id
+        )
+
+    def _start_login(self, body: bytes) -> _Answer:
+        request = _parse(DeviceLoginRequest, body)
+        device_code = f"device-code-{uuid4()}"
+        user_code = f"CODE-{len(self._logins) + 1:04d}"
+        self._logins[device_code] = _PendingLogin(request=request, user_code=user_code)
+        authorization = DeviceAuthorization(
+            device_code=device_code,
+            user_code=user_code,
+            verification_uri="https://console.test/device",
+            verification_uri_complete=f"https://console.test/device?code={user_code}",
+            expires_in=600,
+            interval=1,
+        )
+        return _Answer(200, authorization.model_dump(mode="json"))
+
+    def _finish_login(self, body: bytes) -> _Answer:
+        device_code = _parse(DeviceTokenRequest, body).device_code
+        pending = self._logins.get(device_code)
+        if pending is None or pending.expired:
+            raise _RefusedError(400, EXPIRED_TOKEN, "the device code expired")
+        if not (pending.confirmed or self.confirm_logins):
+            raise _RefusedError(400, AUTHORIZATION_PENDING, "waiting for the person to confirm")
+        live = [
+            r for r in self._registered.values() if r.operator == self.operator and not r.revoked
+        ]
+        if len(live) >= RUNNERS_PER_PERSON:
+            raise _RefusedError(
+                409, RUNNER_LIMIT_REASON, f"a person has at most {RUNNERS_PER_PERSON} Runners"
+            )
+        del self._logins[device_code]
+        runner_id = uuid4()
+        key = Ed25519PrivateKey.generate()
+        self._registered[runner_id] = _Registered(
+            public_key=key.public_key(), operator=self.operator
+        )
+        self.logins.append(pending.request)
+        # The heartbeat seals to the Recipient Key a login presented, as to a bootstrap's.
+        self.bootstraps.append(
+            BootstrapRequest(
+                registration_token=device_code,
+                isolation_mode=pending.request.isolation_mode,
+                contracts_version=pending.request.contracts_version,
+                runner_version=pending.request.runner_version,
+                recipient_key=pending.request.recipient_key,
+                build_id=pending.request.build_id,
+            )
+        )
+        self.runner_ids.append(runner_id)
+        response = LoginResponse(
+            identity=_identity(runner_id, key),
+            operator_user_profile_id=self.operator,
+            name=pending.request.name or f"runner-{len(live) + 1}",
+            task_queue=runner_task_queue(runner_id),
+            floor_state=FloorState.OK,
+            contracts_floor=self.contracts_floor,
+            heartbeat_interval_seconds=self.heartbeat_interval_seconds,
+            temporal_address=self.temporal_address,
+        )
+        return _Answer(200, response.model_dump(mode="json"))
+
+    def _organisations(
+        self, method: str, target: str, headers: dict[str, str], body: bytes
+    ) -> _Answer:
+        _, runner = self._signed(method, target, headers, body)
+        connected = {c.organisation_id for c in runner.connections}
+        listed = ConnectableOrganisations(
+            organisations=[
+                ConnectableOrganisation(
+                    organisation_id=organisation_id,
+                    name=name,
+                    connected=organisation_id in connected,
+                    refusal=self.connect_refusals.get(organisation_id),
+                )
+                for organisation_id, name in self.organisations.items()
+            ]
+        )
+        return _Answer(200, listed.model_dump(mode="json"))
+
+    def _connect(self, method: str, target: str, headers: dict[str, str], body: bytes) -> _Answer:
+        runner_id, runner = self._signed(method, target, headers, body)
+        organisation_id = _parse(ConnectRequest, body).organisation_id
+        if runner.operator is None:
+            raise _RefusedError(
+                403, "runner_not_operated", "an Organisation's own Runner has its one connection"
+            )
+        if organisation_id not in self.organisations:
+            raise _RefusedError(404, "organisation_not_found", "not an Organisation of yours")
+        if reason := self.connect_refusals.get(organisation_id):
+            raise _RefusedError(403, "connect_refused", reason)
+        if all(c.organisation_id != organisation_id for c in runner.connections):
+            runner.connections.append(_Connection(organisation_id=organisation_id))
+        connection = self._connection_terms(
+            runner_id, self._connection(runner_id, organisation_id), ""
+        ).model_copy(update={"runner_token": None, "runner_token_expires_at": None})
+        return _Answer(201, connection.model_dump(mode="json"))
 
     def _directive_token(
         self, method: str, target: str, headers: dict[str, str], body: bytes
@@ -611,6 +857,18 @@ class FakeControlPlane:
         if runner.revoked:
             raise _RefusedError(403, RUNNER_REVOKED_REASON, f"Runner {runner_id} is revoked")
         return runner_id, runner
+
+
+def _identity(runner_id: UUID, key: Ed25519PrivateKey) -> RunnerIdentityMaterial:
+    return RunnerIdentityMaterial(
+        runner_id=runner_id,
+        identity_id=f"identity-{runner_id}",
+        private_key_pem=key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode("ascii"),
+    )
 
 
 def _parse[Model: BaseModel](model: type[Model], body: bytes) -> Model:

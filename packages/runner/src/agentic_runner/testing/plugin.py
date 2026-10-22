@@ -124,15 +124,18 @@ class RunnerLauncher:
             print(runner.output())
 
 
-async def start_temporal(namespace: str = DEFAULT_NAMESPACE) -> WorkflowEnvironment:
-    """A local Temporal dev server holding ``namespace``.
+async def start_temporal(namespace: str = DEFAULT_NAMESPACE, *others: str) -> WorkflowEnvironment:
+    """A local Temporal dev server holding ``namespace``, and ``others`` beside it -- one per
+    Organisation a person's Runner is connected to (rev 14).
 
     Uses a ``temporal`` CLI already on ``PATH`` when there is one; otherwise the SDK
     downloads the dev server on first use.
     """
 
     return await WorkflowEnvironment.start_local(
-        namespace=namespace, dev_server_existing_path=shutil.which("temporal")
+        namespace=namespace,
+        dev_server_existing_path=shutil.which("temporal"),
+        dev_server_extra_args=[argument for other in others for argument in ("--namespace", other)],
     )
 
 

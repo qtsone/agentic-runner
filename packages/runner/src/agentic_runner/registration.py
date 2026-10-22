@@ -37,6 +37,18 @@ from agentic_runner.build import build_id
 from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.channel_messages import TRANSCRIPT_DELIVERIES_PATH, TranscriptDelivery
+from agentic_runner_contracts.runner_login import (
+    CONNECTIONS_PATH,
+    LOGIN_DEVICE_PATH,
+    LOGIN_TOKEN_PATH,
+    ORGANISATIONS_PATH,
+    ConnectableOrganisations,
+    ConnectRequest,
+    DeviceAuthorization,
+    DeviceLoginRequest,
+    DeviceTokenRequest,
+    LoginResponse,
+)
 from agentic_runner_contracts.runner_registration import (
     BootstrapRequest,
     BootstrapResponse,
@@ -46,6 +58,7 @@ from agentic_runner_contracts.runner_registration import (
     HeartbeatEnvelope,
     IsolationMode,
     RecipientKey,
+    RunnerConnection,
     RunnerLimitReport,
 )
 from agentic_runner_contracts.runner_signature import (
@@ -111,7 +124,9 @@ class RunnerState(BaseModel):
     runner_id: UUID
     identity_id: str
     private_key_pem: str
-    temporal_namespace: str
+    # The namespace a Runner Registration Token registered it in; blank for a Runner
+    # `login` made, which learns every namespace from its ack's connections (rev 14).
+    temporal_namespace: str = ""
     task_queue: str
     # What this Runner asserts every Directive's routing against (PRD issue 42): the host
     # party the control plane registered it as, and the Tags it registered with. Both
@@ -127,6 +142,17 @@ class RunnerState(BaseModel):
     # Where bootstrap said the namespace lives (ADR-0022 §4). Blank in a state file written
     # before it, or from an older control plane: the process then uses `TEMPORAL_ADDRESS`.
     temporal_address: str = ""
+    # Spec: Runners rev 14: the person who operates this Runner, set by `login` and never
+    # changed; None for an Organisation's own Runner. `sign-in` refuses a subscription
+    # without one.
+    operator_user_profile_id: UUID | None = None
+
+    @property
+    def operated(self) -> bool:
+        """Whether a person operates this Runner: one ``login`` made, or one a token
+        registered as user-hosted before rev 14."""
+
+        return self.operator_user_profile_id is not None or self.host_party == "user"
 
     def signer(self) -> Ed25519PrivateKey:
         key = serialization.load_pem_private_key(
@@ -286,8 +312,42 @@ class RunnerRegistrationClient:
             max_concurrent_directives=max_concurrent_directives,
             heartbeat_interval_seconds=response.heartbeat_interval_seconds,
             temporal_address=response.temporal_address,
+            operator_user_profile_id=response.operator_user_profile_id,
         )
         return state, response
+
+    async def start_login(self, request: DeviceLoginRequest) -> DeviceAuthorization:
+        """``login``'s first call (rev 14): the code to show and where to confirm it."""
+
+        payload = await self._post(LOGIN_DEVICE_PATH, content=request.model_dump_json(), headers={})
+        return DeviceAuthorization.model_validate(payload)
+
+    async def finish_login(self, device_code: str) -> LoginResponse:
+        """One poll. Refused with the RFC 8628 reason until the person confirms."""
+
+        payload = await self._post(
+            LOGIN_TOKEN_PATH,
+            content=DeviceTokenRequest(device_code=device_code).model_dump_json(),
+            headers={},
+        )
+        return LoginResponse.model_validate(payload)
+
+    async def organisations(self, state: RunnerState) -> ConnectableOrganisations:
+        """The Organisations this Runner's operator belongs to, and where it may connect."""
+
+        url = f"{self._base_url}{ORGANISATIONS_PATH}"
+        payload = await self._send(
+            "GET", ORGANISATIONS_PATH, content=b"", headers=state.signed_headers("GET", url, b"")
+        )
+        return ConnectableOrganisations.model_validate(payload)
+
+    async def connect(self, state: RunnerState, organisation_id: UUID) -> RunnerConnection:
+        """Ask for a connection; the running Runner takes it up from its next ack."""
+
+        payload = await self._signed(
+            state, CONNECTIONS_PATH, ConnectRequest(organisation_id=organisation_id)
+        )
+        return RunnerConnection.model_validate(payload)
 
     async def heartbeat(self, state: RunnerState, envelope: HeartbeatEnvelope) -> HeartbeatAck:
         """Send one envelope, signed with the identity, and take back a fresh token."""
@@ -337,10 +397,16 @@ class RunnerRegistrationClient:
     async def _post(
         self, path: str, *, content: str | bytes, headers: dict[str, str]
     ) -> dict[str, Any]:
+        return await self._send("POST", path, content=content, headers=headers)
+
+    async def _send(
+        self, method: str, path: str, *, content: str | bytes, headers: dict[str, str]
+    ) -> dict[str, Any]:
         client = self._client or httpx.AsyncClient()
         owned = self._client is None
         try:
-            response = await client.post(
+            response = await client.request(
+                method,
                 f"{self._base_url}{path}",
                 content=content,
                 headers={"content-type": "application/json", **headers},

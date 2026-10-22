@@ -32,6 +32,7 @@ import pytest
 from agentic_runner import __version__ as runner_version
 from agentic_runner import service
 from agentic_runner.build import build_id
+from agentic_runner.connections import ConnectionSlots
 from agentic_runner.lifecycle import LifecycleOutbox
 from agentic_runner.recipient_key_secret import KubernetesSecrets, ensure_recipient_key
 from agentic_runner.registration import (
@@ -39,10 +40,12 @@ from agentic_runner.registration import (
     HEARTBEAT_PATH,
     RunnerRegistrationClient,
     RunnerRegistrationError,
+    RunnerState,
     can_separate_uids,
 )
 from agentic_runner.sealed_box import RecipientKeyStore, generate_recipient_key
 from agentic_runner.testing import FakeControlPlane
+from agentic_runner.testing.control_plane import DEFAULT_NAMESPACE, DEFAULT_ORGANISATIONS
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.runner_registration import (
     BootstrapRequest,
@@ -676,3 +679,92 @@ async def test_the_runner_refuses_to_start_on_a_pool_key_that_is_not_one(
     assert exit_code == 1
     assert "refusing to start (pool_key_invalid)" in capsys.readouterr().out
     assert plane.bootstraps == []
+
+
+# ------------------------------------------------------------------ connections (rev 14)
+
+
+async def _logged_in(plane: FakeControlPlane, state_dir: Path) -> RunnerState:
+    async def no_wait(_: float) -> None:
+        return None
+
+    async with httpx.AsyncClient(transport=plane.transport()) as http:
+        state, _ = await service.login(
+            state_dir=state_dir,
+            control_plane=CONTROL_PLANE,
+            name="laptop",
+            say=lambda _: None,
+            open_browser=lambda _: None,
+            client=http,
+            sleep=no_wait,
+        )
+    return state
+
+
+def _worker_slots(worker: FakeWorker) -> ConnectionSlots:
+    supplier = worker.kwargs["tuner"]._get_activity_task_slot_supplier()
+    assert isinstance(supplier, ConnectionSlots)
+    return supplier
+
+
+@pytest.mark.asyncio
+async def test_a_logged_in_runner_polls_each_connection_under_one_machine_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QTS-2252: two Organisations, two namespaces and tokens, one queue name and one limit;
+    a connection paused pauses its Worker, one removed drains while the other keeps polling."""
+
+    _environment(monkeypatch, tmp_path, isolation="none")
+    monkeypatch.delenv("AGENTIC_RUNNER_REGISTRATION_TOKEN")
+    monkeypatch.setenv("AGENTIC_RUNNER_MAX_CONCURRENT_DIRECTIVES", "2")
+    plane = FakeControlPlane(confirm_logins=True)
+    state = await _logged_in(plane, tmp_path)
+    acme, globex = DEFAULT_ORGANISATIONS
+    harness = Harness(plane)
+
+    async def drive() -> None:
+        await plane.wait_for(lambda: bool(plane.heartbeats))
+        assert harness.connects == [], "connected nowhere, it polls nothing"
+        async with httpx.AsyncClient(transport=plane.transport()) as http:
+            client = RunnerRegistrationClient(base_url=CONTROL_PLANE, client=http)
+            await client.connect(state, acme)
+            await client.connect(state, globex)
+        await plane.wait_for(lambda: len(harness.workers) == 2)
+        plane.pause(state.runner_id, globex)
+        await plane.wait_for(lambda: _worker_slots(harness.workers[1]).paused)
+        plane.disconnect(state.runner_id, acme)
+        await plane.wait_for(lambda: harness.workers[0]._stopped.is_set())
+        harness.stop.set()
+
+    driver = asyncio.create_task(drive())
+    assert await harness.run(can_change_uid=False) == 0
+    await driver
+
+    assert [c["namespace"] for c in harness.connects] == [DEFAULT_NAMESPACE, f"org-{globex}"]
+    assert len({c["api_key"] for c in harness.connects}) == 2
+    assert {w.kwargs["task_queue"] for w in harness.workers} == {f"runner.{state.runner_id}"}
+    acme_slots, globex_slots = (_worker_slots(w) for w in harness.workers)
+    assert acme_slots._machine is globex_slots._machine
+    assert acme_slots._machine.limit == 2
+    # The limit is the machine's own config, reported on every beat.
+    assert {beat.max_concurrent_directives for beat in plane.heartbeats} == {2}
+
+
+@pytest.mark.asyncio
+async def test_a_control_plane_without_connections_is_polled_in_the_registered_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control plane below 3.31 names no connections: the namespace bootstrap gave, with
+    the ack's Runner Token, as before rev 14."""
+
+    _environment(monkeypatch, tmp_path, isolation="none")
+    harness = Harness(FakeControlPlane(connections_on_ack=False))
+
+    assert await _run_until_connected(harness) == 0
+
+    [runner_id] = harness.plane.runner_ids
+    [connect] = harness.connects
+    assert (connect["namespace"], connect["api_key"]) == (
+        DEFAULT_NAMESPACE,
+        f"runner-token-{runner_id}-1",
+    )

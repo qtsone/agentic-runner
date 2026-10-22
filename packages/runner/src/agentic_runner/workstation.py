@@ -1,12 +1,15 @@
 """The workstation Runner: one login agent per Runner (PRD issue 47, map ticket 23).
 
-``agentic-runner install | start | stop | restart | status <name>`` and ``list``. Everything
-a CI-runner precedent does on a developer machine and nothing a daemon would need:
+``agentic-runner login | install | start | stop | restart | status <name>`` and ``list``.
+Everything a CI-runner precedent does on a developer machine and nothing a daemon would
+need:
 
 * **One process per Runner** (23 item 3), each with its own state directory, identity,
-  namespace, Runner Token, hooks, credential store and Workspaces under ``<root>/<name>/``.
-  A contractor with two clients runs two. There is no supervisor over N Runners -- that
-  is the "one Runner straddling Organisations" 12 A6 rejected.
+  hooks, credential store and Workspaces under ``<root>/<name>/``. From Spec: Runners rev
+  14, a Runner ``login`` made is the person's and serves each Organisation they connect it
+  to from that one process, under one concurrency limit (``connections``); 12 A6's "one
+  Runner straddling Organisations" is what rev 14 chose. A Runner ``install`` registered
+  with a token still serves its one Organisation.
 * **The name is the Runner's** (QTS-1773): the console lists the Runner under the name it
   was installed as, and every local command takes it. It was an Organisation label before,
   so the name a person chose on /me/runners read as an Organisation; an install made then
@@ -59,7 +62,7 @@ from agentic_runner.llm_contracts import load_llm_contracts
 from agentic_runner.organisation_name import load_organisation_name
 from agentic_runner.pool_key import parse_pool_key, save_pool_key
 from agentic_runner.private_state import UnsafeStateError
-from agentic_runner.registration import load_state
+from agentic_runner.registration import RunnerState, load_state
 from agentic_runner.service import HEARTBEAT_STAMP_NAME, PIDFILE_NAME
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES
 from agentic_runner_contracts.public_metadata import NAMESPACE_PREFIX
@@ -92,6 +95,7 @@ __all__ = [
     "default_root",
     "install",
     "install_channel",
+    "login",
     "installed_names",
     "installed_runner",
     "list_lines",
@@ -681,11 +685,7 @@ def status_lines(paths: RunnerPaths, *, now: datetime | None = None) -> list[str
     lines = [
         f"runner name    {paths.name} ({paths.state_dir})",
         f"process        {'running, pid ' + str(pid) if pid else 'not running'}",
-        (
-            f"identity       {state.runner_id} in {state.temporal_namespace} on {state.task_queue}"
-            if state is not None
-            else "identity       not registered"
-        ),
+        (_identity_line(state) if state is not None else "identity       not registered"),
         f"heartbeat      {'never' if age is None else f'{age:.0f}s ago'}",
     ]
     if pid and state is not None:
@@ -750,7 +750,8 @@ def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
         paths.name,
         (
             organisation_name
-            or (state.temporal_namespace.removeprefix(NAMESPACE_PREFIX)[:8] if state else "-")
+            or (state.temporal_namespace.removeprefix(NAMESPACE_PREFIX)[:8] if state else "")
+            or _organisations(contracts)
         ),
         (
             "-"
@@ -763,6 +764,24 @@ def _list_row(paths: RunnerPaths) -> tuple[str, str, str, str, str, str]:
         version,
         "running" if process_id(paths) else "stopped",
     )
+
+
+def _identity_line(state: RunnerState) -> str:
+    if state.temporal_namespace:
+        return (
+            f"identity       {state.runner_id} in {state.temporal_namespace} on {state.task_queue}"
+        )
+    # Rev 14: a Runner `login` made polls the queue in every namespace its ack connects it to.
+    return f"identity       {state.runner_id} on {state.task_queue} in each Organisation it serves"
+
+
+def _organisations(contracts: Sequence[ContractLlmTerms] | None) -> str:
+    """A Runner `login` made: the Organisations its connections serve, by the ack's names."""
+
+    names = [_printable(c.organisation_name) for c in contracts or [] if c.organisation_name]
+    if not names:
+        return "-"
+    return names[0] if len(names) == 1 else f"{len(names)} Organisations"
 
 
 def _contract_label(terms: ContractLlmTerms) -> str:
@@ -840,10 +859,6 @@ async def install(
     )
     if pool_key:
         save_pool_key(paths.state_dir, pool_key)
-    LifecycleOutbox(paths.state_dir).add(LifecycleKind.INSTALL, datetime.now(UTC))
-    definition = service_definition(paths, settings, platform=platform, home=home)
-    definition.path.parent.mkdir(parents=True, exist_ok=True)
-    definition.path.write_bytes(definition.content)
     lines = [outcome]
     if already_registered:
         # QTS-1314: the dogfood reinstall kept an Organisation-hosted identity while the
@@ -853,12 +868,74 @@ async def install(
             f"{state.runner_id}; to register a new one, stop it and move that directory "
             "aside (docs/workstation.md, Switch to a new token)"
         )
-    lines.append(f"login agent    {definition.path}")
+    lines.extend(
+        _install_login_agent(
+            paths, settings, platform=platform, home=home, start_service=start_service, run=run
+        )
+    )
     if start_service:
-        drive(definition.install + definition.start, run=run)
         lines.append(f"started        {state.runner_id}")
         lines.extend(next_step_lines(state.host_party))
     return lines
+
+
+async def login(
+    paths: RunnerPaths,
+    settings: WorkstationSettings,
+    *,
+    say: Callable[[str], None],
+    open_browser: Callable[[str], object],
+    platform: str = sys.platform,
+    home: Path | None = None,
+    start_service: bool = True,
+    run: Run = subprocess.run,
+    http_client: httpx.AsyncClient | None = None,
+) -> list[str]:
+    """Log this Runner in as the person's, and install its login agent (Spec: Runners rev 14).
+
+    ``install`` with a device flow in place of the pasted token: the person confirms the
+    code in the browser and the Runner is theirs, connected nowhere until ``connect``.
+    """
+
+    require_any_cli(settings.path)
+    paths.create()
+    settings.save(paths)
+    state, outcome = await service.login(
+        state_dir=paths.state_dir,
+        control_plane=settings.control_plane_url,
+        name=paths.name,
+        say=say,
+        open_browser=open_browser,
+        client=http_client,
+        isolation=IsolationMode.NONE,
+    )
+    lines = [
+        outcome,
+        *_install_login_agent(
+            paths, settings, platform=platform, home=home, start_service=start_service, run=run
+        ),
+    ]
+    if start_service:
+        lines.append(f"started        {state.runner_id}")
+    return lines
+
+
+def _install_login_agent(
+    paths: RunnerPaths,
+    settings: WorkstationSettings,
+    *,
+    platform: str,
+    home: Path | None,
+    start_service: bool,
+    run: Run,
+) -> list[str]:
+    LifecycleOutbox(paths.state_dir).add(LifecycleKind.INSTALL, datetime.now(UTC))
+    definition = service_definition(paths, settings, platform=platform, home=home)
+    definition.path.parent.mkdir(parents=True, exist_ok=True)
+    definition.path.write_bytes(definition.content)
+    if start_service:
+        drive(definition.install + definition.start, run=run)
+    return [f"login agent    {definition.path}"]
 
 
 def start(paths: RunnerPaths, **driver: Any) -> None:

@@ -2,7 +2,9 @@
 
 What the chart, Docker and workstation tests register a Runner against; ``GET /stats``
 reports what it saw. ``--deliver OPENAI_API_KEY=<value>`` pushes a funder's key to every
-Runner, sealed, as the chart test's one API-key Directive needs.
+Runner, sealed, as the chart test's one API-key Directive needs. ``--confirm-logins``
+confirms every ``agentic-runner login`` code at its first poll, since a shell script has no
+browser to confirm it in.
 """
 
 from __future__ import annotations
@@ -25,9 +27,14 @@ def main() -> None:
         metavar="SLOT=VALUE",
         help="seal VALUE under SLOT to every Runner, for the fake's one Contract",
     )
+    parser.add_argument("--confirm-logins", action="store_true")
     arguments = parser.parse_args()
 
-    plane = FakeControlPlane(namespace=arguments.namespace, host_party=arguments.host_party)
+    plane = FakeControlPlane(
+        namespace=arguments.namespace,
+        host_party=arguments.host_party,
+        confirm_logins=arguments.confirm_logins,
+    )
     for delivery in arguments.deliver:
         slot, _, value = delivery.partition("=")
         plane.deliver(slot, value)
