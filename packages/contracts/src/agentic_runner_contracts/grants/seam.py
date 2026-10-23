@@ -150,7 +150,6 @@ def decide_verb(
         persona=snapshot.persona,
         resource=resource,
         verb=verb,
-        account_contract=snapshot.account_contract,
         runner_limit=runner_limit,
     )
     entry = effective.deciding_entry

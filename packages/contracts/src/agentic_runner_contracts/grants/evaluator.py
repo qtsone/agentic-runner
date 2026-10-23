@@ -1,9 +1,5 @@
 """The Effective Grant: root grant ∩ Agent grant ∩ Persona allow-list (ADR-0011 §7).
 
-Under a Leaf Contract the intersection gains one term by reference (ADR-0011, PRD issue
-34): **Account Contract root ∩ Leaf root ∩ Agent ∩ Persona**. Nothing else changes —
-a Leaf stored wider than its Account Contract is legal and simply decides less.
-
 Pure, deterministic, never stored — there is no effective grant to invalidate, so a
 narrowing anywhere in the chain bites at the next verb with no drain and no revocation
 job. The Runner imports this module and evaluates every privileged verb against it; the
@@ -69,15 +65,9 @@ def evaluate_effective_grant(
     persona: Grant,
     resource: Resource,
     verb: str,
-    account_contract: Grant | None = None,
     runner_limit: Grant | None = None,
 ) -> EffectiveDecision:
     """Intersect the links for one (resource, verb) and say which link decided.
-
-    ``account_contract`` is the parent root of a Leaf Contract (PRD issue 34); ``None`` --
-    every direct Contract -- leaves the three-link chain exactly as it was. It is
-    evaluated first so that a refusal the agency inherited from the client is named as
-    the ``account_contract`` link rather than attributed to the Leaf's own root.
 
     ``runner_limit`` is the tools part of the Runner's Runner Limit (ADR-0022 §53);
     ``None`` leaves the chain as it was. It is evaluated last, so it is named as deciding
@@ -86,15 +76,6 @@ def evaluate_effective_grant(
     """
 
     links = (
-        *(
-            ()
-            if account_contract is None
-            else (
-                decide_link(
-                    GrantLink.ACCOUNT_CONTRACT, account_contract, resource=resource, verb=verb
-                ),
-            )
-        ),
         decide_link(GrantLink.ROOT, root, resource=resource, verb=verb),
         decide_link(GrantLink.AGENT, agent, resource=resource, verb=verb),
         decide_link(GrantLink.PERSONA, persona, resource=resource, verb=verb),
