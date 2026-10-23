@@ -57,7 +57,7 @@ DENY_MERGE = Grant(
 )
 
 # Every shape of answer the chain gives today: allow, confirm, a deny by entry, a deny by
-# default, an Account Contract refusal and an out-of-scope resource.
+# default and an out-of-scope resource.
 CHAINS = [
     pytest.param(
         {"root": ALLOW_BOTH, "agent": ALLOW_BOTH, "persona": ALLOW_BOTH}, REPO, id="allow"
@@ -73,16 +73,6 @@ CHAINS = [
     ),
     pytest.param({"root": ALLOW_BOTH, "agent": DENY_MERGE, "persona": ALLOW_BOTH}, REPO, id="deny"),
     pytest.param({"root": Grant(), "agent": ALLOW_BOTH, "persona": ALLOW_BOTH}, REPO, id="default"),
-    pytest.param(
-        {
-            "root": ALLOW_BOTH,
-            "agent": ALLOW_BOTH,
-            "persona": ALLOW_BOTH,
-            "account_contract": DENY_MERGE,
-        },
-        REPO,
-        id="account-contract",
-    ),
     pytest.param(
         {"root": ALLOW_BOTH, "agent": ALLOW_BOTH, "persona": ALLOW_BOTH}, OUT_OF_SCOPE, id="scope"
     ),

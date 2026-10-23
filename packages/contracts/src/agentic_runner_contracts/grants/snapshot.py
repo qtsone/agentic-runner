@@ -111,11 +111,6 @@ class GrantSnapshot:
     root: Grant = EMPTY_GRANT
     agent: Grant = EMPTY_GRANT
     persona: Grant = EMPTY_GRANT
-    # PRD issue 34, map ticket 21 A5: the Account Contract root a Leaf's Effective Grant
-    # also intersects. ``None`` -- every direct Contract, and every payload from a backend
-    # that predates the field -- leaves the chain three links long, exactly as before.
-    account_contract: Grant | None = None
-    account_contract_id: str | None = None
     resources: tuple[ResourceRegistration, ...] = ()
     # ADR-0018 §3: the live Products of the Contract's effective scope. Re-read with the
     # rest of the snapshot, so a Product dropped from the Contract leaves at the next
@@ -138,16 +133,6 @@ class GrantSnapshot:
             root=Grant.model_validate(payload["root_grant"]),
             agent=Grant.model_validate(payload["agent_grant"]),
             persona=Grant.model_validate(payload["persona_allow_list"]),
-            account_contract=(
-                None
-                if payload.get("account_contract_root_grant") is None
-                else Grant.model_validate(payload["account_contract_root_grant"])
-            ),
-            account_contract_id=(
-                None
-                if payload.get("account_contract_id") is None
-                else str(payload["account_contract_id"])
-            ),
             resources=tuple(
                 ResourceRegistration(
                     resource_type=str(resource["resource_type"]),

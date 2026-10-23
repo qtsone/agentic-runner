@@ -105,11 +105,11 @@ Every name the workflow engine or a Runner's heartbeat exposes that payload encr
 _Avoid_: Unencrypted fields, cleartext metadata, labels, opaque identifiers
 
 **Grant**:
-A set of entries, each naming a resource type, a resource selector and a decision per verb, that bounds what an actor may do to an Organisation's resources; deny by default. Three exist in a chain — the Contract's root grant (`allow`/`deny`), the user's grant to an Agent (`allow`/`confirm`/`deny`), and the Persona's allow-list — four when the Contract is a Leaf Contract, whose Account Contract's root grant sits above it — and none carries a tier: Grants bound verbs, Approval Mandates bound Outcomes.
+A set of entries, each naming a resource type, a resource selector and a decision per verb, that bounds what an actor may do to an Organisation's resources; deny by default. Three exist in a chain — the Contract's root grant (`allow`/`deny`), the user's grant to an Agent (`allow`/`confirm`/`deny`), and the Persona's allow-list — and none carries a tier: Grants bound verbs, Approval Mandates bound Outcomes.
 _Avoid_: Permission, Scope, Capability, Policy, ACL
 
 **Effective Grant**:
-What an Agent may actually do: the intersection of the root grant (and, under a Leaf Contract, the Account Contract's root grant above it), the Agent's Grant and its Persona's allow-list, computed at every evaluation and never stored, so no actor can ever hold more than the link above it in the chain.
+What an Agent may actually do: the intersection of the root grant, the Agent's Grant and its Persona's allow-list, computed at every evaluation and never stored, so no actor can ever hold more than the link above it in the chain.
 _Avoid_: Resolved permissions, Merged scope, Computed grant
 
 **Verb Catalogue**:

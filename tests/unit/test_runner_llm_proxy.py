@@ -37,7 +37,7 @@ from agentic_runner_contracts.llm_usage import ModelPrice
 from agentic_runner_contracts.runner_registration import SlotProbe
 
 CONTRACT = UUID("11111111-1111-4111-8111-111111111111")
-ACCOUNT_CONTRACT = UUID("22222222-2222-4222-8222-222222222222")
+OTHER_CONTRACT = UUID("22222222-2222-4222-8222-222222222222")
 AGENT = UUID("33333333-3333-4333-8333-333333333333")
 WORK_RECORD = UUID("44444444-4444-4444-8444-444444444444")
 DIRECTIVE = "wr-1:d1"
@@ -265,7 +265,7 @@ async def test_the_host_stores_key_serves_every_contract(provider: FakeProvider)
     async with LlmProxy(
         slots=slots, client=httpx.AsyncClient(transport=provider.transport())
     ) as running:
-        for contract_id in (CONTRACT, ACCOUNT_CONTRACT):
+        for contract_id in (CONTRACT, OTHER_CONTRACT):
             async with running.attempt(
                 directive_id=DIRECTIVE, contract_id=contract_id, provider="openai"
             ) as handle:
