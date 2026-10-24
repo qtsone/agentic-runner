@@ -45,6 +45,13 @@ async def run_triage_turn(
     turn off this Runner's store key (``LlmProxy.attempt``).
     """
 
+    body: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+    if reserve_max_tokens:
+        # The proxy refuses only a call that starts with the Reserve spent, so one
+        # completion could run past it; the turn is a fresh attempt, so all of the Reserve
+        # is left (QTS-2455). `max_completion_tokens`, not `max_tokens`: OpenAI refuses the
+        # older name on its reasoning models, the triage default among them.
+        body["max_completion_tokens"] = reserve_max_tokens
     http = client or httpx.AsyncClient()
     try:
         async with proxy.attempt(
@@ -56,7 +63,7 @@ async def run_triage_turn(
         ) as handle:
             response = await http.post(
                 f"{handle.base_url}/chat/completions",
-                json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                json=body,
                 headers={"authorization": f"Bearer {handle.token}"},
                 timeout=timeout_seconds,
             )
