@@ -96,7 +96,7 @@ async def test_a_directive_resolves_from_the_store_whatever_its_contract() -> No
         credential_references=(REFERENCE,),
     )
 
-    credentials = await activities._resolve_credentials("wr-1", state)
+    credentials = await activities._resolve_credentials("wr-1", state, "wr-1:1")
     assert credentials is not None
     assert credentials.for_verb_seam(REFERENCE) == INSTALLED
 

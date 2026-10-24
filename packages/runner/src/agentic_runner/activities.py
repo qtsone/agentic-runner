@@ -312,6 +312,7 @@ from agentic_runner_contracts.runtime_context import (
     WorkerRuntimeContextResolver,
     work_branch_name,
 )
+from agentic_runner_contracts.secret import SecretRelease, SecretReleaseRequest
 from agentic_runner_contracts.swarm import ROLE_LEAD
 
 _GIT_EVIDENCE_LIMIT_BYTES = 32_768
@@ -567,6 +568,11 @@ class RunnerRalphFastApiClient(Protocol):
         self, work_record_id: str, llm_key_id: str, payload: Mapping[str, Any]
     ) -> dict[str, Any]:
         """The sealed shares of the pool's LLM Key a Directive was routed to (rev 3)."""
+
+    async def release_secrets(
+        self, work_record_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The sealed shares of the Secrets a Directive needs (Agent Guardrails rev 7)."""
 
     async def report_harness_usage(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
         """One Usage Record per model off a harness's own JSON (PRD issue 31, 17 A9)."""
@@ -2767,7 +2773,7 @@ class RunnerRalphActivities:
             )
 
         await self._refuse_skill_digest_mismatch(work_record_id, state)
-        credentials = await self._resolve_credentials(work_record_id, state)
+        credentials = await self._resolve_credentials(work_record_id, state, attempt_directive_id)
         if credentials is not None:
             # Names only, at the moment they resolved (22 A1's Evidence): a support read
             # of "which credentials did this Directive have" must not be answerable by
@@ -3185,23 +3191,29 @@ class RunnerRalphActivities:
         self,
         work_record_id: str,
         state: _RuntimeContextState,
+        attempt_directive_id: str,
     ) -> DirectiveCredentials | None:
         """Resolve this Contract's Credential References, or fail the Directive closed.
 
         22 A1: the Runner resolves a reference at Directive time from its host store and
-        hands the value only to verb seams and Runner-hosted MCP servers. An unresolvable
-        one is not degraded into "run without it" -- the Directive would then do the work
-        wrong and the Evidence would not say why -- so it raises, naming the reference,
-        after appending the Evidence that names it.
+        hands the value only to verb seams and Runner-hosted MCP servers. A reference the
+        host does not hold is asked of the control plane as a Secret (Agent Guardrails rev
+        7, S4). An unresolvable one is not degraded into "run without it" -- the Directive
+        would then do the work wrong and the Evidence would not say why -- so it raises,
+        naming the reference, after appending the Evidence that names it.
         """
 
         if not state.credential_references:
             return None
         resolver = self._credentials or CredentialResolver(store=EmptyCredentialStore())
         try:
+            released = await self._release_secrets(
+                work_record_id, state, resolver, attempt_directive_id
+            )
             return resolver.resolve(
                 contract_id=state.contract_id,
                 manifest=state.credential_references,
+                released=released,
             )
         except UnresolvableCredentialReferenceError as error:
             await self._fastapi_client.append_evidence(
@@ -3210,6 +3222,50 @@ class RunnerRalphActivities:
                 payload=error.evidence(),
             )
             raise
+
+    async def _release_secrets(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        resolver: CredentialResolver,
+        attempt_directive_id: str,
+    ) -> dict[str, str]:
+        """The Secrets this Directive needs and the host does not hold, opened in memory.
+
+        Asked only by a Runner holding the Organisation Key, the one holder key a Secret is
+        sealed to in this release; any other leaves the names to fail as not installed. The
+        values live in the Directive's credentials and nowhere else, and go with it.
+        """
+
+        missing = [
+            reference
+            for reference in state.credential_references
+            if not resolver.usable(str(state.contract_id), reference)
+        ]
+        fingerprint = self._llm_keys.fingerprint if self._llm_keys is not None else None
+        if not missing or self._llm_keys is None or fingerprint is None:
+            return {}
+        try:
+            payload = await self._fastapi_client.release_secrets(
+                work_record_id,
+                SecretReleaseRequest(
+                    directive_id=attempt_directive_id,
+                    names=missing,
+                    holder_fingerprints=[fingerprint],
+                ).model_dump(mode="json"),
+            )
+        except WorkerFastApiClientRejectionError as error:
+            raise UnresolvableCredentialReferenceError(
+                missing[0],
+                contract_id=state.contract_id,
+                reason=f"secret_release_refused:{error.status_code}",
+            ) from error
+        try:
+            return self._llm_keys.open_secrets(SecretRelease.model_validate(payload), names=missing)
+        except (ValidationError, LlmKeyUnopenableError) as error:
+            raise UnresolvableCredentialReferenceError(
+                missing[0], contract_id=state.contract_id, reason="secret_unopenable"
+            ) from error
 
     async def _directive_auth_mode(
         self, work_record_id: str, state: _RuntimeContextState, access: LlmAccess | None = None
