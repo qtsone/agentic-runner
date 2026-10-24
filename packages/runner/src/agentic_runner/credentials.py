@@ -260,8 +260,13 @@ class CredentialResolver:
         *,
         contract_id: str | None,
         manifest: Iterable[str],
+        released: Mapping[str, str] | None = None,
     ) -> DirectiveCredentials:
         """Every reference the Contract declares, or the first failure, named.
+
+        ``released`` holds the Secrets the control plane released for this Directive
+        (Spec: Agent Guardrails rev 7, S4). They come last: a value this Runner's host
+        installed under the same name still counts, and wins (A2).
 
         Fails on the *first* unresolvable reference rather than collecting them: a
         Directive that cannot have one of its credentials is not going to run, and a
@@ -271,6 +276,8 @@ class CredentialResolver:
         values: dict[str, str] = {}
         for reference in manifest:
             value = self._value(contract_id, reference)
+            if value is None and released is not None:
+                value = released.get(reference)
             if value is None:
                 raise UnresolvableCredentialReferenceError(
                     reference, contract_id=contract_id, reason="not_installed"
