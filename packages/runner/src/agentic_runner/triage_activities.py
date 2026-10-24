@@ -36,13 +36,14 @@ async def run_triage_turn(
     reserve_max_tokens: int | None = None,
     delivered_only: bool = False,
     client: httpx.AsyncClient | None = None,
-) -> str | None:
+) -> TriageTurnOutput:
     """One completion through this Runner's proxy, metered like any Directive.
 
-    ``None`` on anything that keeps the answer from being trusted -- a hang, a ceiling or
-    Reserve refusal, a missing slot, a malformed body: the caller's fallback is the
-    keyword classifier, never an Incident (PRD issue 29). ``delivered_only`` keeps the
-    turn off this Runner's store key (``LlmProxy.attempt``).
+    ``raw_text`` is ``None`` on anything that keeps the answer from being trusted -- a
+    hang, a ceiling or Reserve refusal, a missing slot, a malformed body: the caller's
+    fallback is the keyword classifier, never an Incident (PRD issue 29). ``spent_tokens``
+    is what the proxy counted against the Reserve, an untrusted answer's tokens included.
+    ``delivered_only`` keeps the turn off this Runner's store key (``LlmProxy.attempt``).
     """
 
     body: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": prompt}]}
@@ -53,6 +54,7 @@ async def run_triage_turn(
         # older name on its reasoning models, the triage default among them.
         body["max_completion_tokens"] = reserve_max_tokens
     http = client or httpx.AsyncClient()
+    spent = 0
     try:
         async with proxy.attempt(
             directive_id=directive_id,
@@ -61,17 +63,22 @@ async def run_triage_turn(
             reserve_max_tokens=reserve_max_tokens,
             delivered_only=delivered_only,
         ) as handle:
-            response = await http.post(
-                f"{handle.base_url}/chat/completions",
-                json=body,
-                headers={"authorization": f"Bearer {handle.token}"},
-                timeout=timeout_seconds,
-            )
+            try:
+                response = await http.post(
+                    f"{handle.base_url}/chat/completions",
+                    json=body,
+                    headers={"authorization": f"Bearer {handle.token}"},
+                    timeout=timeout_seconds,
+                )
+            finally:
+                # Inside the attempt: its end forgets the count. A call that timed out on
+                # this side may still have been metered on the proxy's.
+                spent = proxy.reserve_spent(handle.attempt_id)
         if response.status_code >= 400:
-            return None
-        return _content(response.json())
+            return TriageTurnOutput(raw_text=None, spent_tokens=spent)
+        return TriageTurnOutput(raw_text=_content(response.json()), spent_tokens=spent)
     except (httpx.HTTPError, ValueError):
-        return None
+        return TriageTurnOutput(raw_text=None, spent_tokens=spent)
     finally:
         if client is None:
             await http.aclose()
@@ -119,8 +126,8 @@ class RunnerTriageActivities:
         if (refusal := self._connection_refusal(contract_id)) is not None:
             # No answer is the turn's own failure mode: the keyword classifier decides.
             _logger.warning("triage turn refused: %s for Contract %s", refusal, contract_id)
-            return TriageTurnOutput(raw_text=None)
-        raw_text = await run_triage_turn(
+            return TriageTurnOutput(raw_text=None, spent_tokens=0)
+        return await run_triage_turn(
             self._proxy,
             model=self._model,
             timeout_seconds=self._timeout_seconds,
@@ -132,7 +139,6 @@ class RunnerTriageActivities:
             delivered_only=self._pool_runner_before_named_access(),
             client=self._client,
         )
-        return TriageTurnOutput(raw_text=raw_text)
 
     def _connection_refusal(self, contract_id: UUID | None) -> str | None:
         organisation = self._connection_organisation() if self._connection_organisation else None
