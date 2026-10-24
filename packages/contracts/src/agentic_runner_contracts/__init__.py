@@ -164,6 +164,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `intake_filter` still reads. The ack forbids extra keys, so the control plane sends the
 # three assignment fields only to a Runner whose heartbeat names contracts 3.33 or later;
 # the Runner sends `listener_id` only on a Listener's firing, which only that ack starts.
-__version__ = "3.32.1"
+__version__ = "3.33.0"
 
 __all__ = ["__version__"]

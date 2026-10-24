@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.33.0](https://github.com/qtsone/agentic-runner/compare/v3.32.1...v3.33.0) (2026-10-24)
+
+
+### Features
+
+* **runner:** listeners on a member's own connected slack (QTS-2392) ([#93](https://github.com/qtsone/agentic-runner/issues/93)) ([d477513](https://github.com/qtsone/agentic-runner/commit/d47751393cb08405308531187c508756fe664e59))
+
 ## [3.32.1](https://github.com/qtsone/agentic-runner/compare/v3.32.0...v3.32.1) (2026-10-24)
 
 
