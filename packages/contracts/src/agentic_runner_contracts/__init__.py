@@ -155,6 +155,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose bootstrap or heartbeat names contracts 3.31 or later; a Runner given no connections
 # polls the one namespace it registered in, as before. Does not raise the floor, but only a
 # Runner on 3.31 can log in or serve more than one Organisation.
-__version__ = "3.31.1"
+__version__ = "3.32.0"
 
 __all__ = ["__version__"]

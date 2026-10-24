@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.32.0](https://github.com/qtsone/agentic-runner/compare/v3.31.1...v3.32.0) (2026-10-24)
+
+
+### Features
+
+* **contracts:** verb catalogue v7 names each harness tool of a listener firing (QTS-2452) ([#89](https://github.com/qtsone/agentic-runner/issues/89)) ([0d6db1a](https://github.com/qtsone/agentic-runner/commit/0d6db1ab2d1ec2d8f065ab9316b4b79897f9fbb4))
+
 ## [3.31.1](https://github.com/qtsone/agentic-runner/compare/v3.31.0...v3.31.1) (2026-10-22)
 
 
