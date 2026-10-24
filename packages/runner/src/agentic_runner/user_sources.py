@@ -15,6 +15,9 @@ the control plane unless the Product's Intake Lead decides it is work:
    seam (16 A10). With the Source's reply toggle on, the Runner answers in the thread with
    the owner's own credential (16 A5); off, it says nothing and the owner is asked.
 
+A Slack Source whose ack lists the member's Listeners (QTS-2392) skips steps 2 and 3:
+each matching Listener fires on its own instead (``listener_firing``).
+
 The connectors keep a per-Source high-water mark in memory. It is the connector's cursor,
 not an activity's state (ADR-0013 §3 is about activities); a restart re-reads what is still
 unseen and the control plane's idempotency key lands a re-sent message on its first record.
@@ -39,8 +42,10 @@ from uuid import UUID, uuid4
 import httpx
 
 from agentic_runner.credentials import HostCredentialStore
+from agentic_runner.listener_firing import ListenerFirer, ListenerTurn, SlackScanner
 from agentic_runner.llm_proxy import LlmProxy
 from agentic_runner.triage_activities import run_triage_turn
+from agentic_runner_contracts.listeners import ListenerAssignment, ListenerDraftRequest
 from agentic_runner_contracts.triage import TriageCandidate, TriageDecision, build_prompt, decide
 from agentic_runner_contracts.user_sources import (
     MEMBER_INSTALLS_DISABLED,
@@ -109,11 +114,13 @@ class SourceConnector(Protocol):
 
 
 class IntakeStream(Protocol):
-    """The two outbound calls, signed with the Runner identity (``registration``)."""
+    """The outbound calls, signed with the Runner identity (``registration``)."""
 
     async def create_work_record(self, request: IntakeWorkRequest) -> IntakeWorkResponse: ...
 
     async def report_ignored(self, report: IntakeIgnoredReport) -> None: ...
+
+    async def create_draft(self, request: ListenerDraftRequest) -> None: ...
 
 
 Triage = Callable[
@@ -311,6 +318,16 @@ class SlackUserConnector:
         self._me = assignment.address.rpartition("/")[2]
         self._oldest: dict[str, str] = {}
 
+    @property
+    def api(self) -> SlackUserApi:
+        return self._api
+
+    @property
+    def me(self) -> str:
+        """The member's Slack id, as ``auth.test`` answered it."""
+
+        return self._me
+
     async def connect(self) -> None:
         answer = await self._api.call("auth.test", {})
         if answer.get("ok"):
@@ -398,6 +415,24 @@ class ProxyTriage:
         raw = await self._run(assignment, directive_id=directive_id, prompt=prompt)
         return decide(raw, text, candidates=candidates), directive_id
 
+    async def listener_turn(
+        self, listener: ListenerAssignment, *, directive_id: str, prompt: str
+    ) -> str | None:
+        """A Listener firing's turn: funded on its Agent's Contract and stopped at its
+        token cap (QTS-2455), metered under the firing's Directive id."""
+
+        return await run_triage_turn(
+            self.proxy,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+            prompt=prompt,
+            directive_id=directive_id,
+            contract_id=listener.contract_id,
+            agent_id=listener.agent_id,
+            reserve_max_tokens=listener.token_cap,
+            client=self.client,
+        )
+
     async def _run(
         self, assignment: UserSourceAssignment, *, directive_id: str, prompt: str
     ) -> str | None:
@@ -437,11 +472,15 @@ class UserSourcePoller:
     store: HostCredentialStore
     triage: Triage
     connector_factory: ConnectorFactory = default_connector
+    # ``None`` runs no Listener: a Slack Source then keeps its Intake Filter.
+    listener_turn: ListenerTurn | None = None
     _assignments: list[UserSourceAssignment] = field(default_factory=list)
     _connectors: dict[UUID, tuple[UserSourceAssignment, SourceConnector]] = field(
         default_factory=dict
     )
     _status: dict[UUID, SourceStatus] = field(default_factory=dict)
+    _scanners: dict[UUID, SlackScanner] = field(default_factory=dict)
+    _firer: ListenerFirer | None = None
 
     def assign(self, assignments: Sequence[UserSourceAssignment]) -> None:
         """What the last ack pushed. Authoritative: a Source not in it is dropped."""
@@ -451,6 +490,7 @@ class UserSourcePoller:
         for source_id in list(self._connectors):
             if source_id not in live:
                 del self._connectors[source_id]
+                self._scanners.pop(source_id, None)
         self._status = {k: v for k, v in self._status.items() if k in live}
 
     def statuses(self) -> list[SourceStatus]:
@@ -470,6 +510,13 @@ class UserSourcePoller:
     async def poll_one(self, assignment: UserSourceAssignment) -> None:
         connector = await self._connector(assignment)
         if connector is None:
+            return
+        if (
+            assignment.listeners
+            and self.listener_turn is not None
+            and isinstance(connector, SlackUserConnector)
+        ):
+            await self._fire_listeners(assignment, connector, self.listener_turn)
             return
         try:
             messages = await connector.fetch_new()
@@ -520,6 +567,44 @@ class UserSourcePoller:
                 else f"I need a hand with this: {decision.reason}"
             )
             await connector.reply(survivors[0], text)
+
+    async def _fire_listeners(
+        self,
+        assignment: UserSourceAssignment,
+        connector: SlackUserConnector,
+        turn: ListenerTurn,
+    ) -> None:
+        scanner = self._scanners.get(assignment.source_id)
+        if scanner is None or scanner.me != connector.me:
+            scanner = SlackScanner(api=connector.api, me=connector.me)
+            self._scanners[assignment.source_id] = scanner
+        channels = sorted(
+            {channel for listener in assignment.listeners for channel in listener.match.channel_ids}
+        )
+        direct_messages = any(
+            listener.match.signal == "direct_message" for listener in assignment.listeners
+        )
+        events = await scanner.scan(channels, direct_messages=direct_messages)
+        self._status[assignment.source_id] = SourceStatus(
+            source_id=assignment.source_id, connected=True
+        )
+        if self._firer is None:
+            self._firer = ListenerFirer(intake=self.stream, turn=turn)
+        await self._firer.fire_all(
+            assignment,
+            events,
+            api=connector.api,
+            scanner=scanner,
+            reply_enabled=lambda: self._reply_enabled(assignment.source_id),
+        )
+
+    def _reply_enabled(self, source_id: UUID) -> bool:
+        # The latest ack's switch, read on every call: switching replies off in the console
+        # silences a firing already under way from the next beat on.
+        return any(
+            current.source_id == source_id and current.reply_enabled
+            for current in self._assignments
+        )
 
     async def _connector(self, assignment: UserSourceAssignment) -> SourceConnector | None:
         held = self._connectors.get(assignment.source_id)

@@ -155,6 +155,15 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose bootstrap or heartbeat names contracts 3.31 or later; a Runner given no connections
 # polls the one namespace it registered in, as before. Does not raise the floor, but only a
 # Runner on 3.31 can log in or serve more than one Organisation.
+# 3.33.0 (QTS-2392, Spec: chat intake rev 2): Listeners on a member's own connected Slack.
+# `listeners` -- `ListenerAssignment`, `ListenerMatchSpec`, `ListenerContextOptions`,
+# `ListenerDraftRequest` on `INTAKE_DRAFTS_PATH`, and the firing prompt, template fill and
+# tool-call shape the platform's own Tool Server uses; `UserSourceAssignment.listeners`,
+# `.product_name` and `.member_ids`; `IntakeWorkRequest.listener_id` and
+# `IntakeIgnoredReport.listener_id`; `classification_source: automatic`. Additive:
+# `intake_filter` still reads. The ack forbids extra keys, so the control plane sends the
+# three assignment fields only to a Runner whose heartbeat names contracts 3.33 or later;
+# the Runner sends `listener_id` only on a Listener's firing, which only that ack starts.
 __version__ = "3.32.1"
 
 __all__ = ["__version__"]

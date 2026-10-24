@@ -23,6 +23,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from agentic_runner_contracts.listeners import ListenerAssignment
+
 __all__ = [
     "MEMBER_INSTALLS_DISABLED",
     "MEMBER_INSTALLS_DISABLED_MESSAGE",
@@ -118,6 +120,16 @@ class UserSourceAssignment(BaseModel):
     intake_lead_contract_id: UUID
     intake_brief: Annotated[str, StringConstraints(max_length=4000)] | None = None
     candidates: list[TriageCandidateRef] = Field(default_factory=list, max_length=64)
+    # Slack only (QTS-2392): the member's Listeners on this Source. While any is listed
+    # they replace ``intake_filter`` and the Intake Lead's Triage Directive here; each
+    # matching Listener fires on its own, as on the Organisation's Slack. The ack forbids
+    # extra keys, so the control plane omits these three on a Runner below 3.33.
+    listeners: list[ListenerAssignment] = Field(default_factory=list, max_length=64)
+    product_name: Annotated[str, StringConstraints(max_length=200)] = ""
+    # The Slack ids the Organisation maps to its members: who a ``who: members`` admits.
+    member_ids: list[Annotated[str, StringConstraints(min_length=1, max_length=64)]] = Field(
+        default_factory=list, max_length=1000
+    )
 
 
 class SourceStatus(BaseModel):
@@ -145,7 +157,8 @@ class IntakeWorkRequest(BaseModel):
     product_id: UUID
     directive_id: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     outcome: Literal["own", "ask"]
-    classification_source: Literal["llm", "fallback"]
+    # ``automatic``: an automatic Listener's firing, which no Directive decided.
+    classification_source: Literal["llm", "fallback", "automatic"]
     reason: Annotated[str, StringConstraints(max_length=500)]
     # The chosen Lead for ``own`` (16 A8); ``ask`` is held on the Intake Lead itself.
     lead_agent_id: UUID | None = None
@@ -153,6 +166,9 @@ class IntakeWorkRequest(BaseModel):
     requester: Annotated[str, StringConstraints(min_length=1, max_length=320)]
     budget_max_tokens: int | None = Field(default=None, ge=0)
     message_refs: list[MessageRef] = Field(min_length=1, max_length=50)
+    # The Listener whose firing opens the work (QTS-2392); ``None`` is the Intake Lead's
+    # Triage Directive. Sent only when set: the request forbids extra keys.
+    listener_id: UUID | None = None
 
 
 class IntakeWorkResponse(BaseModel):
@@ -173,3 +189,4 @@ class IntakeIgnoredReport(BaseModel):
     directive_id: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     classification_source: Literal["llm", "fallback"]
     message_refs: list[MessageRef] = Field(min_length=1, max_length=50)
+    listener_id: UUID | None = None
