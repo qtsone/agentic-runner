@@ -18,7 +18,12 @@ from uuid import UUID, uuid4
 import pytest
 
 from agentic_runner.credentials import FakeCredentialStore
-from agentic_runner.listener_firing import HourlyCap, SlackEvent, listener_matches
+from agentic_runner.listener_firing import (
+    HourlyCap,
+    SlackEvent,
+    SlackScanner,
+    listener_matches,
+)
 from agentic_runner.user_sources import SlackUserConnector, UserSourcePoller
 from agentic_runner_contracts.listeners import (
     ListenerAssignment,
@@ -147,6 +152,7 @@ class FakeSlack:
         self.channels: dict[str, list[dict[str, Any]]] = {BUGS: [], RANDOM: [], "D1": []}
         self.replies: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.calls: list[tuple[str, dict[str, str]]] = []
+        self.failing: set[str] = set()
         self._clock = 100
 
     def say(self, channel: str, text: str, *, user: str = ALICE) -> str:
@@ -174,6 +180,8 @@ class FakeSlack:
 
     async def call(self, method: str, params: Mapping[str, str]) -> dict[str, Any]:
         self.calls.append((method, dict(params)))
+        if method in self.failing:
+            return {"ok": False, "error": "ratelimited"}
         if method == "auth.test":
             return {"ok": True, "user_id": ME}
         if method == "conversations.list":
@@ -498,6 +506,58 @@ async def test_thread_replies_reactions_and_direct_messages_are_events() -> None
     fired = {listener.listener_id for listener, _, _ in turn.turns}
     assert fired == {replies.listener_id, reactions.listener_id, dms.listener_id}
     assert len(turn.turns) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_keeps_the_cursor_so_recovery_fires_on_nothing_old() -> None:
+    slack = FakeSlack()
+    old = slack.say(BUGS, "the build is red")
+    slack.react(BUGS, old, "bug")
+    slack.answer(BUGS, old, "since noon")
+    slack.say("D1", "an old direct message")
+    scanner = SlackScanner(api=slack, me=ME)
+    assert await scanner.scan([BUGS], direct_messages=True) == []
+
+    slack.failing = {"conversations.history", "conversations.list"}
+    assert await scanner.scan([BUGS], direct_messages=True) == []
+    slack.failing = set()
+    assert await scanner.scan([BUGS], direct_messages=True) == []
+
+    new = slack.say("D1", "a new direct message")
+    events = await scanner.scan([BUGS], direct_messages=True)
+    assert [(event.channel_id, event.message_ts) for event in events] == [("D1", new)]
+
+
+@pytest.mark.asyncio
+async def test_a_first_scan_that_fails_leaves_the_next_one_to_baseline() -> None:
+    slack = FakeSlack()
+    old = slack.say(BUGS, "the build is red")
+    slack.react(BUGS, old, "bug")
+    scanner = SlackScanner(api=slack, me=ME)
+    slack.failing = {"conversations.history"}
+    assert await scanner.scan([BUGS], direct_messages=False) == []
+    slack.failing = set()
+    assert await scanner.scan([BUGS], direct_messages=False) == []
+
+    new = slack.say(BUGS, "still red")
+    events = await scanner.scan([BUGS], direct_messages=False)
+    assert [event.message_ts for event in events] == [new]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_replies_read_is_read_again_and_loses_no_reply() -> None:
+    slack = FakeSlack()
+    parent = slack.say(BUGS, "the build is red")
+    scanner = SlackScanner(api=slack, me=ME)
+    await scanner.scan([BUGS], direct_messages=False)
+
+    slack.answer(BUGS, parent, "since noon")
+    slack.failing = {"conversations.replies"}
+    assert await scanner.scan([BUGS], direct_messages=False) == []
+    slack.failing = set()
+    events = await scanner.scan([BUGS], direct_messages=False)
+    assert [event.text for event in events] == ["since noon"]
+    assert await scanner.scan([BUGS], direct_messages=False) == []
 
 
 @pytest.mark.asyncio

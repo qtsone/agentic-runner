@@ -239,24 +239,34 @@ class SlackScanner:
 
     async def scan(self, channel_ids: Sequence[str], *, direct_messages: bool) -> list[SlackEvent]:
         conversations = [(channel_id, False) for channel_id in channel_ids]
+        listed_ok = True
         if direct_messages:
             listed = await self.api.call("conversations.list", {"types": "im"})
+            listed_ok = _answered(listed, "conversations.list")
             conversations += [
                 (str(channel.get("id")), True) for channel in listed.get("channels") or []
             ]
         events: list[SlackEvent] = []
         for channel_id, is_im in conversations:
             events += await self._scan_one(channel_id, is_im=is_im)
-        live = {channel_id for channel_id, _ in conversations}
-        for channel_id in list(self._cursors):
-            if channel_id not in live:
-                del self._cursors[channel_id]
+        # Without the IM list this poll cannot tell a closed IM from a live one; dropping
+        # their cursors would re-baseline them next poll and miss what arrived in between.
+        if listed_ok:
+            live = {channel_id for channel_id, _ in conversations}
+            for channel_id in list(self._cursors):
+                if channel_id not in live:
+                    del self._cursors[channel_id]
         return sorted(events, key=lambda event: _ts(event.message_ts))
 
     async def _scan_one(self, channel_id: str, *, is_im: bool) -> list[SlackEvent]:
         history = await self.api.call(
             "conversations.history", {"channel": channel_id, "limit": str(SCAN_WINDOW)}
         )
+        # A failed read (rate limited, not in the channel) leaves the cursor where it was:
+        # one written from no messages forgets every reaction and thread in the window, and
+        # the next good read would fire on all of them -- as the member, into old threads.
+        if not _answered(history, "conversations.history"):
+            return []
         items = [item for item in reversed(history.get("messages") or []) if item.get("ts")]
         cursor = self._cursors.get(channel_id)
         kind: EventKind = "direct_message" if is_im else "channel_message"
@@ -291,9 +301,17 @@ class SlackScanner:
             if item.get("reply_count") and latest_reply:
                 threads[ts] = str(latest_reply)
                 if cursor is not None and cursor.threads.get(ts) != latest_reply:
-                    events += await self._replies(
+                    replies = await self._replies(
                         item, channel_id, kind, since=cursor.threads.get(ts, ts)
                     )
+                    if replies is None:
+                        # Read again from the same point next poll, so no reply is lost.
+                        if ts in cursor.threads:
+                            threads[ts] = cursor.threads[ts]
+                        else:
+                            del threads[ts]
+                    else:
+                        events += replies
         self._cursors[channel_id] = _Cursor(
             latest_ts=latest, reactions=frozenset(reactions), threads=threads
         )
@@ -301,12 +319,14 @@ class SlackScanner:
 
     async def _replies(
         self, parent: Mapping[str, Any], channel_id: str, kind: EventKind, *, since: str
-    ) -> list[SlackEvent]:
+    ) -> list[SlackEvent] | None:
         thread_ts = str(parent["ts"])
         found = await self.api.call(
             "conversations.replies",
             {"channel": channel_id, "ts": thread_ts, "oldest": since, "limit": str(SCAN_WINDOW)},
         )
+        if not _answered(found, "conversations.replies"):
+            return None
         return [
             self._message_event(
                 item,
@@ -344,6 +364,13 @@ class SlackScanner:
             is_mention=f"<@{self.me}>" in text,
             in_my_thread=in_my_thread or str(item.get("parent_user_id") or "") == self.me,
         )
+
+
+def _answered(answer: Mapping[str, Any], method: str) -> bool:
+    if answer.get("ok"):
+        return True
+    _logger.warning("Listener scan: %s failed: %s", method, answer.get("error"))
+    return False
 
 
 def _ts(value: str) -> Decimal:
