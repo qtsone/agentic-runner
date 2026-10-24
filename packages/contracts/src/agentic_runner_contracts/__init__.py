@@ -155,6 +155,11 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # whose bootstrap or heartbeat names contracts 3.31 or later; a Runner given no connections
 # polls the one namespace it registered in, as before. Does not raise the floor, but only a
 # Runner on 3.31 can log in or serve more than one Organisation.
+# 3.33.0 (QTS-2477, Spec: Agent Guardrails rev 7): `secret` -- `SecretReleaseRequest`,
+# `SecretRelease`, the holder-share and platform-share bindings and the fixture. Additive:
+# no existing body changes. A Runner on 3.33 asks for the Secrets a Directive needs and its
+# host does not hold; an older one never asks, so the control plane counts no Secret as
+# openable on it when it routes.
 __version__ = "3.32.1"
 
 __all__ = ["__version__"]

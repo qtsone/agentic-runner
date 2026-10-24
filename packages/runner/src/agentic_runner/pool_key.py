@@ -1,4 +1,5 @@
-"""The pool's Pool Key on this Runner, and the LLM Keys it opens (Spec: Runners rev 3).
+"""The pool's Pool Key on this Runner, and the LLM Keys and Secrets it opens (Spec: Runners
+rev 3; Spec: Agent Guardrails rev 7, S3-S4, where it is called the Organisation Key).
 
 An Organisation's Admin creates the Pool Key in the console, which shows its private half
 once, and gives it to every Runner of the pool at install: one chart Secret for all
@@ -15,7 +16,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -28,6 +29,7 @@ from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialError, 
 from agentic_runner_contracts.llm_access import PROVIDER_KEY_NAMES
 from agentic_runner_contracts.llm_key import LlmKeyRelease, join_llm_key
 from agentic_runner_contracts.sealed_credential import key_fingerprint
+from agentic_runner_contracts.secret import HolderKind, SecretRelease, join_secret
 
 __all__ = [
     "POOL_KEY_ENV",
@@ -165,6 +167,42 @@ class LlmKeyOpener:
         return self._endpoints[key_name].slot(
             reference=key_name, key_id=release.llm_key_id, value=value
         )
+
+    def open_secrets(self, release: SecretRelease, *, names: Sequence[str]) -> dict[str, str]:
+        """Every asked-for Secret's value, by name, held by the caller for one Directive.
+
+        The release must carry exactly ``names``, each sealed to this Runner's Pool Key:
+        a Secret the Directive did not ask for is not one it may hold. One error for every
+        way it fails, for :meth:`open`'s reason.
+        """
+
+        unopenable = "the released Secrets do not open with this Runner's keys"
+        if self._pool_key is None or sorted(secret.name for secret in release.secrets) != sorted(
+            names
+        ):
+            raise LlmKeyUnopenableError(unopenable)
+        values: dict[str, str] = {}
+        try:
+            for secret in release.secrets:
+                if (
+                    secret.holder_kind != HolderKind.ORGANISATION_KEY
+                    or secret.holder_fingerprint != self._pool_key.fingerprint
+                ):
+                    raise SealedCredentialError("sealed to another holder key")
+                holder_share = open_sealed(
+                    private_key=self._pool_key.private_key,
+                    binding=release.holder_share_binding(secret),
+                    ciphertext=secret.holder_share,
+                )
+                platform_share = open_sealed(
+                    private_key=self._recipient_private_key(release.recipient_key_id),
+                    binding=release.platform_share_binding(secret),
+                    ciphertext=secret.platform_share,
+                )
+                values[secret.name] = join_secret(holder_share, platform_share)
+        except (SealedCredentialError, ValueError) as error:
+            raise LlmKeyUnopenableError(unopenable) from error
+        return values
 
     def _recipient_private_key(self, recipient_key_id: str) -> str:
         # The previous key too: the control plane may have sealed its share just before a
