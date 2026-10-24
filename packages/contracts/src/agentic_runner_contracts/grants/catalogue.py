@@ -174,7 +174,22 @@ CATALOGUE_V7: Final = VerbCatalogue(
     expands_mcp=True,
 )
 
-CURRENT_CATALOGUE_VERSION: Final = CATALOGUE_V7.version
+LISTENER_DRAFT_VERB: Final = "listener.draft"
+
+# v8 adds the Draft harness tool (QTS-2391), which landed after v7: its seam is the same
+# Tool Server, so the Agent's Grant can take it away too (QTS-2486). A new version for
+# the reason v7 is one.
+CATALOGUE_V8: Final = VerbCatalogue(
+    version="v8",
+    verbs={
+        **CATALOGUE_V7.verbs,
+        "work": CATALOGUE_V7.verbs["work"] | {LISTENER_DRAFT_VERB},
+    },
+    reserved={},
+    expands_mcp=True,
+)
+
+CURRENT_CATALOGUE_VERSION: Final = CATALOGUE_V8.version
 
 _CATALOGUES: Final[dict[str, VerbCatalogue]] = {
     CATALOGUE_V1.version: CATALOGUE_V1,
@@ -184,6 +199,7 @@ _CATALOGUES: Final[dict[str, VerbCatalogue]] = {
     CATALOGUE_V5.version: CATALOGUE_V5,
     CATALOGUE_V6.version: CATALOGUE_V6,
     CATALOGUE_V7.version: CATALOGUE_V7,
+    CATALOGUE_V8.version: CATALOGUE_V8,
 }
 
 # ``mcp:<server>`` entries carry the *server's* tool names as verbs, not platform
