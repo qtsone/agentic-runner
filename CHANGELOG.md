@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3.32.1](https://github.com/qtsone/agentic-runner/compare/v3.32.0...v3.32.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **runner:** stop a triage turn's completion at its reserve (QTS-2455) ([#90](https://github.com/qtsone/agentic-runner/issues/90)) ([bc5bdbe](https://github.com/qtsone/agentic-runner/commit/bc5bdbef724c91e4620018c4950405fa0160f38a))
+
 # [3.32.0](https://github.com/qtsone/agentic-runner/compare/v3.31.1...v3.32.0) (2026-10-24)
 
 
