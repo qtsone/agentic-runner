@@ -1,5 +1,6 @@
 """Catalogue v6: starting a Work Record and naming a Runner are Grant verbs (ADR-0022 §11).
-Catalogue v7: so is each harness tool of a Listener firing (QTS-2452)."""
+Catalogue v7: so is each harness tool of a Listener firing (QTS-2452).
+Catalogue v8: so is the Draft tool, which landed after v7 (QTS-2486)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,9 @@ from agentic_runner_contracts.grants import (
     CATALOGUE_V5,
     CATALOGUE_V6,
     CATALOGUE_V7,
+    CATALOGUE_V8,
     CURRENT_CATALOGUE_VERSION,
+    LISTENER_DRAFT_VERB,
     LISTENER_REACT_VERB,
     LISTENER_READ_VERB,
     LISTENER_REPLY_VERB,
@@ -89,7 +92,6 @@ HARNESS_VERBS = {LISTENER_REPLY_VERB, LISTENER_REACT_VERB, LISTENER_READ_VERB}
 
 
 def test_catalogue_v7_adds_one_verb_per_harness_tool_and_nothing_else() -> None:
-    assert CURRENT_CATALOGUE_VERSION == "v7"
     assert catalogue_for("v7") is CATALOGUE_V7
     assert CATALOGUE_V7.verbs == {
         **CATALOGUE_V6.verbs,
@@ -112,3 +114,29 @@ def test_a_work_wildcard_saved_under_v6_is_not_widened_to_the_harness_verbs() ->
 
     assert not HARNESS_VERBS & set(unchanged.entries[0].verbs)
     assert set(resaved.entries[0].verbs) >= HARNESS_VERBS
+
+
+def test_catalogue_v8_adds_the_draft_verb_and_nothing_else() -> None:
+    assert CURRENT_CATALOGUE_VERSION == "v8"
+    assert catalogue_for("v8") is CATALOGUE_V8
+    assert CATALOGUE_V8.verbs == {
+        **CATALOGUE_V7.verbs,
+        "work": CATALOGUE_V7.verbs_for("work") | {LISTENER_DRAFT_VERB},
+    }
+    assert LISTENER_DRAFT_VERB in CATALOGUE_V8.grantable("work")
+    assert CATALOGUE_V8.expands_mcp
+
+
+def test_a_work_wildcard_saved_under_v7_is_not_widened_to_the_draft_verb() -> None:
+    written_at_v7 = expand_and_validate_grant(
+        _work_grant(**{"*": "deny"}), link=GrantLink.AGENT, catalogue=CATALOGUE_V7
+    )
+    unchanged = expand_and_validate_grant(
+        written_at_v7, link=GrantLink.AGENT, catalogue=CATALOGUE_V8
+    )
+    resaved = expand_and_validate_grant(
+        _work_grant(**{"*": "deny"}), link=GrantLink.AGENT, catalogue=CATALOGUE_V8
+    )
+
+    assert LISTENER_DRAFT_VERB not in unchanged.entries[0].verbs
+    assert LISTENER_DRAFT_VERB in resaved.entries[0].verbs
