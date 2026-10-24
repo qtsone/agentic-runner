@@ -153,7 +153,28 @@ CATALOGUE_V6: Final = VerbCatalogue(
     expands_mcp=True,
 )
 
-CURRENT_CATALOGUE_VERSION: Final = CATALOGUE_V6.version
+LISTENER_REPLY_VERB: Final = "listener.reply"
+LISTENER_REACT_VERB: Final = "listener.react"
+LISTENER_READ_VERB: Final = "listener.read"
+
+# v7 makes a Listener firing's harness tools Grant verbs (Spec: chat intake rev 2, "a
+# tool both must allow"; QTS-2452): one per tool, so the Agent's own Grant can take a tool
+# away from every Listener it runs. Their seam is the control plane's harness Tool Server,
+# and like every `work.*` verb each reads a default (`allow`) when no entry names it, so
+# a Listener keeps its tools under a Grant written before v7. A new version so a `*` on
+# `work` saved under v6 is not silently widened to them.
+CATALOGUE_V7: Final = VerbCatalogue(
+    version="v7",
+    verbs={
+        **CATALOGUE_V6.verbs,
+        "work": CATALOGUE_V6.verbs["work"]
+        | {LISTENER_REPLY_VERB, LISTENER_REACT_VERB, LISTENER_READ_VERB},
+    },
+    reserved={},
+    expands_mcp=True,
+)
+
+CURRENT_CATALOGUE_VERSION: Final = CATALOGUE_V7.version
 
 _CATALOGUES: Final[dict[str, VerbCatalogue]] = {
     CATALOGUE_V1.version: CATALOGUE_V1,
@@ -162,6 +183,7 @@ _CATALOGUES: Final[dict[str, VerbCatalogue]] = {
     CATALOGUE_V4.version: CATALOGUE_V4,
     CATALOGUE_V5.version: CATALOGUE_V5,
     CATALOGUE_V6.version: CATALOGUE_V6,
+    CATALOGUE_V7.version: CATALOGUE_V7,
 }
 
 # ``mcp:<server>`` entries carry the *server's* tool names as verbs, not platform

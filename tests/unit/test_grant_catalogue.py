@@ -1,11 +1,16 @@
-"""Catalogue v6: starting a Work Record and naming a Runner are Grant verbs (ADR-0022 §11)."""
+"""Catalogue v6: starting a Work Record and naming a Runner are Grant verbs (ADR-0022 §11).
+Catalogue v7: so is each harness tool of a Listener firing (QTS-2452)."""
 
 from __future__ import annotations
 
 from agentic_runner_contracts.grants import (
     CATALOGUE_V5,
     CATALOGUE_V6,
+    CATALOGUE_V7,
     CURRENT_CATALOGUE_VERSION,
+    LISTENER_REACT_VERB,
+    LISTENER_READ_VERB,
+    LISTENER_REPLY_VERB,
     WORK_NAME_RUNNER_VERB,
     WORK_START_VERB,
     Decision,
@@ -25,7 +30,6 @@ def _work_grant(**verbs: str) -> dict[str, object]:
 
 
 def test_catalogue_v6_adds_the_two_verbs_on_the_work_record() -> None:
-    assert CURRENT_CATALOGUE_VERSION == "v6"
     assert catalogue_for("v6") is CATALOGUE_V6
     assert CATALOGUE_V6.verbs_for("work") == CATALOGUE_V5.verbs_for("work") | {
         WORK_START_VERB,
@@ -79,3 +83,32 @@ def test_the_evaluator_answers_each_verb_through_the_whole_chain() -> None:
 
     assert decide(WORK_START_VERB) is Decision.ALLOW
     assert decide(WORK_NAME_RUNNER_VERB) is Decision.DENY
+
+
+HARNESS_VERBS = {LISTENER_REPLY_VERB, LISTENER_REACT_VERB, LISTENER_READ_VERB}
+
+
+def test_catalogue_v7_adds_one_verb_per_harness_tool_and_nothing_else() -> None:
+    assert CURRENT_CATALOGUE_VERSION == "v7"
+    assert catalogue_for("v7") is CATALOGUE_V7
+    assert CATALOGUE_V7.verbs == {
+        **CATALOGUE_V6.verbs,
+        "work": CATALOGUE_V6.verbs_for("work") | HARNESS_VERBS,
+    }
+    assert CATALOGUE_V7.grantable("work") >= HARNESS_VERBS
+    assert CATALOGUE_V7.expands_mcp
+
+
+def test_a_work_wildcard_saved_under_v6_is_not_widened_to_the_harness_verbs() -> None:
+    written_at_v6 = expand_and_validate_grant(
+        _work_grant(**{"*": "deny"}), link=GrantLink.AGENT, catalogue=CATALOGUE_V6
+    )
+    unchanged = expand_and_validate_grant(
+        written_at_v6, link=GrantLink.AGENT, catalogue=CATALOGUE_V7
+    )
+    resaved = expand_and_validate_grant(
+        _work_grant(**{"*": "deny"}), link=GrantLink.AGENT, catalogue=CATALOGUE_V7
+    )
+
+    assert not HARNESS_VERBS & set(unchanged.entries[0].verbs)
+    assert set(resaved.entries[0].verbs) >= HARNESS_VERBS
