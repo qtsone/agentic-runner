@@ -116,6 +116,10 @@ _Avoid_: Resolved permissions, Merged scope, Computed grant
 The platform-defined, closed, versioned list of resource types and the verbs each supports. A verb exists only once the Runner has a seam that enforces it; verb wildcards in a Grant resolve against the catalogue version pinned when the Grant was written, while resource selectors resolve live.
 _Avoid_: Capability list, Permission set, Scopes
 
+**Listener**:
+One Source an Agent listens to, with its rules: a match checked without an LLM, the configurer's instructions template, the context handed over up front, and the harness tools it enables. On a member's own connected Slack the Runner that holds the token matches it and runs each firing; a Listener only enables tools the Agent's Effective Grant already allows.
+_Avoid_: Trigger, Rule, Subscription, Intake Filter (what it replaces)
+
 **Verifier**:
 The component that runs a Product's registered commands against a Work Record's pull request and reports a pass/fail result.
 _Avoid_: Checker, Validator, CI

@@ -37,6 +37,7 @@ from agentic_runner.build import build_id
 from agentic_runner.private_state import private_read, private_write
 from agentic_runner_contracts import __version__ as contracts_version
 from agentic_runner_contracts.channel_messages import TRANSCRIPT_DELIVERIES_PATH, TranscriptDelivery
+from agentic_runner_contracts.listeners import INTAKE_DRAFTS_PATH, ListenerDraftRequest
 from agentic_runner_contracts.runner_login import (
     CONNECTIONS_PATH,
     LOGIN_DEVICE_PATH,
@@ -366,21 +367,30 @@ class RunnerRegistrationClient:
     ) -> IntakeWorkResponse:
         """The create-Work-Record seam (PRD issue 50), under the Runner identity."""
 
-        payload = await self._signed(state, INTAKE_WORK_RECORDS_PATH, request)
+        payload = await self._signed(state, INTAKE_WORK_RECORDS_PATH, request, exclude_none=True)
         return IntakeWorkResponse.model_validate(payload)
 
     async def report_intake_ignored(self, state: RunnerState, report: IntakeIgnoredReport) -> None:
-        await self._signed(state, INTAKE_IGNORED_PATH, report)
+        await self._signed(state, INTAKE_IGNORED_PATH, report, exclude_none=True)
+
+    async def create_intake_draft(self, state: RunnerState, request: ListenerDraftRequest) -> None:
+        """A Listener firing's Draft (QTS-2392), for the member's console Inbox."""
+
+        await self._signed(state, INTAKE_DRAFTS_PATH, request)
 
     async def deliver_transcript(self, state: RunnerState, delivery: TranscriptDelivery) -> None:
         """Answer one transcript pull-through (PRD issue 52), under the Runner identity."""
 
         await self._signed(state, TRANSCRIPT_DELIVERIES_PATH, delivery)
 
-    async def _signed(self, state: RunnerState, path: str, model: BaseModel) -> dict[str, Any]:
+    async def _signed(
+        self, state: RunnerState, path: str, model: BaseModel, *, exclude_none: bool = False
+    ) -> dict[str, Any]:
         # Signed over these exact bytes, which is why the body is serialised once here and
-        # never re-serialised on the way out.
-        body = model.model_dump_json().encode("utf-8")
+        # never re-serialised on the way out. ``exclude_none``: an intake request forbids
+        # extra keys, so a field added for Listeners (3.33) must be absent, not null, for a
+        # control plane on an older pin; its every optional field defaults to null there.
+        body = model.model_dump_json(exclude_none=exclude_none).encode("utf-8")
         return await self._post(
             path,
             content=body,
@@ -461,3 +471,6 @@ class SignedIntakeStream:
 
     async def report_ignored(self, report: IntakeIgnoredReport) -> None:
         await self._client.report_intake_ignored(self._state, report)
+
+    async def create_draft(self, request: ListenerDraftRequest) -> None:
+        await self._client.create_intake_draft(self._state, request)

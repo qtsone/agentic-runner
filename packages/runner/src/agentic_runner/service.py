@@ -1923,14 +1923,16 @@ async def _serve_registered(
         state_dir=state_dir,
         pool_key_fingerprint=llm_keys.fingerprint,
     )
+    triage = ProxyTriage(
+        proxy=proxy,
+        model=settings.TRIAGE_MODEL,
+        timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
+    )
     stream.sources = UserSourcePoller(
         stream=SignedIntakeStream(stream.client, state),
         store=credentials.host_store,
-        triage=ProxyTriage(
-            proxy=proxy,
-            model=settings.TRIAGE_MODEL,
-            timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
-        ),
+        triage=triage,
+        listener_turn=triage.listener_turn,
     )
     messages = MessageStore(state_dir / MESSAGES_DIR)
     stream.messages = messages

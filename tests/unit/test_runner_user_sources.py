@@ -353,6 +353,7 @@ async def test_ignore_leaves_one_usage_record_and_one_ids_only_report(
         "directive_id",
         "classification_source",
         "message_refs",
+        "listener_id",
     }
     assert IntakeIgnoredReport.model_config["extra"] == "forbid"
     outbound = report.model_dump_json()
