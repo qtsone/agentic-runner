@@ -401,7 +401,7 @@ class ProxyTriage:
     async def _run(
         self, assignment: UserSourceAssignment, *, directive_id: str, prompt: str
     ) -> str | None:
-        return await run_triage_turn(
+        turn = await run_triage_turn(
             self.proxy,
             model=self.model,
             timeout_seconds=self.timeout_seconds,
@@ -411,6 +411,7 @@ class ProxyTriage:
             agent_id=assignment.intake_lead_agent_id,
             client=self.client,
         )
+        return turn.raw_text
 
 
 def describe(messages: Sequence[InboundMessage]) -> str:

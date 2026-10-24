@@ -31,7 +31,12 @@ class _Proxy:
     @contextlib.asynccontextmanager
     async def attempt(self, **admitted: Any) -> AsyncIterator[Any]:
         self.admitted.append(admitted)
-        yield SimpleNamespace(base_url="http://proxy.test/a/x/v1", token="attempt-bearer")
+        yield SimpleNamespace(
+            attempt_id="x", base_url="http://proxy.test/a/x/v1", token="attempt-bearer"
+        )
+
+    def reserve_spent(self, _attempt_id: str) -> int:
+        return 0
 
 
 def _completion(_: httpx.Request) -> httpx.Response:
