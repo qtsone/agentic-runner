@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [3.34.0](https://github.com/qtsone/agentic-runner/compare/v3.33.0...v3.34.0) (2026-10-24)
+
+
+### Features
+
+* **contracts:** verb catalogue v8 names the draft harness tool (QTS-2486) ([#94](https://github.com/qtsone/agentic-runner/issues/94)) ([a6bec28](https://github.com/qtsone/agentic-runner/commit/a6bec287b1748d0ae0f043484809586d517993f1)), closes [#723](https://github.com/qtsone/agentic-runner/issues/723)
+
 # [3.33.0](https://github.com/qtsone/agentic-runner/compare/v3.32.1...v3.33.0) (2026-10-24)
 
 
