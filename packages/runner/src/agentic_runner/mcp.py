@@ -35,6 +35,7 @@ from agentic_runner_contracts.grants import (
     McpServerDecision,
     decide_mcp_server,
 )
+from agentic_runner_contracts.grants.model import DECISION_RANK
 from agentic_runner_contracts.runner_registration import ToolServerHealth
 from agentic_runner_contracts.runtime_context import McpServerSpec
 
@@ -94,12 +95,15 @@ def plan_mcp(
     *,
     consented: Collection[str] = (),
     declined: Collection[str] = (),
+    narrowed_by: GrantSnapshot | None = None,
 ) -> McpPlan:
     """Decide every bound server against the Effective Grant.
 
     ``consented`` / ``declined`` are the ``mcp:<server>`` names the owner has already
     answered for this step; anything else that evaluates ``confirm`` is left in
     ``to_confirm`` for the caller to ask about before a single server is started.
+    ``narrowed_by`` is the snapshot the heartbeat pushed since the Directive's own: a
+    server takes the more restrictive answer of the two, never the wider (A3).
     """
 
     granted: list[tuple[McpServerSpec, McpServerDecision]] = []
@@ -107,6 +111,10 @@ def plan_mcp(
     to_confirm: list[tuple[McpServerSpec, McpServerDecision]] = []
     for spec in servers:
         decision = decide_mcp_server(snapshot, server=spec.slug, tools=spec.tools)
+        if narrowed_by is not None:
+            pushed = decide_mcp_server(narrowed_by, server=spec.slug, tools=spec.tools)
+            if DECISION_RANK[pushed.decision] < DECISION_RANK[decision.decision]:
+                decision = pushed
         confirm = decision.decision is Decision.CONFIRM
         if decision.decision is Decision.ALLOW or (confirm and decision.verb in consented):
             granted.append((spec, decision))

@@ -19,6 +19,11 @@ Three things live together because they are one fact about "may this verb run no
   (map ticket 03): three minutes without an acknowledged exchange refuses every privileged
   verb, because a Runner that cannot hear a narrowing must not act on what it last heard.
 
+A push only ever narrows (Spec: Agent Guardrails rev 7, A3): the activity decides each verb
+on the more restrictive of this store's snapshot and the Directive's own, so a narrowing
+bites at the next verb and a widening waits for the next Directive. The Runner never
+computes, widens or narrows a Grant itself.
+
 This is the one place the Runner keeps state between activities, and it is a deliberate
 exception to ADR-0013 §3: what is cached is not a fetch result the activity could carry on
 its own input, it *is* the control plane's current word, delivered out of band. Everything

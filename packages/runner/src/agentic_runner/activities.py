@@ -281,6 +281,7 @@ from agentic_runner_contracts.grants import (
     Decision,
     GrantSnapshot,
 )
+from agentic_runner_contracts.grants.model import DECISION_RANK
 from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
 from agentic_runner_contracts.guardrails import (
     GUARDRAILS_EVIDENCE_SOURCE,
@@ -2958,9 +2959,11 @@ class RunnerRalphActivities:
             identifier=",".join(spec.slug for spec in state.mcp_servers),
             resource_type="mcp",
         )
+        directive, *pushed = self._snapshots(state)
         plan = plan_mcp(
-            self._current_snapshot(state),
+            directive,
             state.mcp_servers,
+            narrowed_by=pushed[0] if pushed else None,
             consented=consented,
             declined=declined,
         )
@@ -3796,7 +3799,7 @@ class RunnerRalphActivities:
         itself, which the evaluator refuses as out of scope -- and records so.
         """
 
-        selector = self._current_snapshot(state).channel_selector(channel_id)
+        selector = state.grant_snapshot.channel_selector(channel_id)
         try:
             return await self._evaluate_verb(
                 work_record_id,
@@ -3874,12 +3877,12 @@ class RunnerRalphActivities:
         re-assembles on any Runner, and a retry on a fresh pod behaves like a first
         attempt instead of quietly losing state a dictionary was holding.
 
-        The Grant snapshot is the one thing that no longer arrives either way when this
-        Runner has a heartbeat stream (PRD issue 44): the control plane pushes it on
-        change and the link holds the current one per Agent and Contract, read under the
-        Contract this context names for the Work Record (QTS-1706), so narrowing bites at
-        the next *verb* rather than the next Directive. ``grant_snapshot`` carried on the
-        input is the link-less host's source and is ignored wherever a link is attached.
+        The Grant snapshot comes two ways (Spec: Agent Guardrails rev 7, A3): the
+        Directive's own, on the input, and the current Effective Grant the heartbeat pushes
+        per Agent and Contract (PRD issue 44, QTS-1706). This state holds the Directive's
+        -- the link's, at this boundary, where the input carries none -- and every verb is
+        decided on the narrower of it and whatever was pushed since, so a narrowing bites at
+        the next *verb* and a widening waits for the next Directive.
         """
 
         runtime_context = await self._runtime_context_resolver.resolve(
@@ -3895,11 +3898,11 @@ class RunnerRalphActivities:
                 contract_id=runtime_context.contract_id,
                 work_record_id=work_record_id,
             )
-        snapshot_payload = (
-            self._heartbeat_link.payload_for(runtime_context.agent_id, runtime_context.contract_id)
-            if self._heartbeat_link is not None
-            else dict(grant_snapshot or {})
-        )
+        snapshot_payload = dict(grant_snapshot or {})
+        if not snapshot_payload and self._heartbeat_link is not None:
+            snapshot_payload = self._heartbeat_link.payload_for(
+                runtime_context.agent_id, runtime_context.contract_id
+            )
         snapshot = (
             GrantSnapshot.from_payload(snapshot_payload) if snapshot_payload else EMPTY_SNAPSHOT
         )
@@ -4125,14 +4128,17 @@ class RunnerRalphActivities:
         await self._require_live_link(
             work_record_id, state, verb=verb, identifier=identifier, resource_type=resource_type
         )
-        snapshot = self._current_snapshot(state)
-        decision = decide_verb(
-            snapshot,
-            verb=verb,
-            identifier=identifier,
-            resource_type=resource_type,
-        )
+        snapshots = self._snapshots(state)
+        decisions = [
+            decide_verb(snapshot, verb=verb, identifier=identifier, resource_type=resource_type)
+            for snapshot in snapshots
+        ]
+        # The first most restrictive: the Directive's own wins a tie.
+        decision = min(decisions, key=lambda each: DECISION_RANK[each.decision])
+        snapshot = snapshots[decisions.index(decision)]
         evidence = decision.evidence()
+        if snapshot is not state.grant_snapshot:
+            evidence["decided_on"] = "heartbeat"
         refusal = (
             None
             if decision.decision is Decision.DENY or resource_type != REPO_RESOURCE_TYPE
@@ -4348,22 +4354,25 @@ class RunnerRalphActivities:
             product_id=product_id,
         )
 
-    def _current_snapshot(self, state: _RuntimeContextState) -> GrantSnapshot:
-        """The snapshot to decide *this* verb on, not the one the activity started with.
+    def _snapshots(self, state: _RuntimeContextState) -> tuple[GrantSnapshot, ...]:
+        """The snapshots *this* verb is decided on: the Directive's, then the pushed one.
 
         ``state.grant_snapshot`` is materialised once per activity, but a push -- including
         the one the wake-forced exchange in ``_require_live_link`` just applied -- replaces
         what the link holds mid-Directive. Reading through the link here is what makes a
-        narrowing bite at the next verb rather than the next activity (PRD issue 44); a
-        link-less host has only what came in on the input, which is what it falls back to.
+        narrowing bite at the next verb rather than the next activity (PRD issue 44). The
+        Runner never widens a Grant (A3), so a push decides only where it is narrower: the
+        caller keeps the most restrictive answer of the two.
         """
 
-        if self._heartbeat_link is None:
-            return state.grant_snapshot
-        return (
-            self._heartbeat_link.snapshot_for(state.agent_id, state.contract_id)
-            or state.grant_snapshot
+        pushed = (
+            None
+            if self._heartbeat_link is None
+            else self._heartbeat_link.snapshot_for(state.agent_id, state.contract_id)
         )
+        if pushed is None or pushed is state.grant_snapshot:
+            return (state.grant_snapshot,)
+        return (state.grant_snapshot, pushed)
 
     async def _require_live_link(
         self,
@@ -4744,7 +4753,10 @@ class RunnerRalphActivities:
         return tuple(retargeted)
 
     def _required_human_approvals(self, state: _RuntimeContextState, *, repository: str) -> int:
-        return self._current_snapshot(state).required_human_approvals(identifier=repository)
+        return max(
+            snapshot.required_human_approvals(identifier=repository)
+            for snapshot in self._snapshots(state)
+        )
 
     async def _count_human_approvals(self, request: PullRequestMergeInput) -> int:
         """Distinct org humans whose approval stands on the head about to be merged.
