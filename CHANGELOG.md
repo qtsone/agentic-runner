@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+# [4.0.0](https://github.com/qtsone/agentic-runner/compare/v3.34.0...v4.0.0) (2026-10-28)
+
+
+### Features
+
+* **contracts:** enforce the compiled Guardrails and retire the Runner Limit (QTS-2474) ([#96](https://github.com/qtsone/agentic-runner/issues/96)) ([ea7330e](https://github.com/qtsone/agentic-runner/commit/ea7330ebac9ea3bd916ea81a168373df5b0c79b1))
+
+
+### BREAKING CHANGES
+
+* **contracts:** contracts 4.0. `WorkerRuntimeContext` requires `guardrails` and `work_branch` and refuses `profile_slug`, `command_policy`, `network_policy` and `runner_host`. Removed: `agentic_runner_contracts.runner_limit`, `RunnerLimitReport`, `RunnerLimitPosture`, `FolderPosture`, `GrantLink.RUNNER_LIMIT`, `GrantLink.ACCOUNT_CONTRACT`, `decide_runner_limit`, the evaluator's `runner_limit` and `account_contract` arguments, `GrantSnapshot.enforced`, `UNENFORCED_SNAPSHOT` (use `EMPTY_SNAPSHOT`), `EGRESS_ALLOW_LIST_KEY`, and `host_party` on `DirectiveRouting`, `RunnerRoutingIdentity`, `BootstrapResponse` and `SlotDelivery`. `work_branch_name` takes `slug`. Migrate: the platform sends the compiled Guardrails and the work branch, and pins 4.x together with every Runner host's upgrade. A host moves its Runner Limit entries to the Runner's Guardrails in the console.
+
+Co-authored-by: Relay <340611066+qts-relay[bot]@users.noreply.github.com>
+
 # [3.34.0](https://github.com/qtsone/agentic-runner/compare/v3.33.0...v3.34.0) (2026-10-24)
 
 

@@ -180,6 +180,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # every verb (issue 88); `host_party` on `DirectiveRouting`, `RunnerRoutingIdentity`,
 # `BootstrapResponse` and `SlotDelivery`, and `WorkerRuntimeContext.runner_host`, with
 # `RunnerRoutingIdentity.operated` in their place (QTS-2378).
-__version__ = "3.34.0"
+__version__ = "4.0.0"
 
 __all__ = ["__version__"]
