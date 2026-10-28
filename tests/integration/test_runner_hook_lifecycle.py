@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_claude_subscription_directives import _allowing_snapshot
 
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV
@@ -203,6 +204,7 @@ def _branch_pr_input() -> BranchPullRequestInput:
         branch_name=WORK_BRANCH,
         pr_title="Add a Production section",
         pr_body="body",
+        grant_snapshot=_allowing_snapshot(REPOSITORY),
     )
 
 

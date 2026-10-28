@@ -62,6 +62,7 @@ class _FakeClient:
             "skills": self.skills,
             "task_queue": "ralph-pr-loop",
             "worker_secret_refs": [],
+            "guardrails": {},
             "product_verifier_command_source": {
                 "source": "runtime-profile",
                 "available": True,
