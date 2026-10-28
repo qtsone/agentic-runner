@@ -224,7 +224,9 @@ class FakeControlPlane:
     """
 
     namespace: str = DEFAULT_NAMESPACE
-    host_party: str = "organisation"
+    # Whether a Runner bootstrapped here is a person's own (`operator` below operates it),
+    # not the Organisation's: what a person's own Runner decides subscriptions on.
+    bootstraps_operated: bool = False
     heartbeat_interval_seconds: int = 30
     contracts_floor: str = contracts_version
     contract_id: UUID = DEFAULT_CONTRACT_ID
@@ -513,9 +515,9 @@ class FakeControlPlane:
             tag_set_version=1,
             floor_state=FloorState.OK,
             contracts_floor=self.contracts_floor,
-            host_party=self.host_party,
             heartbeat_interval_seconds=self.heartbeat_interval_seconds,
             temporal_address=self.temporal_address,
+            operator_user_profile_id=self.operator if self.bootstraps_operated else None,
         )
         return _Answer(
             200,

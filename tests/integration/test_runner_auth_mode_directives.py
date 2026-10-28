@@ -234,7 +234,7 @@ def _activities(
     runtime: _Codex,
     *,
     tmp_path: Path,
-    host_party: str,
+    operated: bool,
     tags: dict[str, str] | None = None,
     proxy: _Proxy | None = None,
     isolation: ContractIsolation | None = None,
@@ -250,7 +250,7 @@ def _activities(
         github_client=FakeGitHubClient(),
         workspace_root=tmp_path,
         routing_identity=RunnerRoutingIdentity(
-            runner_id=RUNNER_ID, host_party=host_party, tags=dict(tags or {})
+            runner_id=RUNNER_ID, tags=dict(tags or {}), operated=operated
         ),
         llm_proxy=proxy,  # type: ignore[arg-type]
         contract_isolation=isolation,
@@ -260,7 +260,7 @@ def _activities(
     )
 
 
-def _branch_pr_input(host_party: str, access: LlmAccess | None = None) -> BranchPullRequestInput:
+def _branch_pr_input(access: LlmAccess | None = None) -> BranchPullRequestInput:
     return BranchPullRequestInput(
         work_record_id=WORK_RECORD_ID,
         repository="qts/agentic-os",
@@ -268,7 +268,7 @@ def _branch_pr_input(host_party: str, access: LlmAccess | None = None) -> Branch
         branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
-        routing=DirectiveRouting(runner_id=RUNNER_ID, host_party=host_party, llm_access=access),
+        routing=DirectiveRouting(runner_id=RUNNER_ID, llm_access=access),
     )
 
 
@@ -288,8 +288,8 @@ async def test_without_named_access_a_pool_runner_never_spends_its_stores_key(
 
     with pytest.raises(ApplicationError) as refused:
         await _activities(
-            client, runtime, tmp_path=tmp_path, host_party="organisation", proxy=proxy
-        ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+            client, runtime, tmp_path=tmp_path, operated=False, proxy=proxy
+        ).create_or_update_branch_pr(_branch_pr_input())
 
     assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
     assert (runtime.requests, proxy.attempts) == ([], 0)
@@ -303,8 +303,8 @@ async def test_without_named_access_a_personal_runner_spends_its_stores_key(
     proxy = _Proxy(holds=False, host_key=True)
 
     await _activities(
-        _Client(), runtime, tmp_path=tmp_path, host_party="user", proxy=proxy
-    ).create_or_update_branch_pr(_branch_pr_input("user"))
+        _Client(), runtime, tmp_path=tmp_path, operated=True, proxy=proxy
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.API_KEY
@@ -318,8 +318,8 @@ async def test_a_host_key_directive_spends_only_the_stores_key(tmp_path: Path) -
     proxy = _Proxy(holds=False, host_key=True)
 
     await _activities(
-        _Client(), runtime, tmp_path=tmp_path, host_party="organisation", proxy=proxy
-    ).create_or_update_branch_pr(_branch_pr_input("organisation", LlmAccess(kind="host_key")))
+        _Client(), runtime, tmp_path=tmp_path, operated=False, proxy=proxy
+    ).create_or_update_branch_pr(_branch_pr_input(LlmAccess(kind="host_key")))
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.API_KEY
@@ -338,8 +338,8 @@ async def test_a_signed_in_subscription_runs_although_a_key_is_held(tmp_path: Pa
     proxy = _Proxy(holds=True, host_key=True)
 
     await _activities(
-        _Client(), runtime, tmp_path=tmp_path, host_party="user", proxy=proxy, isolation=isolation
-    ).create_or_update_branch_pr(_branch_pr_input("user", LlmAccess(kind="subscription")))
+        _Client(), runtime, tmp_path=tmp_path, operated=True, proxy=proxy, isolation=isolation
+    ).create_or_update_branch_pr(_branch_pr_input(LlmAccess(kind="subscription")))
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.SUBSCRIPTION
@@ -347,23 +347,23 @@ async def test_a_signed_in_subscription_runs_although_a_key_is_held(tmp_path: Pa
 
 
 @pytest.mark.parametrize(
-    ("access", "host_party", "signed_in", "rule"),
+    ("access", "operated", "signed_in", "rule"),
     [
         # A delivered key and a sign-in are both still here; neither stands in.
-        (LlmAccess(kind="host_key"), "user", True, HOST_KEY_NOT_HELD_RULE),
-        (LlmAccess(kind="subscription"), "user", False, SUBSCRIPTION_NOT_SIGNED_IN_RULE),
+        (LlmAccess(kind="host_key"), True, True, HOST_KEY_NOT_HELD_RULE),
+        (LlmAccess(kind="subscription"), True, False, SUBSCRIPTION_NOT_SIGNED_IN_RULE),
         (
             LlmAccess(kind="subscription"),
-            "organisation",
+            False,
             True,
             SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
         ),
-        (LlmAccess(kind="llm_key", llm_key_id="key-7"), "organisation", True, "llm_key"),
+        (LlmAccess(kind="llm_key", llm_key_id="key-7"), False, True, "llm_key"),
     ],
 )
 @pytest.mark.asyncio
 async def test_access_the_runner_no_longer_holds_fails_the_directive_closed(
-    tmp_path: Path, access: LlmAccess, host_party: str, signed_in: bool, rule: str
+    tmp_path: Path, access: LlmAccess, operated: bool, signed_in: bool, rule: str
 ) -> None:
     isolation = _isolation(tmp_path)
     if signed_in:
@@ -377,10 +377,10 @@ async def test_access_the_runner_no_longer_holds_fails_the_directive_closed(
             client,
             runtime,
             tmp_path=tmp_path,
-            host_party=host_party,
+            operated=operated,
             proxy=proxy,
             isolation=isolation,
-        ).create_or_update_branch_pr(_branch_pr_input(host_party, access))
+        ).create_or_update_branch_pr(_branch_pr_input(access))
 
     expected = POOL_KEY_NOT_HELD_RULE if rule == "llm_key" else rule
     assert refused.value.non_retryable is True
@@ -423,10 +423,10 @@ async def test_a_subscription_the_last_ack_does_not_allow_fails_closed(
             client,
             runtime,
             tmp_path=tmp_path,
-            host_party="user",
+            operated=True,
             isolation=isolation,
             llm_contracts=terms,
-        ).create_or_update_branch_pr(_branch_pr_input("user", LlmAccess(kind="subscription")))
+        ).create_or_update_branch_pr(_branch_pr_input(LlmAccess(kind="subscription")))
 
     expected = SUBSCRIPTION_NO_RIGHT_RULE if rule == "no_right" else rule
     assert refused.value.non_retryable is True
@@ -447,10 +447,10 @@ async def test_a_subscription_the_last_ack_allows_runs(tmp_path: Path) -> None:
         _Client(),
         runtime,
         tmp_path=tmp_path,
-        host_party="user",
+        operated=True,
         isolation=isolation,
         llm_contracts=[ContractLlmTerms(contract_id=UUID(CONTRACT_ID), subscription="allowed")],
-    ).create_or_update_branch_pr(_branch_pr_input("user", LlmAccess(kind="subscription")))
+    ).create_or_update_branch_pr(_branch_pr_input(LlmAccess(kind="subscription")))
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.SUBSCRIPTION
@@ -468,9 +468,9 @@ async def test_the_persons_own_runner_runs_a_subscription_whatever_installed_it(
         _Client(),
         runtime,
         tmp_path=tmp_path,
-        host_party="user",
+        operated=True,
         tags={"install_channel": install_channel},
-    ).create_or_update_branch_pr(_branch_pr_input("user"))
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.SUBSCRIPTION
@@ -485,8 +485,8 @@ async def test_a_key_present_puts_even_the_persons_own_runner_on_the_proxy(
     proxy = _Proxy(holds=True)
 
     await _activities(
-        _Client(), runtime, tmp_path=tmp_path, host_party="user", proxy=proxy
-    ).create_or_update_branch_pr(_branch_pr_input("user"))
+        _Client(), runtime, tmp_path=tmp_path, operated=True, proxy=proxy
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.API_KEY
@@ -494,33 +494,31 @@ async def test_a_key_present_puts_even_the_persons_own_runner_on_the_proxy(
     assert proxy.attempts == 1
 
 
-@pytest.mark.parametrize("host_party", ["organisation", "account"])
 @pytest.mark.asyncio
 async def test_a_shared_runner_runs_codex_on_the_proxy_when_a_key_is_present(
-    tmp_path: Path, host_party: str
+    tmp_path: Path,
 ) -> None:
     runtime = _Codex()
 
     await _activities(
-        _Client(), runtime, tmp_path=tmp_path, host_party=host_party, proxy=_Proxy(holds=True)
-    ).create_or_update_branch_pr(_branch_pr_input(host_party))
+        _Client(), runtime, tmp_path=tmp_path, operated=False, proxy=_Proxy(holds=True)
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.API_KEY
 
 
-@pytest.mark.parametrize("host_party", ["organisation", "account"])
 @pytest.mark.asyncio
 async def test_a_shared_runner_refuses_a_directive_that_would_need_a_subscription(
-    tmp_path: Path, host_party: str
+    tmp_path: Path,
 ) -> None:
     client = _Client()
     runtime = _Codex()
 
     with pytest.raises(ApplicationError) as refused:
         await _activities(
-            client, runtime, tmp_path=tmp_path, host_party=host_party, proxy=_Proxy(holds=False)
-        ).create_or_update_branch_pr(_branch_pr_input(host_party))
+            client, runtime, tmp_path=tmp_path, operated=False, proxy=_Proxy(holds=False)
+        ).create_or_update_branch_pr(_branch_pr_input())
 
     assert refused.value.non_retryable is True
     assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
@@ -528,13 +526,12 @@ async def test_a_shared_runner_refuses_a_directive_that_would_need_a_subscriptio
     [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)
     assert evidence["event"] == "directive.auth_mode_refused"
     assert evidence["rule"] == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
-    assert evidence["host_party"] == host_party
+    assert evidence["operated"] is False
 
 
-@pytest.mark.parametrize("host_party", ["organisation", "account"])
 @pytest.mark.asyncio
 async def test_a_shared_runner_without_contract_uids_refuses_even_with_a_login(
-    tmp_path: Path, host_party: str
+    tmp_path: Path,
 ) -> None:
     isolation = _isolation(tmp_path)
     _sign_in(isolation)
@@ -545,19 +542,18 @@ async def test_a_shared_runner_without_contract_uids_refuses_even_with_a_login(
             _Client(),
             runtime,
             tmp_path=tmp_path,
-            host_party=host_party,
+            operated=False,
             proxy=_Proxy(holds=False),
             isolation=isolation,
-        ).create_or_update_branch_pr(_branch_pr_input(host_party))
+        ).create_or_update_branch_pr(_branch_pr_input())
 
     assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
     assert runtime.requests == []
 
 
-@pytest.mark.parametrize("host_party", ["organisation", "account"])
 @pytest.mark.asyncio
 async def test_a_customer_operated_cluster_runner_runs_a_signed_in_subscription(
-    tmp_path: Path, contract_uids: ContractIsolation, host_party: str
+    tmp_path: Path, contract_uids: ContractIsolation
 ) -> None:
     """QTS-1450's acceptance: Contract uids and a login in that Contract's harness root."""
 
@@ -568,10 +564,10 @@ async def test_a_customer_operated_cluster_runner_runs_a_signed_in_subscription(
         _Client(),
         runtime,
         tmp_path=tmp_path,
-        host_party=host_party,
+        operated=False,
         proxy=_Proxy(holds=False),
         isolation=contract_uids,
-    ).create_or_update_branch_pr(_branch_pr_input(host_party))
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.SUBSCRIPTION
@@ -595,10 +591,10 @@ async def test_a_customer_operated_cluster_runner_refuses_a_contract_not_signed_
             client,
             runtime,
             tmp_path=tmp_path,
-            host_party="organisation",
+            operated=False,
             proxy=_Proxy(holds=False),
             isolation=contract_uids,
-        ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+        ).create_or_update_branch_pr(_branch_pr_input())
 
     assert refused.value.non_retryable is True
     assert refused.value.type == SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE
@@ -618,19 +614,19 @@ async def test_a_login_left_on_a_shared_runner_is_reported_once_as_a_count(
         client,
         _Codex(),
         tmp_path=tmp_path,
-        host_party="organisation",
+        operated=False,
         proxy=_Proxy(holds=True),
         isolation=isolation,
     )
 
-    await activities.create_or_update_branch_pr(_branch_pr_input("organisation"))
-    await activities.create_or_update_branch_pr(_branch_pr_input("organisation"))
+    await activities.create_or_update_branch_pr(_branch_pr_input())
+    await activities.create_or_update_branch_pr(_branch_pr_input())
 
     [report] = client.payloads(HARNESS_LOGIN_RESIDUE_SOURCE)
     assert report == {
         "event": "harness.login_residue",
         "contract_id": CONTRACT_ID,
-        "host_party": "organisation",
+        "operated": False,
         "login_files": {"codex_cli": 1},
     }
     assert str(tmp_path) not in repr(client.evidence)
@@ -649,10 +645,10 @@ async def test_a_login_a_shared_runner_can_run_on_is_not_residue(
         client,
         _Codex(),
         tmp_path=tmp_path,
-        host_party="organisation",
+        operated=False,
         proxy=_Proxy(holds=True),
         isolation=contract_uids,
-    ).create_or_update_branch_pr(_branch_pr_input("organisation"))
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     assert client.payloads(HARNESS_LOGIN_RESIDUE_SOURCE) == []
 
@@ -754,15 +750,15 @@ async def test_a_delivered_key_puts_the_next_shared_directive_on_the_proxy(
             _Client(),
             runtime,
             tmp_path=tmp_path,
-            host_party="organisation",
+            operated=False,
             proxy=proxy,  # type: ignore[arg-type]
         )
         with pytest.raises(ApplicationError) as refused:
-            await activities.create_or_update_branch_pr(_branch_pr_input("organisation"))
+            await activities.create_or_update_branch_pr(_branch_pr_input())
         assert refused.value.type == SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE
 
         await stream.exchange([])
-        await activities.create_or_update_branch_pr(_branch_pr_input("organisation"))
+        await activities.create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.auth_mode == AuthMode.API_KEY
@@ -794,9 +790,9 @@ async def test_a_subscription_usage_limit_returns_a_hold_and_pushes_nothing(
     tmp_path: Path,
 ) -> None:
     client = _Client()
-    activities = _activities(client, _LimitedCodex(), tmp_path=tmp_path, host_party="user")
+    activities = _activities(client, _LimitedCodex(), tmp_path=tmp_path, operated=True)
 
-    output = await activities.create_or_update_branch_pr(_branch_pr_input("user"))
+    output = await activities.create_or_update_branch_pr(_branch_pr_input())
 
     assert output.harness_hold == HarnessHold(
         kind=HarnessHoldKind.USAGE_LIMIT, retry_not_before=_next_chicago_2331()
@@ -844,8 +840,8 @@ async def test_a_subscription_usage_limit_makes_the_usage_window_probe_due(
     await usage.run_due(targets)
 
     await _activities(
-        _Client(), _LimitedCodex(), tmp_path=tmp_path, host_party="user", usage_windows=usage
-    ).create_or_update_branch_pr(_branch_pr_input("user"))
+        _Client(), _LimitedCodex(), tmp_path=tmp_path, operated=True, usage_windows=usage
+    ).create_or_update_branch_pr(_branch_pr_input())
     await usage.run_due(targets)
 
     assert len(probes) == 2
@@ -858,8 +854,8 @@ async def test_an_api_key_directive_is_never_classified(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="Codex CLI edit failed"):
         await _activities(
-            client, _LimitedCodex(), tmp_path=tmp_path, host_party="user", proxy=_Proxy(holds=True)
-        ).create_or_update_branch_pr(_branch_pr_input("user"))
+            client, _LimitedCodex(), tmp_path=tmp_path, operated=True, proxy=_Proxy(holds=True)
+        ).create_or_update_branch_pr(_branch_pr_input())
 
     assert client.payloads(HARNESS_HOLD_SOURCE) == []
 
@@ -899,9 +895,9 @@ async def test_the_agents_model_runs_and_its_evidence_and_usage_name_it(tmp_path
     client = _ModelClient()
     runtime = _RunsTheModel()
 
-    await _activities(
-        client, runtime, tmp_path=tmp_path, host_party="user"
-    ).create_or_update_branch_pr(_branch_pr_input("user"))
+    await _activities(client, runtime, tmp_path=tmp_path, operated=True).create_or_update_branch_pr(
+        _branch_pr_input()
+    )
 
     [request] = runtime.requests
     assert request.model == "gpt-5-codex"
@@ -968,7 +964,7 @@ def _pool(tmp_path: Path, *, provider: str = "openai") -> tuple[LlmKeyOpener, di
 
 
 def _llm_key_input() -> BranchPullRequestInput:
-    return _branch_pr_input("organisation", LlmAccess(kind="llm_key", llm_key_id=LLM_KEY_ID))
+    return _branch_pr_input(LlmAccess(kind="llm_key", llm_key_id=LLM_KEY_ID))
 
 
 @pytest.mark.asyncio
@@ -993,7 +989,7 @@ async def test_a_released_llm_key_is_held_in_memory_for_one_directive_and_gone_a
             client,
             runtime,
             tmp_path=tmp_path,
-            host_party="organisation",
+            operated=False,
             proxy=proxy,  # type: ignore[arg-type]
             llm_keys=opener,
         ).create_or_update_branch_pr(_llm_key_input())
@@ -1061,7 +1057,7 @@ async def test_an_llm_key_that_is_refused_or_does_not_open_fails_the_directive_c
             client,
             runtime,
             tmp_path=tmp_path,
-            host_party="organisation",
+            operated=False,
             proxy=proxy,
             llm_keys=opener,
         ).create_or_update_branch_pr(_llm_key_input())

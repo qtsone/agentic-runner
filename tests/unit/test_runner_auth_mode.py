@@ -66,19 +66,21 @@ KEY_ONLY_MODES = frozenset({AuthMode.API_KEY})
 # host party x key present x Contract uid x harness login x runtime -> the mode, or the
 # rule that refuses it.
 UID, NO_UID, LOGIN, NO_LOGIN = True, False, True, False
-MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], AuthMode | str]] = [
+# Whether a person operates the Runner (QTS-2378); None: an unregistered process.
+OPERATED, SHARED = True, False
+MODE_TABLE: list[tuple[bool | None, bool, bool, bool, str, frozenset[AuthMode], AuthMode | str]] = [
     # A key always wins, wherever the Runner is.
-    ("organisation", True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    ("organisation", True, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    ("account", True, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
-    ("user", True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
-    ("user", True, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
+    (SHARED, True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    (SHARED, True, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    (SHARED, True, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
+    (OPERATED, True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
+    (OPERATED, True, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.API_KEY),
     # A shared Runner -- a customer-operated cluster -- runs a subscription only with both
     # a Contract uid and a login in that Contract's harness root (QTS-1450).
-    ("organisation", False, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
-    ("account", False, UID, LOGIN, "claude_code", ACP_MODES, AuthMode.SUBSCRIPTION),
+    (SHARED, False, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
+    (SHARED, False, UID, LOGIN, "claude_code", ACP_MODES, AuthMode.SUBSCRIPTION),
     (
-        "organisation",
+        SHARED,
         False,
         NO_UID,
         LOGIN,
@@ -87,7 +89,7 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
         SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     ),
     (
-        "account",
+        SHARED,
         False,
         NO_UID,
         NO_LOGIN,
@@ -96,7 +98,7 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
         SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
     ),
     (
-        "organisation",
+        SHARED,
         False,
         UID,
         NO_LOGIN,
@@ -105,7 +107,7 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
         SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
     ),
     (
-        "account",
+        SHARED,
         False,
         UID,
         NO_LOGIN,
@@ -114,10 +116,10 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
         SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE,
     ),
     # The default Claude Code runtime runs a subscription too (local-agents 07, QTS-1737).
-    ("organisation", False, UID, LOGIN, "claude_code", CLAUDE_MODES, AuthMode.SUBSCRIPTION),
+    (SHARED, False, UID, LOGIN, "claude_code", CLAUDE_MODES, AuthMode.SUBSCRIPTION),
     # A runtime with no subscription mode has nothing to run on without a key.
     (
-        "organisation",
+        SHARED,
         False,
         UID,
         LOGIN,
@@ -126,9 +128,9 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
         NO_RUNTIME_SUBSCRIPTION_RULE,
     ),
     # The person's own Runner: routing tied the Contract to the person, whatever its uids.
-    ("user", False, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
-    ("user", False, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.SUBSCRIPTION),
-    ("user", False, NO_UID, NO_LOGIN, "claude_code", KEY_ONLY_MODES, AuthMode.API_KEY),
+    (OPERATED, False, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.SUBSCRIPTION),
+    (OPERATED, False, NO_UID, NO_LOGIN, "claude_code", CLAUDE_MODES, AuthMode.SUBSCRIPTION),
+    (OPERATED, False, NO_UID, NO_LOGIN, "claude_code", KEY_ONLY_MODES, AuthMode.API_KEY),
     # An unregistered process is nobody's own Runner and makes no routing assertion.
     (None, False, UID, LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
     (None, True, NO_UID, NO_LOGIN, "codex_cli", CODEX_MODES, AuthMode.API_KEY),
@@ -136,7 +138,7 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
 
 
 @pytest.mark.parametrize(
-    ("host_party", "key_present", "contract_uid", "harness_login", "cli_kind", "modes", "expected"),
+    ("operated", "key_present", "contract_uid", "harness_login", "cli_kind", "modes", "expected"),
     MODE_TABLE,
     ids=[
         f"{row[0]}-{'key' if row[1] else 'nokey'}-{'uid' if row[2] else 'nouid'}"
@@ -145,7 +147,7 @@ MODE_TABLE: list[tuple[str | None, bool, bool, bool, str, frozenset[AuthMode], A
     ],
 )
 def test_the_mode_is_chosen_from_what_the_runner_can_verify(
-    host_party: str | None,
+    operated: bool | None,
     key_present: bool,
     contract_uid: bool,
     harness_login: bool,
@@ -155,7 +157,7 @@ def test_the_mode_is_chosen_from_what_the_runner_can_verify(
 ) -> None:
     def choose() -> AuthMode:
         return choose_auth_mode(
-            host_party=host_party,
+            operated=operated,
             key_present=key_present,
             runtime_modes=modes,
             contract_uid=contract_uid,
@@ -171,43 +173,42 @@ def test_the_mode_is_chosen_from_what_the_runner_can_verify(
 
 
 def test_a_shared_runner_never_chooses_a_subscription_it_cannot_verify() -> None:
-    for host_party in ("organisation", "account"):
-        for key_present, contract_uid, harness_login in itertools.product((True, False), repeat=3):
-            if contract_uid and harness_login:
-                continue
-            try:
-                mode = choose_auth_mode(
-                    host_party=host_party,
-                    key_present=key_present,
-                    runtime_modes=CODEX_MODES,
-                    contract_uid=contract_uid,
-                    harness_login=harness_login,
-                )
-            except AuthModeRefusedError:
-                continue
-            assert mode == AuthMode.API_KEY
+    for key_present, contract_uid, harness_login in itertools.product((True, False), repeat=3):
+        if contract_uid and harness_login:
+            continue
+        try:
+            mode = choose_auth_mode(
+                operated=SHARED,
+                key_present=key_present,
+                runtime_modes=CODEX_MODES,
+                contract_uid=contract_uid,
+                harness_login=harness_login,
+            )
+        except AuthModeRefusedError:
+            continue
+        assert mode == AuthMode.API_KEY
 
 
 # ------------------------------------------------------------------ the named access (rev 3)
 
 SIGNED_IN = SubscriptionState.SIGNED_IN
 
-NAMED_TABLE: list[tuple[str, str | None, bool, SubscriptionState, frozenset[AuthMode], Any]] = [
+NAMED_TABLE: list[tuple[str, bool | None, bool, SubscriptionState, frozenset[AuthMode], Any]] = [
     # host_key: the store's key, on any host, or a refusal -- never a subscription instead.
-    ("host_key", "organisation", True, SubscriptionState.NONE, CODEX_MODES, AuthMode.API_KEY),
-    ("host_key", "user", True, SIGNED_IN, CODEX_MODES, AuthMode.API_KEY),
-    ("host_key", "user", False, SIGNED_IN, CODEX_MODES, HOST_KEY_NOT_HELD_RULE),
+    ("host_key", SHARED, True, SubscriptionState.NONE, CODEX_MODES, AuthMode.API_KEY),
+    ("host_key", OPERATED, True, SIGNED_IN, CODEX_MODES, AuthMode.API_KEY),
+    ("host_key", OPERATED, False, SIGNED_IN, CODEX_MODES, HOST_KEY_NOT_HELD_RULE),
     # subscription: the person's own Runner, signed in, on a runtime that runs one.
-    ("subscription", "user", True, SIGNED_IN, CODEX_MODES, AuthMode.SUBSCRIPTION),
-    ("subscription", "organisation", True, SIGNED_IN, CODEX_MODES, "subscription_off"),
-    ("subscription", "account", False, SIGNED_IN, CODEX_MODES, "subscription_off"),
-    ("subscription", "user", True, SIGNED_IN, KEY_ONLY_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
-    ("subscription", "user", True, SubscriptionState.NONE, CODEX_MODES, "not_signed_in"),
-    ("subscription", "user", True, SubscriptionState.EXPIRED, CODEX_MODES, "not_signed_in"),
-    ("subscription", "user", True, SubscriptionState.AT_LIMIT, CODEX_MODES, "not_signed_in"),
+    ("subscription", OPERATED, True, SIGNED_IN, CODEX_MODES, AuthMode.SUBSCRIPTION),
+    ("subscription", SHARED, True, SIGNED_IN, CODEX_MODES, "subscription_off"),
+    ("subscription", SHARED, False, SIGNED_IN, CODEX_MODES, "subscription_off"),
+    ("subscription", OPERATED, True, SIGNED_IN, KEY_ONLY_MODES, NO_RUNTIME_SUBSCRIPTION_RULE),
+    ("subscription", OPERATED, True, SubscriptionState.NONE, CODEX_MODES, "not_signed_in"),
+    ("subscription", OPERATED, True, SubscriptionState.EXPIRED, CODEX_MODES, "not_signed_in"),
+    ("subscription", OPERATED, True, SubscriptionState.AT_LIMIT, CODEX_MODES, "not_signed_in"),
     # llm_key: one of the pool's LLM Keys, which a Runner given no Pool Key cannot open.
-    ("llm_key", "organisation", True, SubscriptionState.NONE, CODEX_MODES, "llm_key"),
-    ("pigeon", "user", True, SIGNED_IN, CODEX_MODES, LLM_ACCESS_UNKNOWN_RULE),
+    ("llm_key", SHARED, True, SubscriptionState.NONE, CODEX_MODES, "llm_key"),
+    ("pigeon", OPERATED, True, SIGNED_IN, CODEX_MODES, LLM_ACCESS_UNKNOWN_RULE),
 ]
 _NAMED_RULES = {
     "subscription_off": SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
@@ -217,11 +218,11 @@ _NAMED_RULES = {
 
 
 @pytest.mark.parametrize(
-    ("kind", "host_party", "host_key_held", "subscription", "modes", "expected"), NAMED_TABLE
+    ("kind", "operated", "host_key_held", "subscription", "modes", "expected"), NAMED_TABLE
 )
 def test_a_directive_runs_on_exactly_the_access_it_was_routed_with(
     kind: str,
-    host_party: str | None,
+    operated: bool | None,
     host_key_held: bool,
     subscription: SubscriptionState,
     modes: frozenset[AuthMode],
@@ -234,7 +235,7 @@ def test_a_directive_runs_on_exactly_the_access_it_was_routed_with(
     def require() -> AuthMode:
         return require_named_access(
             LlmAccess(kind=kind, llm_key_id="key-1" if kind == "llm_key" else ""),
-            host_party=host_party,
+            operated=operated,
             host_key_held=host_key_held,
             subscription=subscription,
             subscription_right=SubscriptionRight.ALLOWED,
@@ -269,7 +270,7 @@ def test_a_subscription_runs_only_where_the_last_ack_allows_it(
     def require() -> AuthMode:
         return require_named_access(
             LlmAccess(kind="subscription"),
-            host_party="user",
+            operated=OPERATED,
             host_key_held=False,
             subscription=SIGNED_IN,
             subscription_right=right,
@@ -290,7 +291,7 @@ def test_an_llm_key_directive_runs_on_the_proxy_on_a_runner_holding_a_pool_key()
 
     mode = require_named_access(
         LlmAccess(kind="llm_key", llm_key_id="key-1"),
-        host_party="organisation",
+        operated=SHARED,
         host_key_held=False,
         subscription=SubscriptionState.NONE,
         subscription_right=None,

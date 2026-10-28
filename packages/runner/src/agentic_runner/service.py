@@ -1578,8 +1578,7 @@ async def sign_in(which: str, *, store: KeyStore, method: str = OAUTH_TOKEN) -> 
             return 1
 
     return await SignIn(
-        host_party=(state.host_party if state is not None else "") or None,
-        operated=state is not None and state.operator_user_profile_id is not None,
+        operated=None if state is None else state.operator_user_profile_id is not None,
         contracts=load_llm_contracts(state_dir),
         served=[kind for kind, cli in _SIGN_IN_CLIS.items() if shutil.which(cli)],
         store=store,
@@ -1885,7 +1884,10 @@ async def _serve_registered(
         monotonic=time.monotonic,
     )
     usage_windows = build_usage_windows(
-        host_party=state.host_party, runtimes=runtimes, isolation=isolation, in_flight=in_flight
+        operated=state.operator_user_profile_id is not None,
+        runtimes=runtimes,
+        isolation=isolation,
+        in_flight=in_flight,
     )
     # One store for both: it caches the key file, and a renewal through the stream must
     # be the key the LLM Key opener reads too.
@@ -2169,7 +2171,7 @@ async def _self_test_forever(
 
 def build_usage_windows(
     *,
-    host_party: str,
+    operated: bool,
     runtimes: Mapping[str, AgentRuntime],
     isolation: ContractIsolation,
     in_flight: DirectivesInFlight,
@@ -2179,7 +2181,7 @@ def build_usage_windows(
     (``auth_mode.runs_subscriptions``, QTS-1450).
     """
 
-    if not runs_subscriptions(host_party, separates_contract_uids=isolation.can_separate_uids):
+    if not runs_subscriptions(operated, separates_contract_uids=isolation.can_separate_uids):
         return None
     probes: dict[str, UsageWindowProbe] = {
         "codex_cli": CodexRateLimitsProbe(),
@@ -2266,14 +2268,10 @@ def _activities(
         github_client=github_client,
         workspace_root=settings.WORKSPACE_ROOT,
         contract_isolation=isolation,
-        # The host party is the control plane's to assign (17 A3); a state file written
-        # before issue 42 carries none, and such a process makes no routing assertion.
-        routing_identity=(
-            RunnerRoutingIdentity(
-                runner_id=str(state.runner_id), host_party=state.host_party, tags=dict(state.tags)
-            )
-            if state.host_party
-            else None
+        routing_identity=RunnerRoutingIdentity(
+            runner_id=str(state.runner_id),
+            tags=dict(state.tags),
+            operated=state.operator_user_profile_id is not None,
         ),
         hooks=hooks,
         socket_dir=build_socket_dir(config),
@@ -2298,7 +2296,7 @@ def _activities(
             proxy=proxy,
             model=settings.TRIAGE_MODEL,
             timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
-            host_party=state.host_party,
+            operated=state.operator_user_profile_id is not None,
             llm_contracts=llm_contracts,
             connection_organisation=connection_organisation,
         ).activity_callables(),

@@ -226,7 +226,7 @@ def _activities(
         git_workspace=FakeGitWorkspace(status_evidence=" M README.md", diff_evidence="+change"),
         github_client=FakeGitHubClient(),
         workspace_root=tmp_path / "workspaces",
-        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, host_party="user", tags={}),
+        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, operated=True, tags={}),
         llm_proxy=proxy,  # type: ignore[arg-type]
         contract_isolation=isolation,
         usage_windows=usage_windows,
@@ -263,7 +263,7 @@ def _branch_pr_input() -> BranchPullRequestInput:
         branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
-        routing=DirectiveRouting(runner_id=RUNNER_ID, host_party="user"),
+        routing=DirectiveRouting(runner_id=RUNNER_ID),
         grant_snapshot=_allowing_snapshot("qts/agentic-os"),
     )
 
@@ -423,7 +423,7 @@ async def test_a_usage_limit_makes_the_windows_the_heartbeat_reports_due_at_once
     isolation = _isolation(tmp_path)
     _sign_in(isolation)
     built = build_usage_windows(
-        host_party="user",
+        operated=True,
         runtimes=_default_runtimes(tmp_path),
         isolation=isolation,
         in_flight=DirectivesInFlight(),

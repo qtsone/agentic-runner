@@ -40,8 +40,7 @@ macOS (`tests/install/workstation.sh`).
    trust, such as a password manager share. The Runner takes its host from the token: a
    token hosted by the Organisation makes an Organisation Runner, which never takes your
    Contracts' work.
-3. **A Contract whose Runner is hosted by you.** Only your Contracts with `runner_host:
-   user` route to your Runner. If yours says the Organisation, ask the Admin to change it.
+3. **Your own work.** A Runner you operate takes your work, never another person's.
 4. **The install command.** **/me/runners** (after minting) and the Organisation
    Console's Runners page show it, with your Runner's name and the control plane URL filled
    in. Copy it from there. The Runner learns its Temporal address when it registers;

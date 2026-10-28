@@ -1,15 +1,14 @@
 """Which auth mode one Directive runs in, decided on the Runner before spawn (local-agents 04).
 
-Subscriptions follow the person and the actual operator, not the host party (QTS-1349,
-QTS-1450). A harness runs on a subscription login where the Runner can verify that the
-login is the Contract's alone:
+Subscriptions follow the person and the actual operator (QTS-1349, QTS-1450, QTS-2378).
+A harness runs on a subscription login where the Runner can verify that the login is the
+Contract's alone:
 
-* on the Contract person's own Runner -- host party ``user``, which routing has already
-  tied to the Contract's person (``assert_routed`` here, the platform's
-  ``_subscription_bound`` there);
-* on a shared Runner (``organisation`` or ``account``, e.g. a customer-operated cluster)
-  only when the Directive runs as its Contract's own uid and that Contract's harness root
-  holds a login. The uid is what keeps one Contract's login out of every other
+* on the Contract person's own Runner -- one a person operates, which the platform's
+  routing has already tied to the Contract's person (``_subscription_bound``);
+* on an Organisation's own Runner (e.g. a customer-operated cluster) only when the
+  Directive runs as its Contract's own uid and that Contract's harness root holds a
+  login. The uid is what keeps one Contract's login out of every other
   Contract's reach on the same host; the login is what the person made there themselves.
 
 The platform decides who may use a subscription at the door (the Subscription Principal
@@ -44,7 +43,6 @@ __all__ = [
     "SUBSCRIPTION_NOT_SIGNED_IN_RULE",
     "SUBSCRIPTION_NO_RIGHT_RULE",
     "SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE",
-    "SHARED_HOST_PARTIES",
     "SIGN_IN_NEEDS_CONTRACT_UID_RULE",
     "SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE",
     "SUBSCRIPTION_NEEDS_HARNESS_LOGIN_RULE",
@@ -55,8 +53,6 @@ __all__ = [
     "is_shared_runner",
     "runs_subscriptions",
 ]
-
-SHARED_HOST_PARTIES: Final[frozenset[str]] = frozenset({"organisation", "account"})
 
 # The rule names a refusal's Evidence carries, so a support read can say which line held.
 SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE: Final[str] = "subscription_needs_contract_uid"
@@ -91,24 +87,29 @@ class AuthModeRefusedError(RuntimeError):
         self.rule = rule
 
 
-def is_shared_runner(host_party: str | None) -> bool:
-    return host_party in SHARED_HOST_PARTIES
+def is_shared_runner(operated: bool | None) -> bool:
+    """An Organisation's own Runner: registered, and operated by no person.
+
+    ``operated`` is None for an unregistered process, which is nobody's Runner.
+    """
+
+    return operated is False
 
 
-def runs_subscriptions(host_party: str | None, *, separates_contract_uids: bool) -> bool:
+def runs_subscriptions(operated: bool | None, *, separates_contract_uids: bool) -> bool:
     """Whether a subscription login made on this Runner could ever run a Directive.
 
     What a sign-in is checked against: one made where no Directive could use it would
-    only leave a login lying in a harness root. An unregistered process (no host party)
-    makes no routing assertion, so it is nobody's own Runner and never qualifies.
+    only leave a login lying in a harness root. An unregistered process is nobody's own
+    Runner and never qualifies.
     """
 
-    return host_party == "user" or (is_shared_runner(host_party) and separates_contract_uids)
+    return operated is True or (is_shared_runner(operated) and separates_contract_uids)
 
 
 def choose_auth_mode(
     *,
-    host_party: str | None,
+    operated: bool | None,
     key_present: bool,
     runtime_modes: Collection[AuthMode],
     contract_uid: bool,
@@ -122,20 +123,20 @@ def choose_auth_mode(
     no-Contract tree's); ``harness_login`` that this Contract's harness root for the
     Directive's kind holds a login. A shared Runner with no key and either one missing has
     nothing left that could authenticate the harness, so it refuses, naming the missing
-    one. An unregistered process (``host_party`` ``None``) never runs a subscription; it
+    one. An unregistered process (``operated`` ``None``) never runs a subscription; it
     runs on a key or fails at the proxy for want of one.
     """
 
     if key_present:
         return AuthMode.API_KEY
-    if host_party == "user":
+    if operated is True:
         return AuthMode.SUBSCRIPTION if AuthMode.SUBSCRIPTION in runtime_modes else AuthMode.API_KEY
-    if not is_shared_runner(host_party):
+    if not is_shared_runner(operated):
         return AuthMode.API_KEY
     if not contract_uid:
         raise AuthModeRefusedError(
             SUBSCRIPTION_NEEDS_CONTRACT_UID_RULE,
-            f"this Runner is hosted by {host_party!r} and does not run this Contract under its "
+            "this Runner is the Organisation's own and does not run this Contract under its "
             "own uid, so it runs API keys only, and no API key is present for this Contract",
         )
     if not harness_login:
@@ -156,7 +157,7 @@ def choose_auth_mode(
 def require_named_access(
     access: LlmAccess,
     *,
-    host_party: str | None,
+    operated: bool | None,
     host_key_held: bool,
     subscription: SubscriptionState,
     subscription_right: SubscriptionRight | None,
@@ -188,11 +189,11 @@ def require_named_access(
             )
         return AuthMode.API_KEY
     if access.kind == LlmAccessKind.SUBSCRIPTION:
-        if host_party != "user":
+        if operated is not True:
             raise AuthModeRefusedError(
                 SUBSCRIPTION_OFF_PERSONAL_RUNNER_RULE,
-                f"this Runner is hosted by {host_party!r}; a subscription runs only on its "
-                "person's own Runner",
+                "no person operates this Runner; a subscription runs only on its person's "
+                "own Runner",
             )
         if subscription_right == SubscriptionRight.NO_RIGHT:
             raise AuthModeRefusedError(

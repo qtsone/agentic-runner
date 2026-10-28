@@ -40,7 +40,7 @@ class _ProfileClient(_Client):
 def _serving(
     client: _Client, runtime: _Codex, cli_kind: str, tmp_path: Path
 ) -> RunnerRalphActivities:
-    return _activities(client, runtime, tmp_path=tmp_path, host_party="user", cli_kind=cli_kind)
+    return _activities(client, runtime, tmp_path=tmp_path, operated=True, cli_kind=cli_kind)
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_the_profile_named_command_reaches_the_runtime_for_an_unpinned_kin
 
     await _serving(
         _ProfileClient("gemini_cli"), runtime, "gemini_cli", tmp_path
-    ).create_or_update_branch_pr(_branch_pr_input("user"))
+    ).create_or_update_branch_pr(_branch_pr_input())
 
     [request] = runtime.requests
     assert request.acp_command == tuple(COMMAND)
@@ -67,7 +67,7 @@ async def test_a_profile_named_command_for_a_pinned_kind_is_refused_with_evidenc
 
     with pytest.raises(ApplicationError) as refused:
         await _serving(client, runtime, cli_kind, tmp_path).create_or_update_branch_pr(
-            _branch_pr_input("user")
+            _branch_pr_input()
         )
 
     assert refused.value.non_retryable is True
@@ -103,7 +103,7 @@ async def test_a_command_the_host_did_not_pin_is_refused_with_evidence(
             runtime,  # type: ignore[arg-type]
             "gemini_cli",
             tmp_path,
-        ).create_or_update_branch_pr(_branch_pr_input("user"))
+        ).create_or_update_branch_pr(_branch_pr_input())
 
     assert refused.value.non_retryable is True
     [evidence] = client.payloads(AGENT_RUNTIME_EVIDENCE_SOURCE)

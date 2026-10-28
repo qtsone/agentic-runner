@@ -39,18 +39,17 @@ def _completion(_: httpx.Request) -> httpx.Response:
 
 
 @pytest.mark.parametrize(
-    ("host_party", "named", "delivered_only"),
+    ("operated", "named", "delivered_only"),
     [
-        ("organisation", None, True),
-        ("account", None, True),
-        ("organisation", [ContractLlmTerms(contract_id=CONTRACT, subscription="no_right")], False),
-        ("organisation", [], False),
-        ("user", None, False),
+        (False, None, True),
+        (False, [ContractLlmTerms(contract_id=CONTRACT, subscription="no_right")], False),
+        (False, [], False),
+        (True, None, False),
     ],
 )
 @pytest.mark.asyncio
 async def test_a_pool_runner_keeps_triage_off_its_store_key_until_an_ack_names_access(
-    host_party: str, named: list[ContractLlmTerms] | None, delivered_only: bool
+    operated: bool, named: list[ContractLlmTerms] | None, delivered_only: bool
 ) -> None:
     proxy = _Proxy()
     async with httpx.AsyncClient(transport=httpx.MockTransport(_completion)) as client:
@@ -58,7 +57,7 @@ async def test_a_pool_runner_keeps_triage_off_its_store_key_until_an_ack_names_a
             proxy=proxy,  # type: ignore[arg-type]
             model="gpt-5-mini",
             timeout_seconds=5,
-            host_party=host_party,
+            operated=operated,
             llm_contracts=lambda: named,
             client=client,
         ).run_triage_turn(

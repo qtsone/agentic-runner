@@ -137,10 +137,6 @@ class WorkerRuntimeContext(BaseModel):
     budget_max_directives: int | None = None
     budget_max_wall_clock_seconds: float | None = None
     budget_max_tokens: int | None = None
-    # The Contract's `runner_host` (PRD issue 47): a `user`-hosted Contract runs on a
-    # laptop whose sleep is an outage the wall-clock keeps counting through, so its
-    # default wall-clock Budget is the longer one. None where no Contract is bound.
-    runner_host: str | None = None
     # The Work Record's task text (Slack markup already stripped by the backend).
     # Defaulted so a worker on this version tolerates a backend that predates it.
     completion_criteria: str = ""

@@ -130,7 +130,6 @@ def _stream(tmp_path: Path, registration: _Registration) -> Any:
             private_key_pem="unused",
             temporal_namespace="org-x",
             task_queue=f"runner.{runner_id}",
-            host_party="organisation",
         ),
         isolation=IsolationMode.NONE,
         proxy=LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox()),

@@ -3231,13 +3231,13 @@ class RunnerRalphActivities:
         """
 
         runtime = self._agent_runtimes.get(state.cli_kind)
-        host_party = self._routing_identity.host_party if self._routing_identity else None
+        operated = self._routing_identity.operated if self._routing_identity else None
         contract_uid = self._runs_under_contract_uid(state)
         try:
             if access is not None:
                 return require_named_access(
                     access,
-                    host_party=host_party,
+                    operated=operated,
                     host_key_held=self._host_key_held(state),
                     subscription=self._subscription_state(state),
                     subscription_right=self._subscription_right(state),
@@ -3245,7 +3245,7 @@ class RunnerRalphActivities:
                     pool_key_held=self._llm_keys is not None and self._llm_keys.holds_pool_key,
                 )
             return choose_auth_mode(
-                host_party=host_party,
+                operated=operated,
                 key_present=self._api_key_present(state, runtime),
                 runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
                 contract_uid=contract_uid,
@@ -3330,9 +3330,7 @@ class RunnerRalphActivities:
                 ),
                 "rule": refusal.rule,
                 "cli_kind": state.cli_kind,
-                "host_party": (
-                    self._routing_identity.host_party if self._routing_identity else None
-                ),
+                "operated": (self._routing_identity.operated if self._routing_identity else None),
                 "contract_id": state.contract_id,
                 **({} if access is None else {"llm_access": access.kind}),
             },
@@ -3361,11 +3359,11 @@ class RunnerRalphActivities:
         )
 
     def _personal_runner(self) -> bool:
-        """Hosted by its person. Only such a Runner spends its store's key on a Directive
+        """Operated by its person. Only such a Runner spends its store's key on a Directive
         that names no access (a control plane below 3.25): a pool Runner's key never
         reached the proxy before, and that control plane caps none of its spend."""
 
-        return self._routing_identity is not None and self._routing_identity.host_party == "user"
+        return self._routing_identity is not None and self._routing_identity.operated
 
     def _host_key_held(self, state: _RuntimeContextState) -> bool:
         provider = provider_for(state.cli_kind)
@@ -3415,10 +3413,10 @@ class RunnerRalphActivities:
         can see and act on.
         """
 
-        host_party = self._routing_identity.host_party if self._routing_identity else None
+        operated = self._routing_identity.operated if self._routing_identity else None
         if (
             self._contract_isolation is None
-            or not is_shared_runner(host_party)
+            or not is_shared_runner(operated)
             or self._runs_under_contract_uid(state)
             or state.contract_id in self._residue_checked
         ):
@@ -3434,7 +3432,7 @@ class RunnerRalphActivities:
             payload={
                 "event": "harness.login_residue",
                 "contract_id": state.contract_id,
-                "host_party": host_party,
+                "operated": operated,
                 "login_files": counts,
             },
         )

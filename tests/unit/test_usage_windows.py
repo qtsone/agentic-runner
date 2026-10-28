@@ -602,16 +602,15 @@ async def test_the_heartbeat_carries_the_windows_after_a_probe(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_a_shared_runner_without_contract_uids_reports_no_windows(tmp_path: Path) -> None:
     runtimes: dict[str, AgentRuntime] = {}
-    for party in ("organisation", "account", ""):
-        assert (
-            service.build_usage_windows(
-                host_party=party,
-                runtimes=runtimes,
-                isolation=_isolation(tmp_path),
-                in_flight=DirectivesInFlight(),
-            )
-            is None
+    assert (
+        service.build_usage_windows(
+            operated=False,
+            runtimes=runtimes,
+            isolation=_isolation(tmp_path),
+            in_flight=DirectivesInFlight(),
         )
+        is None
+    )
     registration = _Registration()
 
     await _stream(tmp_path, registration, None).exchange([])
@@ -621,14 +620,11 @@ async def test_a_shared_runner_without_contract_uids_reports_no_windows(tmp_path
     assert "usage_windows" not in row
 
 
-@pytest.mark.parametrize("party", ["organisation", "account"])
-def test_a_shared_runner_with_contract_uids_probes_its_harnesses(
-    tmp_path: Path, party: str
-) -> None:
+def test_a_shared_runner_with_contract_uids_probes_its_harnesses(tmp_path: Path) -> None:
     """QTS-1450: such a Runner runs a Contract's subscription, so its windows are read."""
 
     usage = service.build_usage_windows(
-        host_party=party,
+        operated=False,
         runtimes={"claude_code": object()},  # type: ignore[dict-item]
         isolation=_isolation(tmp_path, can_separate_uids=True),
         in_flight=DirectivesInFlight(),
@@ -638,9 +634,9 @@ def test_a_shared_runner_with_contract_uids_probes_its_harnesses(
     assert list(usage._probes) == ["claude_code"]
 
 
-def test_a_user_hosted_runner_probes_only_the_harnesses_it_serves(tmp_path: Path) -> None:
+def test_a_persons_own_runner_probes_only_the_harnesses_it_serves(tmp_path: Path) -> None:
     usage = service.build_usage_windows(
-        host_party="user",
+        operated=True,
         runtimes={"codex_cli": object()},  # type: ignore[dict-item]
         isolation=_isolation(tmp_path),
         in_flight=DirectivesInFlight(),

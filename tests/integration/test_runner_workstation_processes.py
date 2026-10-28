@@ -78,7 +78,7 @@ class Plane:
                             "tag_set_version": 1,
                             "floor_state": "ok",
                             "contracts_floor": contracts_version,
-                            "host_party": "user",
+                            "operator_user_profile_id": str(uuid4()),
                             "heartbeat_interval_seconds": 1,
                         }
                     else:

@@ -689,7 +689,7 @@ def status_lines(paths: RunnerPaths, *, now: datetime | None = None) -> list[str
         f"heartbeat      {'never' if age is None else f'{age:.0f}s ago'}",
     ]
     if pid and state is not None:
-        lines.extend(next_step_lines(state.host_party))
+        lines.extend(next_step_lines(operated=state.operator_user_profile_id is not None))
     return lines
 
 
@@ -793,7 +793,7 @@ def _printable(name: str | None) -> str:
     return "".join(character for character in name or "" if character.isprintable())
 
 
-def next_step_lines(host_party: str) -> list[str]:
+def next_step_lines(*, operated: bool) -> list[str]:
     """Where to go once the Runner is live (QTS-1314): the dogfood install ended at
     ``started`` and left the person with no idea what the console wanted next.
 
@@ -801,17 +801,15 @@ def next_step_lines(host_party: str) -> list[str]:
     not share a domain (QTS-1300) -- the person minted the token on that console anyway.
     """
 
-    if host_party == "user":
+    if operated:
         return [
             "next           open /me/runners in the console to see this Runner, then "
-            "/me/work/new and pick a Contract that says it runs on a Runner you host"
+            "/me/work/new to start work on it"
         ]
-    if host_party:
-        return [
-            "next           this Runner takes the work of Contracts whose Runner is hosted by "
-            f"the {host_party}; it shows on the Organisation Console's Runners page"
-        ]
-    return []
+    return [
+        "next           this Runner takes the Organisation's work; it shows on the "
+        "Organisation Console's Runners page"
+    ]
 
 
 # ------------------------------------------------------------------ the verbs
@@ -875,7 +873,7 @@ async def install(
     )
     if start_service:
         lines.append(f"started        {state.runner_id}")
-        lines.extend(next_step_lines(state.host_party))
+        lines.extend(next_step_lines(operated=state.operator_user_profile_id is not None))
     return lines
 
 

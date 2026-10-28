@@ -162,14 +162,12 @@ class DirectiveRouting:
     """The routing decision one Directive was dispatched by, carried in its payload.
 
     Present on every Runner activity input so the Runner can fail closed before any verb
-    (25 §9): it re-checks the selector against its own Tags and the host party against
-    its own registration, and refuses with Evidence when either disagrees. The Runner is
-    told what it was matched *on*, never trusted to decide it.
+    (25 §9): it re-checks the selector against its own Tags, and refuses with Evidence
+    when they disagree. The Runner is told what it was matched *on*, never trusted to
+    decide it.
     """
 
     runner_id: str
-    # `organisation` | `account` | `user` -- the Contract's ``runner_host`` (17 A3).
-    host_party: str
     # The legacy ``{key: value}`` selector. Kept beside ``requirements`` rather than
     # replaced so a Runner one minor behind, which reads only this field, still decodes
     # the payload during its `warn` window (ADR-0013 §7). Remove at the next major.
@@ -202,8 +200,10 @@ class RunnerRoutingIdentity:
     """
 
     runner_id: str
-    host_party: str
     tags: dict[str, str] = field(default_factory=dict)
+    # Spec: Runners rev 14: a person operates this Runner (`agentic-runner login`); False
+    # for an Organisation's own. What a subscription is decided on (QTS-2378).
+    operated: bool = False
 
 
 class RoutingRefusedError(RuntimeError):
@@ -233,12 +233,6 @@ def assert_routed(routing: DirectiveRouting | None, identity: RunnerRoutingIdent
         raise RoutingRefusedError(
             "runner_mismatch",
             f"payload was routed to Runner {routing.runner_id}, not to {identity.runner_id}",
-        )
-    if routing.host_party != identity.host_party:
-        raise RoutingRefusedError(
-            "host_party_mismatch",
-            f"Contract requires a Runner hosted by {routing.host_party!r}; this Runner is "
-            f"hosted by {identity.host_party!r}",
         )
     selector = routing.selector_requirements()
     if not selector_satisfied(selector, identity.tags):

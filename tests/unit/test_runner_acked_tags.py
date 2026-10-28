@@ -28,12 +28,9 @@ from agentic_runner_contracts.routing import (
 from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
 
 RUNNER_ID = "11111111-1111-4111-8111-111111111111"
-BOOTSTRAPPED = RunnerRoutingIdentity(
-    runner_id=RUNNER_ID, host_party="organisation", tags={"region": "eu"}
-)
+BOOTSTRAPPED = RunnerRoutingIdentity(runner_id=RUNNER_ID, tags={"region": "eu"})
 ON_A100 = DirectiveRouting(
     runner_id=RUNNER_ID,
-    host_party="organisation",
     requirements=(SelectorRequirement(key="gpu", operator=SelectorOperator.IN, values=("a100",)),),
 )
 
@@ -101,7 +98,7 @@ def test_a_directive_routed_on_an_added_tag_holds_against_the_acked_tags() -> No
     with pytest.raises(RoutingRefusedError):
         assert_routed(ON_A100, BOOTSTRAPPED)
 
-    assert_routed(ON_A100, RunnerRoutingIdentity(RUNNER_ID, "organisation", {"gpu": "a100"}))
+    assert_routed(ON_A100, RunnerRoutingIdentity(RUNNER_ID, {"gpu": "a100"}))
 
 
 # ------------------------------------------------------------------ the Runner

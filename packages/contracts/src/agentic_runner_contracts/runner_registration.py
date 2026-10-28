@@ -343,13 +343,6 @@ class BootstrapResponse(BaseModel):
     tag_set_version: int
     floor_state: FloorState
     contracts_floor: Version
-    # Who the control plane registered this process as being hosted by, fixed from the
-    # Runner Registration Token presented (17 A3). Told to the Runner, never declared by it:
-    # it is what the Runner asserts a Directive's routing against (PRD issue 42), and a
-    # Runner that could set it could reach another contractor's work. Defaulted so a Runner
-    # on this wire still parses a response from a control plane that predates issue 42 -- it then
-    # has nothing to assert with and simply performs no routing assertion.
-    host_party: str = ""
     heartbeat_interval_seconds: int = int(HEARTBEAT_INTERVAL.total_seconds())
     stale_after_seconds: int = int(HEARTBEAT_STALE_AFTER.total_seconds())
     # ADR-0022 §4: the Temporal frontend the namespace lives on, so no install command
