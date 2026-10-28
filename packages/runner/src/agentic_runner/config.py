@@ -20,6 +20,7 @@ learns it no longer binds rather than believing it does.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import tomllib
@@ -48,6 +49,13 @@ RETIRED_LIMITS_WARNING: Final[str] = (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+# Once per process: a bare `run` on a workstation loads the config twice (the state dir,
+# then the start), and the spec allows one warning.
+@functools.cache
+def warn_retired_limits() -> None:
+    _logger.warning(RETIRED_LIMITS_WARNING)
 
 
 class RunnerConfig(BaseModel):
@@ -96,7 +104,7 @@ def load(
     path = config_file or _path_from_env(env) or DEFAULT_CONFIG_FILE
     loaded = _read_file(path)
     if _RETIRED_LIMITS_KEY in loaded or env.get(f"{ENV_PREFIX}LIMITS", "").strip():
-        _logger.warning(RETIRED_LIMITS_WARNING)
+        warn_retired_limits()
     known = set(RunnerConfig.model_fields)
     values: dict[str, Any] = {key: value for key, value in loaded.items() if key in known}
     values.update(_from_env(env))

@@ -145,6 +145,12 @@ def _state(guardrails: Guardrails, **overrides: Any) -> _RuntimeContextState:
 # ------------------------------------------------------------------ a leftover Runner Limit
 
 
+@pytest.fixture
+def _fresh_retired_limits_warning() -> None:
+    runner_config.warn_retired_limits.cache_clear()
+
+
+@pytest.mark.usefixtures("_fresh_retired_limits_warning")
 def test_a_leftover_runner_limit_file_is_ignored_with_one_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -152,7 +158,9 @@ def test_a_leftover_runner_limit_file_is_ignored_with_one_warning(
     path.write_text('log_level = "debug"\n[limits]\nfolders = ["~/clients"]\n')
     environ = {"AGENTIC_RUNNER_LIMITS": json.dumps({"networks": ["evil.example"]})}
 
+    # Twice, as a bare `run` on a workstation loads it: for the state dir, then to start.
     with caplog.at_level(logging.WARNING, logger=runner_config.__name__):
+        runner_config.load(config_file=path, environ=environ)
         loaded = runner_config.load(config_file=path, environ=environ)
 
     assert loaded.log_level == "debug"
@@ -162,6 +170,7 @@ def test_a_leftover_runner_limit_file_is_ignored_with_one_warning(
     ]
 
 
+@pytest.mark.usefixtures("_fresh_retired_limits_warning")
 def test_a_config_with_no_runner_limit_warns_nothing(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
