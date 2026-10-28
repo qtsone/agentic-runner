@@ -275,6 +275,7 @@ from agentic_runner_contracts.grants import (
     CHANNEL_READ_VERB,
     CHANNEL_RESOURCE_TYPE,
     CHANNEL_WRITE_VERB,
+    EMPTY_SNAPSHOT,
     PR_COMMENT_VERB,
     PR_MERGE_VERB,
     PR_OPEN_VERB,
@@ -282,7 +283,6 @@ from agentic_runner_contracts.grants import (
     PUSH_VERB,
     READ_VERB,
     REPO_RESOURCE_TYPE,
-    UNENFORCED_SNAPSHOT,
     Decision,
     GrantLink,
     GrantSnapshot,
@@ -657,7 +657,7 @@ class _RuntimeContextState:
     acp_command: tuple[str, ...] = ()
     # Pushed on change and applied on receipt (ADR-0011 §11, PRD issue 44): the evaluator
     # is local, so a narrowing lands on the next verb this state is read for.
-    grant_snapshot: GrantSnapshot = UNENFORCED_SNAPSHOT
+    grant_snapshot: GrantSnapshot = EMPTY_SNAPSHOT
     # The snapshot exactly as the control plane served it. Carried beside the parsed form
     # so a Runner activity can hand the same bytes to the next one through activity I/O
     # (ADR-0013 §3) without re-serialising a parsed model.
@@ -3824,7 +3824,6 @@ class RunnerRalphActivities:
                 reason=error.reason,
                 agent_id=state.agent_id,
                 contract_state=state.grant_snapshot.contract_state,
-                enforced=True,
             )
 
     async def _verify_hook(
@@ -3912,9 +3911,7 @@ class RunnerRalphActivities:
             else dict(grant_snapshot or {})
         )
         snapshot = (
-            GrantSnapshot.from_payload(snapshot_payload)
-            if snapshot_payload
-            else UNENFORCED_SNAPSHOT
+            GrantSnapshot.from_payload(snapshot_payload) if snapshot_payload else EMPTY_SNAPSHOT
         )
         return _RuntimeContextState(
             reviewer=runtime_context.reviewer,
@@ -3998,7 +3995,6 @@ class RunnerRalphActivities:
                 ),
                 agent_id=request.agent_id or None,
                 contract_state="active",
-                enforced=True,
             )
         )
 
@@ -4052,7 +4048,6 @@ class RunnerRalphActivities:
                 reason=reason,
                 agent_id=request.agent_id or None,
                 contract_state="active",
-                enforced=True,
             )
         )
 
@@ -4424,7 +4419,6 @@ class RunnerRalphActivities:
                     "reason": error.reason,
                     "detail": str(error),
                     "contract_state": state.grant_snapshot.contract_state,
-                    "enforced": True,
                 },
             )
             raise
@@ -5616,7 +5610,7 @@ class RunnerRalphActivities:
             # Directives bites at this Directive's first verb (ADR-0011 §11). The
             # snapshot on the input is what a link-less host has (until issue 46 that is
             # every host in production), so it must be passed on or the Directive falls
-            # back to UNENFORCED_SNAPSHOT and runs unattenuated.
+            # back to EMPTY_SNAPSHOT and every verb is refused.
             state = await self._runtime_state(
                 request.work_record_id,
                 workspace_path=request.workspace_path,

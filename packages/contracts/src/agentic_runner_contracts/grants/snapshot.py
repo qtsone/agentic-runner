@@ -89,12 +89,7 @@ class ProductReach:
 
 @dataclass(frozen=True)
 class GrantSnapshot:
-    """The three Grants plus the registry, as the control plane hands them over.
-
-    ``enforced`` is always true from the platform (issue 88): a Work Record with no Agent
-    bound is held, never run unattenuated. A false one decides ``allow`` and says so in
-    its Evidence; it survives only for wire compatibility with installed Runners.
-    """
+    """The three Grants plus the registry, as the control plane hands them over."""
 
     agent_id: str | None = None
     contract_id: str | None = None
@@ -116,8 +111,6 @@ class GrantSnapshot:
     # rest of the snapshot, so a Product dropped from the Contract leaves at the next
     # Directive. Empty from a backend that predates the field.
     reach: tuple[ProductReach, ...] = ()
-    # TODO(issue 88): remove ``enforced`` at the next contracts major.
-    enforced: bool = True
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> GrantSnapshot:
@@ -252,4 +245,7 @@ class GrantSnapshot:
         return max(matches, default=DEFAULT_REQUIRED_HUMAN_APPROVALS)
 
 
-UNENFORCED_SNAPSHOT: Final = GrantSnapshot(enforced=False)
+# What a Work Record with no snapshot decides on: empty Grants and no registry, so every
+# verb is denied. A Work Record with no Agent bound is held, never run unattenuated (issue
+# 88).
+EMPTY_SNAPSHOT: Final = GrantSnapshot()

@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from agentic_runner_contracts.grants.catalogue import mcp_resource_type
 from agentic_runner_contracts.grants.evaluator import (
     Resource,
-    decide_runner_limit,
     evaluate_effective_grant,
 )
 from agentic_runner_contracts.grants.model import (
@@ -48,7 +47,6 @@ class VerbDecision:
     reason: str
     agent_id: str | None
     contract_state: str
-    enforced: bool
     deciding_link: GrantLink | None = None
     deciding_entry: dict[str, object] | None = None
 
@@ -81,7 +79,6 @@ class VerbDecision:
             "deciding_entry": self.deciding_entry,
             "reason": self.reason,
             "contract_state": self.contract_state,
-            "enforced": self.enforced,
         }
 
 
@@ -106,31 +103,6 @@ def decide_verb(
             resource_type=resource_type, identifier=identifier
         ),
     )
-    if not snapshot.enforced:
-        limited = (
-            None
-            if runner_limit is None
-            else decide_runner_limit(runner_limit, resource=resource, verb=verb)
-        )
-        if limited is not None and limited.entry is not None:
-            return _decision(
-                snapshot,
-                verb=verb,
-                resource_type=resource_type,
-                identifier=identifier,
-                decision=Decision.DENY,
-                reason=f"this Runner's Runner Limit denies {verb!r} on {identifier}",
-                deciding_link=GrantLink.RUNNER_LIMIT,
-                deciding_entry=_entry_evidence(limited.entry, verb=verb, fallback=Decision.DENY),
-            )
-        return _decision(
-            snapshot,
-            verb=verb,
-            resource_type=resource_type,
-            identifier=identifier,
-            decision=Decision.ALLOW,
-            reason="no Agent is bound to this Work Record; nothing to attenuate",
-        )
     if not snapshot.dispatchable:
         # §8: the control plane refuses to *dispatch* under an inactive Contract, and the
         # Runner refuses every verb it already holds a snapshot for. The in-flight hold
@@ -224,26 +196,9 @@ def decide_mcp_server(
     A server that registered no tools is evaluated on ``*`` alone, which only a pattern
     entry (the Persona's derived ``*``, a root ``*``) can match -- so a toolless server
     is granted exactly when every link grants the whole server.
-
-    Unlike a platform verb, an unenforced snapshot (no Agent bound) grants no server:
-    the verbs it allows are the loop's own, which predate the Agent entity, while a
-    server is new capability -- often a credentialed one -- that only an attributable
-    Agent's Grant can hand out.
     """
 
     resource_type = mcp_resource_type(server)
-    if not snapshot.enforced:
-        refused = _decision(
-            snapshot,
-            verb="*",
-            resource_type=resource_type,
-            identifier=server,
-            decision=Decision.DENY,
-            reason="no Agent is bound to this Work Record; MCP servers are granted per Agent",
-        )
-        return McpServerDecision(
-            server=server, decision=Decision.DENY, deciding=refused, tools=(refused,)
-        )
     decisions = tuple(
         decide_verb(
             snapshot,
@@ -279,7 +234,6 @@ def _decision(
         reason=reason,
         agent_id=snapshot.agent_id,
         contract_state=snapshot.contract_state,
-        enforced=snapshot.enforced,
         deciding_link=deciding_link,
         deciding_entry=deciding_entry,
     )

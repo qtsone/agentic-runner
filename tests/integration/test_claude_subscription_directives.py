@@ -233,6 +233,28 @@ def _activities(
     )
 
 
+def _allowing_snapshot(repository: str) -> dict[str, object]:
+    grant = {
+        "entries": [
+            {
+                "resource_type": "repo",
+                "selector": repository,
+                "verbs": {verb: "allow" for verb in ("read", "branch", "push", "pr.open")},
+            }
+        ]
+    }
+    return {
+        "agent_id": None,
+        "contract_id": CONTRACT_ID,
+        "contract_state": "active",
+        "dispatchable": True,
+        "root_grant": grant,
+        "agent_grant": grant,
+        "persona_allow_list": grant,
+        "resources": [{"resource_type": "repo", "selector": repository, "in_contract_scope": True}],
+    }
+
+
 def _branch_pr_input() -> BranchPullRequestInput:
     return BranchPullRequestInput(
         work_record_id=WORK_RECORD_ID,
@@ -242,6 +264,7 @@ def _branch_pr_input() -> BranchPullRequestInput:
         pr_title="Add a Production section",
         pr_body="body",
         routing=DirectiveRouting(runner_id=RUNNER_ID, host_party="user"),
+        grant_snapshot=_allowing_snapshot("qts/agentic-os"),
     )
 
 
