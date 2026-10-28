@@ -53,7 +53,7 @@ class _FakeClient:
     async def get_runtime_context(self, work_record_id: str) -> dict[str, Any]:
         return {
             "work_record_id": WORK_RECORD_ID,
-            "profile_slug": "engineer",
+            "work_branch": f"agent/{WORK_RECORD_ID}-engineer",
             "cli_kind": self.cli_kind,
             "repo": REPOSITORY,
             "base_branch": "main",
@@ -174,7 +174,7 @@ def _branch_pr_input() -> BranchPullRequestInput:
         work_record_id=WORK_RECORD_ID,
         repository=REPOSITORY,
         base_ref="main",
-        branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer"),
+        branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
     )

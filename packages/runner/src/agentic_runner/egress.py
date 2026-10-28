@@ -1,11 +1,11 @@
 """Scoped egress for one Directive (PRD issue 58, map 06 §4, ticket 05's open item).
 
 ``CODEX_NETWORK_ACCESS`` was all-or-nothing: a Directive either reached the whole internet
-or nothing, and a VPC-only Streamable HTTP MCP server needs neither. The Agent Runtime
-Profile's ``network_policy`` now names the destinations a Directive may reach; the Runner
+or nothing, and a VPC-only Streamable HTTP MCP server needs neither. The network part of
+the Directive's Guardrails now names the destinations it may reach; the Runner
 adds the ones it knows the Directive needs (the git remote, each granted HTTP MCP
 server), and this forward proxy on loopback is where the list is enforced: every
-Directive under a Profile allow-list is handed ``HTTPS_PROXY`` / ``HTTP_PROXY`` /
+Directive under a Guardrails allow-list is handed ``HTTPS_PROXY`` / ``HTTP_PROXY`` /
 ``ALL_PROXY`` naming it, with the attempt's bearer as the proxy credential so another
 Contract's uid on the same loopback cannot borrow this attempt's list.
 
@@ -14,9 +14,9 @@ opens a raw socket is stopped only by what the host adds underneath (a pod
 NetworkPolicy); a workstation adds nothing, which is why it reports its posture as
 ``unenforced`` in the heartbeat rather than claiming the list binds.
 
-The Runner Limit's ``networks`` part (ADR-0022 §54) is a deny-list in the same syntax, read
-by the same proxy after the allow-list: a destination passes only if the Profile allows it
-and no entry denies it. Both lists are compared through :func:`parse_destination`, so a
+The destinations a narrowing layer removed are a deny-list in the same syntax, read by the
+same proxy after the allow-list: a destination passes only if the Organisation allows it
+and no layer removed it. Both lists are compared through :func:`parse_destination`, so a
 case, a trailing dot, a port or an IP literal's spelling means the same in either.
 """
 
@@ -39,7 +39,6 @@ from agentic_runner.tiny_http import HttpRequest, read_request, response_head
 
 __all__ = [
     "EGRESS_ENV_NAMES",
-    "EGRESS_REFUSED_SOURCE",
     "EgressProxy",
     "Resolver",
     "destination_allowed",
@@ -49,7 +48,6 @@ __all__ = [
     "url_destination",
 ]
 
-EGRESS_REFUSED_SOURCE: Final[str] = "runner.egress_refused"
 
 # Both spellings: curl and git read the lower-case ones, most language runtimes the
 # upper. Reserved on a Directive's environment so a hook cannot point the Agent round it.
@@ -111,7 +109,7 @@ def _inet_aton_spelling(host: str) -> str | None:
 
 
 def parse_destination(entry: str) -> tuple[str, int | None]:
-    """A ``network_policy`` destination as ``(host pattern, port)``; None admits any port.
+    """A Guardrails network destination as ``(host pattern, port)``; None admits any port.
 
     ``host``, ``host:port``, ``*.domain``, ``[v6]:port`` or a bare IPv6 literal. Raises
     ``ValueError`` for an entry whose port is not one.

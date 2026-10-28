@@ -37,17 +37,11 @@ class Decision(StrEnum):
 
 
 class GrantLink(StrEnum):
-    """Which link of the chain a Grant is, which fixes the decisions it may carry.
-
-    ``RUNNER_LIMIT`` is the tools part of the Runner's own Runner Limit (ADR-0022 §53): a
-    deny-list its host sets in config, so ``deny`` is the only decision it carries. It is
-    not stored by the platform; the Runner passes it to the evaluator from its config.
-    """
+    """Which link of the chain a Grant is, which fixes the decisions it may carry."""
 
     ROOT = "root"
     AGENT = "agent"
     PERSONA = "persona"
-    RUNNER_LIMIT = "runner_limit"
 
 
 # Ordered by how much they permit. Intersection is the minimum, so ``deny`` anywhere in the
@@ -62,7 +56,6 @@ _DECISIONS_BY_LINK: Final[dict[GrantLink, frozenset[Decision]]] = {
     GrantLink.ROOT: frozenset({Decision.ALLOW, Decision.DENY}),
     GrantLink.AGENT: frozenset({Decision.ALLOW, Decision.CONFIRM, Decision.DENY}),
     GrantLink.PERSONA: frozenset({Decision.ALLOW, Decision.DENY}),
-    GrantLink.RUNNER_LIMIT: frozenset({Decision.DENY}),
 }
 
 

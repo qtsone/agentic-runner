@@ -16,15 +16,14 @@ from agentic_runner_contracts.runtime_context import (
 def valid_context_payload() -> dict[str, Any]:
     return {
         "work_record_id": "wr_123",
-        "profile_slug": "codex-default",
+        "work_branch": "agent/wr_123-codex-default",
         "cli_kind": "codex_cli",
         "repo": "qtsone/agentic-os",
         "base_branch": "main",
         "reviewer": "@ada",
         "task_queue": "engineer-codex-default",
         "worker_secret_refs": ["codex-subscription-token"],
-        "command_policy": {"allow": ["uv run pytest"]},
-        "network_policy": {"egress": ["github.com"]},
+        "guardrails": {"commands": ["uv run pytest"], "network": ["github.com"]},
         "product_verifier_command_source": {
             "source": "work_record_payload",
             "available": False,

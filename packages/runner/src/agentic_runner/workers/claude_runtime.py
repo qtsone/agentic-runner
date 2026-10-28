@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Final
 
+from agentic_runner.guardrails import GuardrailRefusal, turn_timeout
 from agentic_runner.llm_proxy import PROXY_ENV_NAMES
 from agentic_runner.workers._runtime_support import (
     SubprocessResult,
@@ -193,13 +194,17 @@ class ClaudeRuntime(ResumableAgentRuntime):
         if started_session is not None and request.on_session_started is not None:
             request.on_session_started(started_session)
 
+        refusals: tuple[GuardrailRefusal, ...] = ()
+        timeout_seconds, overrun = turn_timeout(
+            self._settings.CLAUDE_CLI_TIMEOUT_SECONDS, request.guardrails
+        )
         try:
             raw_result = await self._runner(
                 argv=argv,
                 cwd=workspace_path,
                 env=env,
                 stdin=request.prompt,
-                timeout_seconds=self._settings.CLAUDE_CLI_TIMEOUT_SECONDS,
+                timeout_seconds=timeout_seconds,
                 output_limit_bytes=self._settings.CLAUDE_CLI_OUTPUT_LIMIT_BYTES,
                 sandbox=sandbox,
             )
@@ -209,6 +214,9 @@ class ClaudeRuntime(ResumableAgentRuntime):
         except TimeoutError as exception:
             raw_result = SubprocessResult(exit_code=124, stdout="", stderr="")
             error = str(exception) or "Claude Code CLI timed out"
+            if overrun is not None:
+                refusals = (overrun,)
+                notes.append(f"turn ended: {overrun.summary}")
         except OSError as exception:
             raw_result = SubprocessResult(exit_code=127, stdout="", stderr="")
             error = str(exception)
@@ -237,6 +245,7 @@ class ClaudeRuntime(ResumableAgentRuntime):
             error=redacted_error,
             command_hash=command_hash,
             evidence=evidence,
+            guardrail_refusals=refusals,
             model=model,
         )
 

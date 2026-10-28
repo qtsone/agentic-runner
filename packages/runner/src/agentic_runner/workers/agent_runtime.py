@@ -18,8 +18,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from agentic_runner.guardrails import GuardrailRefusal
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
+from agentic_runner_contracts.guardrails import Guardrails
 from agentic_runner_contracts.runner_registration import UsageWindow
 
 
@@ -39,7 +41,7 @@ class AuthMode(StrEnum):
 
 class PermissionFallback(StrEnum):
     """What a runtime that is asked per command does when the command policy has no
-    answer (PRD decision 12): the Profile's ``permission_fallback``, ``deny`` by default.
+    answer (PRD decision 12): the Guardrails' ``permission_fallback``, ``deny`` by default.
 
     ``deny`` refuses the command and names it in the Directive's Evidence; ``hold`` asks a
     person through the Question hold, and the answer reaches the next Directive.
@@ -87,10 +89,14 @@ class DirectiveRequest:
     # ``()`` is "servers are bound, none granted", which still has to be said to the CLI
     # so nothing ungranted is loaded from anywhere else.
     mcp_servers: tuple[McpServerEntry, ...] | None = None
-    # The destinations this Directive may reach (the Profile's list plus what the Runner
-    # added), enforced by the attempt's egress proxy. Empty: no Profile list, so the
-    # runtime keeps its own network posture.
+    # The destinations this Directive may reach (the Guardrails' list plus what the Runner
+    # added), enforced by the attempt's egress proxy. Empty: the Guardrails list none, so
+    # the runtime keeps its own network posture.
     egress_allow_list: tuple[str, ...] = ()
+    # The Directive's Guardrails (Spec: Agent Guardrails rev 7): read by a runtime the
+    # harness asks per command for the commands and folders, and by every runtime for the
+    # wall-clock limit. None only where a caller built none (unit fakes).
+    guardrails: Guardrails | None = None
     # A retried attempt continues the harness session an earlier attempt of the same
     # Directive started (ADR-0007, amendment 2026-10-03). The caller has already matched
     # the Contract, Workspace and head, and asked ``has_session``.
@@ -138,6 +144,9 @@ class DirectiveResult:
     # The harness's own per-model usage, where its protocol carries one (ACP). Empty means
     # the caller reads usage off ``stdout`` as before.
     model_usage: tuple[ModelUsage, ...] = ()
+    # What the Directive's Guardrails refused during the turn, each written to Evidence by
+    # the caller with the layer that refused it.
+    guardrail_refusals: tuple[GuardrailRefusal, ...] = ()
     # The subscription usage windows the harness's own stream last reported, where it
     # carries them (claude-agent-acp's rate-limit events, local-agents 10).
     usage_windows: tuple[UsageWindow, ...] = ()

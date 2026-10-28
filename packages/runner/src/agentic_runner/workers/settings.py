@@ -83,8 +83,8 @@ class WorkerSettings(BaseSettings):
         default=4 * 1024**3,
         ge=1,
         description=(
-            "Default per-process memory ceiling for a Contract's spawns. An Agent Runtime "
-            "Profile's `command_policy.memory_limit_bytes` overrides it per Profile."
+            "Per-process memory ceiling for a Contract's spawns. A Directive's Guardrails "
+            "memory limit lowers it, never raises it."
         ),
     )
     CODEX_CLI_PATH: str = Field(

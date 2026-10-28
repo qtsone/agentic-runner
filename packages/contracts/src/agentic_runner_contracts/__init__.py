@@ -164,6 +164,22 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `intake_filter` still reads. The ack forbids extra keys, so the control plane sends the
 # three assignment fields only to a Runner whose heartbeat names contracts 3.33 or later;
 # the Runner sends `listener_id` only on a Listener's firing, which only that ack starts.
+# 4.0.0 (QTS-2474, Spec: Agent Guardrails rev 7): a major, so the control plane refuses
+# every Runner on 3.x and every Runner host upgrades at once. `guardrails` -- `Guardrails`,
+# the layer per removed entry and `refusal_evidence` -- on `WorkerRuntimeContext.guardrails`,
+# with `WorkerRuntimeContext.work_branch`, in place of `profile_slug`, `command_policy` and
+# `network_policy` (`EGRESS_ALLOW_LIST_KEY` goes); `work_branch_name` takes `slug`. The
+# Runner Limit goes: `runner_limit`, `GrantLink.RUNNER_LIMIT`, `decide_runner_limit` and
+# the `runner_limit` argument of the evaluator, `decide_verb` and `decide_mcp_server`, and
+# the field on `BootstrapRequest`, `DeviceLoginRequest` and `HeartbeatEnvelope` (the first
+# and last drop it from a 3.x body, so the floor holds that Runner with a reason);
+# `HeartbeatEnvelope.guardrails_posture` (`GuardrailsPosture`,
+# `GuardrailPosture`) replaces `RunnerLimitReport`. The riders this major waited for:
+# `GrantLink.ACCOUNT_CONTRACT` and the Grant snapshot's `account_contract*` (QTS-2316);
+# `GrantSnapshot.enforced` and `UNENFORCED_SNAPSHOT`, now `EMPTY_SNAPSHOT`, which denies
+# every verb (issue 88); `host_party` on `DirectiveRouting`, `RunnerRoutingIdentity`,
+# `BootstrapResponse` and `SlotDelivery`, and `WorkerRuntimeContext.runner_host`, with
+# `RunnerRoutingIdentity.operated` in their place (QTS-2378).
 __version__ = "3.34.0"
 
 __all__ = ["__version__"]

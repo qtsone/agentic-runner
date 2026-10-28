@@ -545,50 +545,17 @@ async def test_a_refused_registration_token_is_named_under_its_old_or_new_reason
     assert "Runner Registration Token is unknown, revoked or expired" in capsys.readouterr().out
 
 
-# ADR-0022 §57: the Runner Limit is read and checked before anything registers, and
-# rides registration and every heartbeat (Runner Limits ticket 02).
+# ADR-0022 §58: every heartbeat says how far this host binds each part of the Guardrails,
+# and a Runner Limit left in the config no longer stops the Runner starting.
 
 
 @pytest.mark.asyncio
-async def test_the_runner_refuses_to_start_on_a_limit_it_cannot_apply(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _environment(monkeypatch, tmp_path, isolation="none")
-    monkeypatch.setenv("AGENTIC_RUNNER_LIMITS", json.dumps({"folders": ["/"]}))
-    plane = FakeControlPlane()
-
-    exit_code = await Harness(plane).run(can_change_uid=False)
-
-    assert exit_code == 1
-    assert "refusing to start (runner_limit): Runner Limit folders[0]" in capsys.readouterr().out
-    assert plane.bootstraps == []
-
-
-@pytest.mark.asyncio
-async def test_the_runner_refuses_to_start_on_a_limit_that_does_not_parse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _environment(monkeypatch, tmp_path, isolation="none")
-    monkeypatch.setenv("AGENTIC_RUNNER_LIMITS", "{not json")
-    plane = FakeControlPlane()
-
-    exit_code = await Harness(plane).run(can_change_uid=False)
-
-    assert exit_code == 1
-    assert "refusing to start (configuration_invalid)" in capsys.readouterr().out
-    assert plane.bootstraps == []
-
-
-@pytest.mark.asyncio
-async def test_registration_and_every_heartbeat_carry_the_limit_and_its_posture(
+async def test_a_leftover_limit_starts_and_every_heartbeat_carries_the_posture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _environment(monkeypatch, tmp_path, isolation="none")
     monkeypatch.setenv("AGENTIC_RUNNER_EGRESS_POSTURE", "unenforced")
-    monkeypatch.setenv(
-        "AGENTIC_RUNNER_LIMITS",
-        json.dumps({"networks": ["evil.example"], "folders": [str(tmp_path / "clients")]}),
-    )
+    monkeypatch.setenv("AGENTIC_RUNNER_LIMITS", json.dumps({"folders": ["/"]}))
     plane = FakeControlPlane()
     harness = Harness(plane)
 
@@ -600,12 +567,10 @@ async def test_registration_and_every_heartbeat_carry_the_limit_and_its_posture(
     assert await harness.run(can_change_uid=False) == 0
     await stopper
 
-    [bootstrap] = plane.bootstraps
-    assert bootstrap.runner_limit is not None
-    assert bootstrap.runner_limit.limit.networks == ("evil.example",)
-    assert bootstrap.runner_limit.posture.networks is EgressPosture.UNENFORCED
+    assert len(plane.bootstraps) == 1
     for beat in plane.heartbeats[:2]:
-        assert beat.runner_limit == bootstrap.runner_limit
+        assert beat.guardrails_posture is not None
+        assert beat.guardrails_posture.network is EgressPosture.UNENFORCED
 
 
 async def _beats(plane: FakeControlPlane, count: int) -> list[Any]:

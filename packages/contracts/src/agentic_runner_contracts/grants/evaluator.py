@@ -65,25 +65,13 @@ def evaluate_effective_grant(
     persona: Grant,
     resource: Resource,
     verb: str,
-    runner_limit: Grant | None = None,
 ) -> EffectiveDecision:
-    """Intersect the links for one (resource, verb) and say which link decided.
-
-    ``runner_limit`` is the tools part of the Runner's Runner Limit (ADR-0022 §53);
-    ``None`` leaves the chain as it was. It is evaluated last, so it is named as deciding
-    only when no Grant link refuses: then moving the work to another Runner is what would
-    let it through, and the Evidence says so.
-    """
+    """Intersect the links for one (resource, verb) and say which link decided."""
 
     links = (
         decide_link(GrantLink.ROOT, root, resource=resource, verb=verb),
         decide_link(GrantLink.AGENT, agent, resource=resource, verb=verb),
         decide_link(GrantLink.PERSONA, persona, resource=resource, verb=verb),
-        *(
-            ()
-            if runner_limit is None
-            else (decide_runner_limit(runner_limit, resource=resource, verb=verb),)
-        ),
     )
     if not resource.in_contract_scope:
         return EffectiveDecision(
@@ -103,11 +91,6 @@ def evaluate_effective_grant(
         reason = (
             f"no {deciding.link.value} grant entry matches {resource.identifier} for {verb!r}; "
             "grants are deny by default"
-        )
-    elif deciding.link is GrantLink.RUNNER_LIMIT:
-        reason = (
-            f"this Runner's Runner Limit denies {verb!r} on {resource.identifier} "
-            f"(tools entry {deciding.entry.resource_type}, {deciding.entry.selector})"
         )
     else:
         reason = (
@@ -152,28 +135,6 @@ def decide_link(
             if decided is None or DECISION_RANK[decision] < DECISION_RANK[decided.decision]:
                 decided = LinkDecision(link=link, decision=decision, entry=entry)
     return decided or LinkDecision(link=link, decision=Decision.DENY, entry=None)
-
-
-def decide_runner_limit(limit: Grant, *, resource: Resource, verb: str) -> LinkDecision:
-    """A deny-list, unlike every other link: no matching entry lets the verb through.
-
-    An empty limit therefore narrows nothing (ADR-0022 §52). Verb patterns are matched
-    here for every resource type, not only ``mcp:``: a wildcard the Runner did not expand
-    can only refuse more. An entry that decides anything but ``deny`` is ignored, so a
-    limit can never widen the chain.
-    """
-
-    for entry in limit.entries:
-        if entry.resource_type != resource.resource_type:
-            continue
-        if not fnmatchcase(resource.identifier, entry.selector):
-            continue
-        if any(
-            decision is Decision.DENY and fnmatchcase(verb, pattern)
-            for pattern, decision in entry.verbs.items()
-        ):
-            return LinkDecision(link=GrantLink.RUNNER_LIMIT, decision=Decision.DENY, entry=entry)
-    return LinkDecision(link=GrantLink.RUNNER_LIMIT, decision=Decision.ALLOW, entry=None)
 
 
 def _decisions_for(entry: GrantEntry, verb: str) -> tuple[Decision, ...]:

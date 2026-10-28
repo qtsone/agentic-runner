@@ -71,7 +71,6 @@ cosign verify ghcr.io/qtsone/charts/agentic-runner:<version> \
 | `isolation` | `contract_uid` (default) or `none`. See below. |
 | `maxConcurrentDirectives` | How many Directives one Runner runs at once. More wait on its own queue. |
 | `egressPosture` | What the Runner reports it can reach: `unrestricted`, `allowlisted`, `blocked` or `unenforced`. `allowlisted` holds only if your NetworkPolicy also blocks what bypasses the proxy. |
-| `limits` | The Runner Limit: the tools, network destinations and folders no Agent on these Runners may use. See below. |
 | `hooks` | Runner Hooks: script bodies by catalogue name, mounted `0755`. |
 | `credentials.existingSecret` | Credential References: one key per reference name, mounted `0400`. |
 | `poolKey.existingSecret`, `poolKey.value` | The Organisation's Pool Key, under the key `poolKey`, for every replica. Only for a pool that stores LLM Keys. |
@@ -99,41 +98,21 @@ its bwrap sandbox, and the default `RuntimeDefault` seccomp profile stops bwrap 
 namespace in either isolation mode, so every command fails. ACP Codex runs only on a host
 where bwrap starts; Codex on a pod uses the per-CLI runtime.
 
-## Runner Limit
+## Guardrails
 
-`limits` denies every Agent on the release's Runners some tools, network destinations and
-folders, on top of the Grants, the Profile's network policy and the command policy. Each
-list is empty by default, and an empty list limits nothing:
+What an Agent may touch on these Runners is set in the console as each Runner's
+Guardrails, not in the chart. The chart's `limits` value is gone: a release that still sets
+it renders no variable for it, and a Runner that finds `AGENTIC_RUNNER_LIMITS` starts anyway
+and logs one warning that it ignores it. Move its entries to the Runners' Guardrails in the
+console.
 
-```yaml
-limits:
-  tools:                # Grant entries with `deny` only
-    - resource_type: repo
-      selector: "acme/*"
-      verbs: {"pr.merge": deny}
-  networks:             # network policy destinations: host, host:port or *.domain
-    - pastebin.com
-  folders:              # absolute paths in the pod, never one that holds the Workspaces
-    - /mnt/shared-cache
-```
-
-The chart passes it to every replica as `AGENTIC_RUNNER_LIMITS`. A Runner reads it only at
-start, so a change rolls the pods. A value the Runner cannot apply, such as a verb the Verb
-Catalogue does not have, stops the pod with `refusing to start (runner_limit)` naming the
-entry. The pod never runs with an empty limit instead.
-
-The console shows the limit on **/admin/runners**. Tools are `enforced`. Networks report
-the `egressPosture` value: the proxy refuses what asks it, and only your NetworkPolicy stops
-a process that ignores it. A hostname entry denies that name only, not the host's
-addresses or other names: `pastebin.com` does not deny `www.pastebin.com`, and
-`*.pastebin.com` does not deny `pastebin.com`, so list both. Folders are `checked` for Claude Code through ACP and
-`unenforced` for every other CLI, which reads paths without asking. `checked` is not a
-boundary: `isolation: contract_uid` is, because each Contract's OS user can read only what
-it is allowed to read. [Run a Runner on your own machine](workstation.md#limit-what-agents-may-use)
-says what each part refuses and what Evidence it writes.
-
-A Runner sends its limit to the control plane only while the limit is not empty, and the
-control plane needs `agentic-runner-contracts` 3.21 or later to accept it.
+Each heartbeat reports how strongly each part binds on the pod: the network part reports
+the `egressPosture` value, and only your NetworkPolicy stops a process that ignores the
+proxy. Commands and folders are `checked` for Claude Code through ACP and `unenforced` for
+every other CLI. `checked` is not a boundary: `isolation: contract_uid` is, because each
+Contract's OS user can read only what it is allowed to read.
+[Run a Runner on your own machine](workstation.md#limit-what-agents-may-use) says what each
+part refuses and what Evidence it writes.
 
 ## The Recipient Key
 

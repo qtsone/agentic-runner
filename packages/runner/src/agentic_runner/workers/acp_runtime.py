@@ -84,8 +84,8 @@ from agentic_runner.attempts import (
     refuse_if_prior_attempt_alive,
 )
 from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV, call
+from agentic_runner.guardrails import DirectiveGuardrails, GuardrailRefusal, turn_timeout
 from agentic_runner.llm_proxy import PROXY_API_KEY_ENV, PROXY_BASE_URL_ENV
-from agentic_runner.runner_limit import DeniedFolders
 from agentic_runner.usage_windows import claude_rate_limit_windows
 from agentic_runner.workers._runtime_support import (
     apply_extra_env,
@@ -107,7 +107,12 @@ from agentic_runner.workers.agent_runtime import (
     PermissionFallback,
     RuntimeCapabilities,
 )
-from agentic_runner.workers.command_policy import CommandPolicy, evaluate_command_policy
+from agentic_runner.workers.command_policy import (
+    NOT_ALLOWLISTED,
+    CommandPolicy,
+    CommandPolicyDecision,
+    evaluate_command_policy,
+)
 from agentic_runner.workers.contract_isolation import DirectiveSandbox
 from agentic_runner.workers.mcp_config import McpServerEntry
 from agentic_runner.workers.settings import WorkerSettings
@@ -227,10 +232,6 @@ _CLAUDE_SESSION_OPTIONS: Final[Mapping[str, object]] = {
 # permissions` let them before; every command still arrives as a permission request.
 _CLAUDE_MODE: Final[str] = "acceptEdits"
 
-# `evaluate_command_policy`'s verdict for a command that breaks no hard rule but is not on
-# the allow-list: the case the policy has no answer for, which the Profile's
-# `permission_fallback` decides (PRD decision 12). Every other refusal is the floor's.
-_POLICY_SILENT_REASON: Final[str] = "command is not allowlisted"
 _SHELL_WRAPPERS: Final[frozenset[str]] = frozenset({"sh", "bash", "zsh"})
 _SHELL_SYNTAX: Final[re.Pattern[str]] = re.compile(r"[;&|<>`$()\n\\*?{}\[\]]")
 
@@ -297,6 +298,13 @@ class _Turn:
     held: bool = False
     session_id: str = ""
     usage_windows: tuple[UsageWindow, ...] = ()
+    # The Directive's Guardrails, checked on every permission request, and what they refused.
+    guardrails: DirectiveGuardrails | None = None
+    refusals: list[GuardrailRefusal] = field(default_factory=list)
+
+    def refuse(self, refusal: GuardrailRefusal, described: str) -> None:
+        self.refusals.append(refusal)
+        self.notes.append(f"permission denied: {described} ({refusal.summary})")
 
 
 class AcpRuntime:
@@ -314,12 +322,8 @@ class AcpRuntime:
         settings: WorkerSettings,
         bridge_argv: Sequence[str] | None = None,
         ask: Ask = ask_over_callback,
-        denied_folders: DeniedFolders | None = None,
     ) -> None:
         self._cli_kind = cli_kind
-        # The Runner Limit's folders (ADR-0022 §55): refused on every permission request,
-        # and handed to Claude Code as its own `permissions.deny`.
-        self._denied_folders = denied_folders or DeniedFolders(())
         self._bridge = ACP_BRIDGES.get(cli_kind)
         self._profile_executable = (
             None if self._bridge is not None else profile_acp_executables(settings).get(cli_kind)
@@ -339,13 +343,15 @@ class AcpRuntime:
         return self._cli_kind == "claude_code"
 
     @property
-    def folders_checked(self) -> bool:
-        """Whether the harness asks before it reads a path, so the Runner Limit's folders
-        are refused by the Runner and the harness both (ADR-0022 §55's ``checked``).
+    def guardrails_checked(self) -> bool:
+        """Whether the harness asks before it runs a command or reads a path, so the
+        Guardrails' commands and folders are refused by the Runner (ADR-0022 §58's
+        ``checked``).
 
         Only Claude Code: it asks for every command and every path outside the Workspace,
-        and takes the list as its own deny rules. codex-acp's ``workspace-write`` sandbox
-        reads the whole disk without asking, and a Profile-named harness is not known.
+        and takes the removed folders as its own deny rules. codex-acp's ``workspace-write``
+        sandbox reads the whole disk without asking, and a Profile-named harness is not
+        known.
         """
 
         return self._is_claude
@@ -477,7 +483,14 @@ class AcpRuntime:
             f"runtime=acp; {runs}; auth={request.auth_mode.value}; "
             f"permission=command-policy; fallback={request.permission_fallback.value}"
         )
-        turn = _Turn()
+        turn = _Turn(
+            guardrails=(
+                None
+                if request.guardrails is None
+                else DirectiveGuardrails(request.guardrails, workspace=workspace_path)
+            )
+        )
+        timeout_seconds, overrun = turn_timeout(self._timeout_seconds, request.guardrails)
         if self._bridge is None:
             turn.notes.append(f"profile ACP command: {redact_secret_like_text(shlex.join(argv))}")
             if request.model:
@@ -502,14 +515,17 @@ class AcpRuntime:
             apply_extra_env(env, request.extra_env)
             try:
                 stop_reason, model_usage, stderr, error = await self._run(
-                    argv, request, workspace_path, env, extra_env, turn
+                    argv, request, workspace_path, env, extra_env, turn, timeout_seconds
                 )
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
                 timed_out = True
                 stop_reason, model_usage, stderr = "", (), ""
-                error = f"{self._executable} timed out after {self._timeout_seconds}s"
+                error = f"{self._executable} timed out after {timeout_seconds}s"
+                if overrun is not None:
+                    turn.refusals.append(overrun)
+                    turn.notes.append(f"turn ended: {overrun.summary}")
             except OSError as exception:
                 return self._result(
                     request,
@@ -590,6 +606,7 @@ class AcpRuntime:
         env: dict[str, str],
         extra_env: Mapping[str, str],
         turn: _Turn,
+        timeout_seconds: int,
     ) -> tuple[str, tuple[ModelUsage, ...], str, str]:
         refuse_if_prior_attempt_alive()
         process = await asyncio.create_subprocess_exec(
@@ -610,7 +627,7 @@ class AcpRuntime:
                 try:
                     stop_reason, model_usage, error = await asyncio.wait_for(
                         self._turn(connection, request, workspace_path, extra_env, turn),
-                        timeout=self._timeout_seconds,
+                        timeout=timeout_seconds,
                     )
                 finally:
                     await connection.close()
@@ -664,11 +681,10 @@ class AcpRuntime:
                     **_CLAUDE_SESSION_OPTIONS,
                     "model": self._model(request),
                 }
-                if self._denied_folders:
+                if turn.guardrails is not None and turn.guardrails.denied_folders:
                     # The flag-settings tier: above every settings file, none of which load.
-                    options["settings"] = {
-                        "permissions": {"deny": self._denied_folders.claude_permission_deny()}
-                    }
+                    denied = turn.guardrails.denied_folders.claude_permission_deny()
+                    options["settings"] = {"permissions": {"deny": denied}}
                 session_params["_meta"] = {"claudeCode": {"options": options}}
             session = await connection.request("session/new", session_params)
             session_id = turn.session_id = str(session.get("sessionId") or "")
@@ -730,27 +746,33 @@ class AcpRuntime:
         else:
             raw_input = tool_call.get("rawInput") if isinstance(tool_call, Mapping) else None
             argv, cwd = _requested_command(raw_input, workspace_path)
-            folder = self._folder_refusal(tool_call, cwd)
-            if folder is not None:
-                # The entry's position only: not the path, not the command line, not the
-                # request, since Evidence is read by people §57 hides the path from.
-                turn.notes.append(f"permission denied: this Runner's Runner Limit denies {folder}")
-                return _select(params.get("options") or [], "reject_once")
             described = _redact(shlex.join(argv) if argv else title or "an action")
+            folder = _folder_refusal(turn.guardrails, tool_call, cwd)
+            if folder is not None:
+                turn.refuse(folder, described)
+                return _select(params.get("options") or [], "reject_once")
             # The Directive's own Workspace, not WORKSPACE_ROOT: without a Contract uid
             # nothing else keeps an allowlisted command out of another Work Record's
             # Workspace.
-            verdict, reason = _verdict(
-                argv, cwd, request, workspace_path, denied_folders=self._denied_folders
+            decision = _decision(argv, cwd, request, workspace_path, guardrails=turn.guardrails)
+            verdict, reason = _verdict_of(decision)
+            # A layer's refusal is final, and so is the Organisation's unless a person may
+            # be asked; a held one goes to the person below like any unanswered command.
+            held = (
+                verdict == _Verdict.SILENT
+                and request.permission_fallback == PermissionFallback.HOLD
             )
+            if decision is not None and decision.refusal is not None and not held:
+                turn.refuse(decision.refusal, described)
+                return _select(params.get("options") or [], "reject_once")
         options = params.get("options") or []
         if verdict == _Verdict.ALLOW:
             turn.notes.append(f"permission allowed: {described}")
             return _select(options, "allow_once")
         if verdict == _Verdict.SILENT and request.permission_fallback == PermissionFallback.HOLD:
             asked = await self._ask(
-                f"The Agent asked to run `{described}`, which this Profile's command policy "
-                "does not allow on its own. Reply with what it should do instead, or say it "
+                f"The Agent asked to run `{described}`, which this Directive's Guardrails do "
+                "not allow on their own. Reply with what it should do instead, or say it "
                 "may go ahead.",
                 env,
             )
@@ -762,17 +784,6 @@ class AcpRuntime:
         turn.notes.append(f"permission denied: {described} ({reason})")
         # `reject_once`, never `reject_always`/`allow_always`: nothing outlives the turn.
         return _select(options, "reject_once")
-
-    def _folder_refusal(self, tool_call: object, cwd: Path) -> str | None:
-        """``folders[<n>]`` when anything the request names could reach a denied folder."""
-
-        if not self._denied_folders or not isinstance(tool_call, Mapping):
-            return None
-        for script in _requested_strings(tool_call):
-            refusal = self._denied_folders.script_refusal(script, cwd)
-            if refusal is not None:
-                return refusal
-        return None
 
     def _refused(
         self,
@@ -817,6 +828,7 @@ class AcpRuntime:
                 request, directive_workspace_id, command_hash, guard_mode, notes
             ),
             model_usage=model_usage,
+            guardrail_refusals=tuple(turn.refusals),
             usage_windows=turn.usage_windows,
             model=self._model(request),
         )
@@ -1140,30 +1152,56 @@ def _split(command: str) -> list[str] | None:
         return None
 
 
-def _verdict(
+def _decision(
     argv: list[str] | None,
     cwd: Path,
     request: DirectiveRequest,
     workspace_path: Path,
     *,
-    denied_folders: DeniedFolders | None = None,
-) -> tuple[_Verdict, str]:
+    guardrails: DirectiveGuardrails | None,
+) -> CommandPolicyDecision | None:
+    """The command policy's answer, or None for a request that names no command it can read."""
+
     if argv is None:
-        return _Verdict.SILENT, "not a command the policy can read"
-    decision = evaluate_command_policy(
+        return None
+    return evaluate_command_policy(
         argv=argv,
         cwd=cwd,
         workspace_root=workspace_path,
         base_branch=request.base_branch,
         work_branch=request.work_branch,
         policy=CommandPolicy(),
-        denied_folders=denied_folders,
+        guardrails=guardrails,
     )
+
+
+def _verdict_of(decision: CommandPolicyDecision | None) -> tuple[_Verdict, str]:
+    """``NOT_ALLOWLISTED`` is a command that breaks no hard rule but is not on the
+    allow-list: the case the policy has no answer for, which the Guardrails'
+    ``permission_fallback`` decides (PRD decision 12). Every other refusal is the floor's or
+    a layer's."""
+
+    if decision is None:
+        return _Verdict.SILENT, "not a command the policy can read"
     if decision.allowed:
         return _Verdict.ALLOW, decision.reason
-    if decision.reason == _POLICY_SILENT_REASON:
+    if decision.reason == NOT_ALLOWLISTED:
         return _Verdict.SILENT, decision.reason
     return _Verdict.DENY, decision.reason
+
+
+def _folder_refusal(
+    guardrails: DirectiveGuardrails | None, tool_call: object, cwd: Path
+) -> GuardrailRefusal | None:
+    """The folder rule anything the request names breaks, if one does."""
+
+    if guardrails is None or not isinstance(tool_call, Mapping):
+        return None
+    for script in _requested_strings(tool_call):
+        refusal = guardrails.script_folder_refusal(script, cwd)
+        if refusal is not None:
+            return refusal
+    return None
 
 
 def _select(options: object, kind: str) -> Mapping[str, Any]:

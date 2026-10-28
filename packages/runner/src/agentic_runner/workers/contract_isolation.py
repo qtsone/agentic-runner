@@ -345,8 +345,11 @@ class ContractIsolation:
             home_dir=home,
             harness_config_dir=harness,
             max_processes=self._max_processes if uid is not None else None,
+            # The Guardrails' limit only lowers this host's own ceiling, never raises it.
             max_memory_bytes=(
-                (memory_limit_bytes or self._memory_limit_bytes) if self._can_limit_memory else None
+                min(memory_limit_bytes or self._memory_limit_bytes, self._memory_limit_bytes)
+                if self._can_limit_memory
+                else None
             ),
             uid=uid,
             gid=uid,

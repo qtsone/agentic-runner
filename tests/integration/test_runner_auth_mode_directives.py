@@ -99,7 +99,7 @@ class _Client:
         return {
             "work_record_id": WORK_RECORD_ID,
             "contract_id": CONTRACT_ID,
-            "profile_slug": "engineer",
+            "work_branch": f"agent/{WORK_RECORD_ID}-engineer",
             "cli_kind": "codex_cli",
             "repo": "qts/agentic-os",
             "base_branch": "main",
@@ -109,8 +109,7 @@ class _Client:
             "persona_instructions": "",
             "task_queue": "ralph-pr-loop",
             "worker_secret_refs": [],
-            "command_policy": {},
-            "network_policy": {},
+            "guardrails": {},
             "product_verifier_command_source": {
                 "source": "runtime-profile",
                 "available": True,
@@ -265,7 +264,7 @@ def _branch_pr_input(access: LlmAccess | None = None) -> BranchPullRequestInput:
         work_record_id=WORK_RECORD_ID,
         repository="qts/agentic-os",
         base_ref="main",
-        branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer"),
+        branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
         routing=DirectiveRouting(runner_id=RUNNER_ID, llm_access=access),

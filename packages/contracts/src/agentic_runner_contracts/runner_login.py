@@ -39,7 +39,6 @@ from agentic_runner_contracts.runner_registration import (
     IsolationMode,
     RecipientKey,
     RunnerIdentityMaterial,
-    RunnerLimitReport,
     RunnerName,
     TagKey,
     Version,
@@ -99,7 +98,6 @@ class DeviceLoginRequest(BaseModel):
     recipient_key: RecipientKey
     max_concurrent_directives: int = Field(default=1, ge=1, le=64)
     build_id: BuildId | None = None
-    runner_limit: RunnerLimitReport | None = None
 
 
 class DeviceAuthorization(BaseModel):

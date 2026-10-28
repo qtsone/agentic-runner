@@ -29,7 +29,6 @@ from agentic_runner_contracts.grants.evaluator import (
 from agentic_runner_contracts.grants.model import (
     DECISION_RANK,
     Decision,
-    Grant,
     GrantEntry,
     GrantLink,
 )
@@ -88,13 +87,8 @@ def decide_verb(
     verb: str,
     identifier: str,
     resource_type: str = REPO_RESOURCE_TYPE,
-    runner_limit: Grant | None = None,
 ) -> VerbDecision:
-    """Evaluate one privileged verb against the Effective Grant in ``snapshot``.
-
-    ``runner_limit`` is the tools part of this Runner's Runner Limit (ADR-0022 §53). It
-    binds even where no Agent is bound: it is the host's, not the Grant chain's.
-    """
+    """Evaluate one privileged verb against the Effective Grant in ``snapshot``."""
 
     resource = Resource(
         resource_type=resource_type,
@@ -122,7 +116,6 @@ def decide_verb(
         persona=snapshot.persona,
         resource=resource,
         verb=verb,
-        runner_limit=runner_limit,
     )
     entry = effective.deciding_entry
     return _decision(
@@ -189,7 +182,6 @@ def decide_mcp_server(
     *,
     server: str,
     tools: Sequence[str],
-    runner_limit: Grant | None = None,
 ) -> McpServerDecision:
     """Evaluate every tool of one server and keep the most restrictive answer.
 
@@ -205,7 +197,6 @@ def decide_mcp_server(
             verb=tool,
             identifier=server,
             resource_type=resource_type,
-            runner_limit=runner_limit,
         )
         for tool in (tuple(tools) or ("*",))
     )

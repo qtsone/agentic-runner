@@ -83,13 +83,13 @@ from agentic_runner.credentials import (
     UnresolvableCredentialReferenceError,
 )
 from agentic_runner.egress import (
-    EGRESS_REFUSED_SOURCE,
     EgressProxy,
     Resolver,
     destination_denied,
     host_of,
     url_destination,
 )
+from agentic_runner.guardrails import DirectiveGuardrails
 from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.heartbeat_link import HeartbeatLink, SeamUnavailableError
 from agentic_runner.hooks import (
@@ -132,11 +132,6 @@ from agentic_runner.mcp import (
 from agentic_runner.message_store import MessageStore, WorkflowSignaller
 from agentic_runner.pool_key import LlmKeyOpener, LlmKeyUnopenableError
 from agentic_runner.registration import RunnerRegistrationError
-from agentic_runner.runner_limit import (
-    EMPTY_RUNNER_LIMIT,
-    RUNNER_LIMIT_EVIDENCE_SOURCE,
-    AppliedRunnerLimit,
-)
 from agentic_runner.runtime import verifier_command
 from agentic_runner.runtime.verifier_command import CommandValidationError
 from agentic_runner.usage_windows import UsageWindows
@@ -284,10 +279,14 @@ from agentic_runner_contracts.grants import (
     READ_VERB,
     REPO_RESOURCE_TYPE,
     Decision,
-    GrantLink,
     GrantSnapshot,
 )
 from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
+from agentic_runner_contracts.guardrails import (
+    GUARDRAILS_EVIDENCE_SOURCE,
+    GuardrailLimitName,
+    Guardrails,
+)
 from agentic_runner_contracts.llm_access import LlmAccess, LlmAccessKind, provider_for
 from agentic_runner_contracts.llm_key import LlmKeyRelease, LlmKeyReleaseRequest
 from agentic_runner_contracts.questions import WORK_ASK_VERB
@@ -305,12 +304,10 @@ from agentic_runner_contracts.runner_registration import (
     SubscriptionState,
 )
 from agentic_runner_contracts.runtime_context import (
-    EGRESS_ALLOW_LIST_KEY,
     McpServerSpec,
     SkillVersionSpec,
     WorkerRuntimeContext,
     WorkerRuntimeContextResolver,
-    work_branch_name,
 )
 from agentic_runner_contracts.swarm import ROLE_LEAD
 
@@ -646,13 +643,9 @@ class _RuntimeContextState:
     # The Agent's model, which every Directive runs (ADR-0021); None for the Runner's
     # default for `cli_kind`.
     model: str | None = None
-    # The Agent Runtime Profile's per-process memory ceiling (map ticket 17 A7), carried
-    # on the Profile's `command_policy` blob — the sandbox floor already lives there, and
-    # a ceiling is exactly a floor rule. None means the Runner's own default applies.
-    memory_limit_bytes: int | None = None
-    # PRD decision 12: what a runtime asked per command does when the command policy has
-    # no answer. Carried on the same `command_policy` blob as the ceiling above.
-    permission_fallback: PermissionFallback = PermissionFallback.DENY
+    # Spec: Agent Guardrails rev 7: what the Agent may touch on the machine, compiled by
+    # the platform for this Directive. The Runner enforces it and never changes it.
+    guardrails: Guardrails = field(default_factory=Guardrails)
     # Local-agents 18: the Profile-named ACP command, for a kind with no pinned bridge.
     acp_command: tuple[str, ...] = ()
     # Pushed on change and applied on receipt (ADR-0011 §11, PRD issue 44): the evaluator
@@ -685,9 +678,8 @@ class _RuntimeContextState:
     # Directive boundary like the Grant snapshot beside it.
     credential_references: tuple[str, ...] = ()
     # PRD issue 58: the MCP registry rows bound to the Work Record's Product, decided per
-    # Directive against the Grant, and the Profile's egress allow-list.
+    # Directive against the Grant.
     mcp_servers: tuple[McpServerSpec, ...] = ()
-    egress_allow_list: tuple[str, ...] = ()
     # Console-v2 issue 23: a `report` Work Record's Directives run in an empty directory --
     # no clone, nothing committed or pushed.
     kind: str = KIND_WORK
@@ -727,11 +719,15 @@ class _DirectiveAttempt:
         return tuple(sorted(self.extra_env.items()))
 
 
-def _egress_allow_list(network_policy: Mapping[str, object]) -> tuple[str, ...]:
-    entries = network_policy.get(EGRESS_ALLOW_LIST_KEY)
-    if not isinstance(entries, list):
-        return ()
-    return tuple(str(entry) for entry in entries if str(entry).strip())
+def _directive_guardrails(state: _RuntimeContextState) -> DirectiveGuardrails:
+    return DirectiveGuardrails(state.guardrails, workspace=state.workspace_path or Path.cwd())
+
+
+def _memory_limit_bytes(state: _RuntimeContextState) -> int | None:
+    """The Guardrails' memory limit, or None for the Runner's own default."""
+
+    limit = state.guardrails.limit(GuardrailLimitName.MEMORY_LIMIT_BYTES)
+    return None if limit is None else limit.value
 
 
 def _optional_uuid(value: str | None) -> UUID | None:
@@ -1406,15 +1402,6 @@ class _InPlaceDirective:
     push_when_clean: bool = True
 
 
-def _profile_memory_limit_bytes(command_policy: Mapping[str, object]) -> int | None:
-    """The Agent Runtime Profile's `memory_limit_bytes`, or None for the Runner default."""
-
-    value = command_policy.get("memory_limit_bytes")
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return None
-
-
 def _model_usage_reports(
     cli_kind: str, model_usage: Sequence[ModelUsage]
 ) -> list[tuple[dict[str, Any], str | None]]:
@@ -1455,14 +1442,6 @@ def _model_usage_reports(
         )
         for row in model_usage
     ]
-
-
-def _profile_permission_fallback(command_policy: Mapping[str, object]) -> PermissionFallback:
-    """The Profile's `permission_fallback`; anything but exactly ``hold`` is ``deny``."""
-
-    if command_policy.get("permission_fallback") == PermissionFallback.HOLD.value:
-        return PermissionFallback.HOLD
-    return PermissionFallback.DENY
 
 
 def _contract_workspace_path(
@@ -1735,7 +1714,6 @@ class RunnerRalphActivities:
         attempt_records: AttemptRecords | None = None,
         directives_in_flight: DirectivesInFlight | None = None,
         usage_windows: UsageWindows | None = None,
-        runner_limit: AppliedRunnerLimit | None = None,
         llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
         llm_keys: LlmKeyOpener | None = None,
         connection_organisation: Callable[[], UUID | None] | None = None,
@@ -1750,9 +1728,6 @@ class RunnerRalphActivities:
         # Opens the pool's LLM Keys with the Pool Key (Spec: Runners rev 3). None, or one
         # holding no Pool Key, fails every `llm_key` Directive closed.
         self._llm_keys = llm_keys
-        # What this Runner's host denies every Agent on it, checked at start (ADR-0022
-        # §52-§55). Empty by default, which narrows nothing.
-        self._runner_limit = runner_limit or EMPTY_RUNNER_LIMIT
         # Read by the harness self-test, which never runs beside a Contract's Directive.
         self._directives_in_flight = directives_in_flight or DirectivesInFlight()
         # Local-agents 10: None off a user-hosted Runner, which reports no usage windows.
@@ -2259,7 +2234,10 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
-                    permission_fallback=runtime_state.permission_fallback,
+                    permission_fallback=PermissionFallback(
+                        runtime_state.guardrails.permission_fallback
+                    ),
+                    guardrails=runtime_state.guardrails,
                     acp_command=runtime_state.acp_command,
                     model=runtime_state.model or "",
                     prompt=attempt.skills_preamble
@@ -2278,6 +2256,9 @@ class RunnerRalphActivities:
                 )
             )
             await attempt.hooks.phase(HookName.POST_RUNTIME)
+            await self._record_guardrail_refusals(
+                request.work_record_id, runtime_state, codex_result, request.directive_number
+            )
             await self._fastapi_client.append_evidence(
                 request.work_record_id,
                 source="ralph.codex_run",
@@ -2699,7 +2680,7 @@ class RunnerRalphActivities:
         return self._contract_isolation.sandbox(
             state.contract_id,
             runtime_kind=state.cli_kind,
-            memory_limit_bytes=state.memory_limit_bytes,
+            memory_limit_bytes=_memory_limit_bytes(state),
         )
 
     def _contract_sandbox(self, state: _RuntimeContextState) -> DirectiveSandbox | None:
@@ -2715,7 +2696,7 @@ class RunnerRalphActivities:
         return self._contract_isolation.sandbox(
             state.contract_id,
             runtime_kind=state.cli_kind,
-            memory_limit_bytes=state.memory_limit_bytes,
+            memory_limit_bytes=_memory_limit_bytes(state),
         )
 
     @contextlib.asynccontextmanager
@@ -2982,7 +2963,6 @@ class RunnerRalphActivities:
             state.mcp_servers,
             consented=consented,
             declined=declined,
-            runner_limit=self._runner_limit.tools_grant,
         )
         granted = list(plan.granted)
         withheld = list(plan.withheld)
@@ -3037,8 +3017,9 @@ class RunnerRalphActivities:
         proxy variables.
         """
 
-        denied_networks = self._runner_limit.networks
-        needs_token = bool(state.egress_allow_list or denied_networks) or any(
+        guardrails = _directive_guardrails(state)
+        allowed_networks, denied_networks = guardrails.allowed_network, guardrails.denied_network
+        needs_token = bool(allowed_networks or denied_networks) or any(
             spec.credential_reference is not None for spec, _ in plan.granted
         )
         if needs_token and CALLBACK_TOKEN_ENV not in env:
@@ -3072,11 +3053,11 @@ class RunnerRalphActivities:
 
         await self._refuse_denied_destinations(work_record_id, state, entries, env)
         allow_list: tuple[str, ...] = ()
-        if state.egress_allow_list:
+        if allowed_networks:
             allow_list = tuple(
                 dict.fromkeys(
                     (
-                        *state.egress_allow_list,
+                        *allowed_networks,
                         *(
                             host
                             for host in (
@@ -3094,25 +3075,22 @@ class RunnerRalphActivities:
                 )
             )
 
-        if state.egress_allow_list or denied_networks:
+        if allowed_networks or denied_networks:
 
-            async def refused(host: str, port: int, limit_entry: int | None) -> None:
-                payload: dict[str, object] = {"event": "egress.refused", "host": host, "port": port}
-                if limit_entry is not None:
-                    payload.update(
-                        deciding_link=GrantLink.RUNNER_LIMIT.value,
-                        entry=f"networks[{limit_entry}]",
-                    )
+            async def refused(host: str, port: int, _denied_by: int | None) -> None:
+                refusal = guardrails.network_refusal(host, port)
                 await self._fastapi_client.append_evidence(
-                    work_record_id, source=EGRESS_REFUSED_SOURCE, payload=payload
+                    work_record_id,
+                    source=GUARDRAILS_EVIDENCE_SOURCE,
+                    payload=refusal.evidence(host=host, port=port, cli_kind=state.cli_kind),
                 )
 
-            # No Profile allow-list leaves the proxy only the Runner Limit to refuse with:
-            # `allow_list` stays empty, so a runtime that opens the network on a Profile
-            # list (Codex) keeps it shut exactly as before.
+            # No allow-list leaves the proxy only the removed destinations to refuse with:
+            # `allow_list` stays empty, so a runtime that opens the network on a list
+            # (Codex) keeps it shut exactly as before.
             proxy = await stack.enter_async_context(
                 EgressProxy(
-                    allow_list if state.egress_allow_list else None,
+                    allow_list if allowed_networks else None,
                     token=env[CALLBACK_TOKEN_ENV],
                     deny_list=denied_networks,
                     resolver=self._egress_resolver,
@@ -3133,6 +3111,25 @@ class RunnerRalphActivities:
             )
         return (tuple(entries) if state.mcp_servers else None), allow_list
 
+    async def _record_guardrail_refusals(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        result: DirectiveResult,
+        directive_number: int,
+    ) -> None:
+        """One Evidence Event per thing the Directive's Guardrails refused during its turn,
+        naming the layer that refused it (Spec: Agent Guardrails rev 7)."""
+
+        for refusal in result.guardrail_refusals:
+            await self._fastapi_client.append_evidence(
+                work_record_id,
+                source=GUARDRAILS_EVIDENCE_SOURCE,
+                payload=refusal.evidence(
+                    cli_kind=state.cli_kind, directive_number=directive_number
+                ),
+            )
+
     async def _refuse_denied_destinations(
         self,
         work_record_id: str,
@@ -3140,14 +3137,15 @@ class RunnerRalphActivities:
         entries: Sequence[McpServerEntry],
         env: Mapping[str, str],
     ) -> None:
-        """Fail the Directive at its start when something it needs is denied (§54).
+        """Fail the Directive at its start when something it needs is a removed destination.
 
-        The git remote, each granted MCP server's URL and each LLM endpoint: denied, the
+        The git remote, each granted MCP server's URL and each LLM endpoint: refused, the
         Directive could only fail half-way, so it fails now, non-retryably, naming the
-        entry by its position and the destination it needed.
+        layer that removed it and the destination it needed.
         """
 
-        if not self._runner_limit.networks:
+        guardrails = _directive_guardrails(state)
+        if not guardrails.denied_network:
             return
         needed = [
             ("git remote", _github_remote_url(state.repository)),
@@ -3158,27 +3156,21 @@ class RunnerRalphActivities:
             destination = url_destination(url)
             if destination is None:
                 continue
-            index = destination_denied(self._runner_limit.networks, *destination)
-            if index is None:
+            if destination_denied(guardrails.denied_network, *destination) is None:
                 continue
+            refusal = guardrails.network_refusal(*destination)
             await _raise_recorded(
                 ApplicationError(
-                    f"this Runner's Runner Limit networks[{index}] denies {destination[0]}, "
-                    f"which this Directive's {needed_for} needs",
+                    f"{refusal.summary}, which this Directive's {needed_for} needs",
                     non_retryable=True,
                 ),
                 self._fastapi_client,
                 work_record_id,
-                source=RUNNER_LIMIT_EVIDENCE_SOURCE,
+                source=GUARDRAILS_EVIDENCE_SOURCE,
                 actor=self._actor(),
-                payload={
-                    "event": "runner_limit.destination_denied",
-                    "deciding_link": GrantLink.RUNNER_LIMIT.value,
-                    "entry": f"networks[{index}]",
-                    "host": destination[0],
-                    "port": destination[1],
-                    "needed_for": needed_for,
-                },
+                payload=refusal.evidence(
+                    host=destination[0], port=destination[1], needed_for=needed_for
+                ),
             )
 
     async def _resolve_credentials(
@@ -3915,18 +3907,14 @@ class RunnerRalphActivities:
             reviewer=runtime_context.reviewer,
             repository=runtime_context.repo,
             verifier_argv=_runtime_verifier_argv(runtime_context),
-            work_branch=work_branch_name(
-                work_record_id=runtime_context.work_record_id,
-                profile_slug=runtime_context.profile_slug,
-            ),
+            work_branch=runtime_context.work_branch,
             completion_criteria=runtime_context.completion_criteria,
             base_branch=runtime_context.base_branch,
             agent_id=runtime_context.agent_id,
             contract_id=runtime_context.contract_id,
             cli_kind=runtime_context.cli_kind,
             model=runtime_context.model,
-            memory_limit_bytes=_profile_memory_limit_bytes(runtime_context.command_policy),
-            permission_fallback=_profile_permission_fallback(runtime_context.command_policy),
+            guardrails=runtime_context.guardrails,
             acp_command=tuple(runtime_context.acp_command or ()),
             grant_snapshot=snapshot,
             grant_snapshot_payload=snapshot_payload,
@@ -3946,7 +3934,6 @@ class RunnerRalphActivities:
             tier_within_contract_ceiling=runtime_context.tier_within_contract_ceiling,
             credential_references=tuple(runtime_context.credential_references),
             mcp_servers=tuple(runtime_context.mcp_servers),
-            egress_allow_list=_egress_allow_list(runtime_context.network_policy),
             kind=runtime_context.kind,
         )
 
@@ -4144,7 +4131,6 @@ class RunnerRalphActivities:
             verb=verb,
             identifier=identifier,
             resource_type=resource_type,
-            runner_limit=self._runner_limit.tools_grant,
         )
         evidence = decision.evidence()
         refusal = (
@@ -5414,7 +5400,8 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
-                    permission_fallback=state.permission_fallback,
+                    permission_fallback=PermissionFallback(state.guardrails.permission_fallback),
+                    guardrails=state.guardrails,
                     acp_command=state.acp_command,
                     model=state.model or "",
                     prompt=attempt.skills_preamble
@@ -5428,6 +5415,9 @@ class RunnerRalphActivities:
                 )
             )
             await attempt.hooks.phase(HookName.POST_RUNTIME)
+            await self._record_guardrail_refusals(
+                request.work_record_id, state, result, request.directive_number
+            )
             lessons = _read_lessons(output_path)
             output_path.unlink(missing_ok=True)
             await self._report_harness_usage(
@@ -5682,7 +5672,8 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
-                    permission_fallback=state.permission_fallback,
+                    permission_fallback=PermissionFallback(state.guardrails.permission_fallback),
+                    guardrails=state.guardrails,
                     acp_command=state.acp_command,
                     model=state.model or "",
                     prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
@@ -5691,6 +5682,9 @@ class RunnerRalphActivities:
                 )
             )
             await attempt.hooks.phase(HookName.POST_RUNTIME)
+            await self._record_guardrail_refusals(
+                request.work_record_id, state, codex_result, request.directive_number
+            )
             await self._fastapi_client.append_evidence(
                 request.work_record_id,
                 source=kind.run_source,

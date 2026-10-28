@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from agentic_runner.runner_limit import DeniedFolders
+from agentic_runner.guardrails import DirectiveGuardrails, GuardrailRefusal
 
 _SECRET_ARGUMENT_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?i)^[A-Z0-9_-]*(api[_-]?key|token|secret|password|credential|auth)[A-Z0-9_-]*\s*="
@@ -35,6 +35,9 @@ _ESCAPE_PATH_MARKERS: Final[tuple[str, ...]] = (
 _CONTROL_PLANE_COMMANDS: Final[frozenset[str]] = frozenset(
     {"kubectl", "helm", "docker", "podman", "nerdctl", "ctr", "terraform"}
 )
+# What the policy runs, and how, when the Organisation's Guardrails list no commands.
+_BUILT_IN_PROGRAMS: Final[frozenset[str]] = frozenset({"git", "python", "python3", "pytest", "uv"})
+NOT_ALLOWLISTED: Final[str] = "command is not allowlisted"
 _CONTROL_PLANE_HOST_MARKERS: Final[tuple[str, ...]] = (
     "agentic-os",
     "agentic-api",
@@ -59,9 +62,7 @@ class CommandPolicy:
     floor applied to every Directive regardless of grants (ADR-0011 §12).
     """
 
-    allowed_programs: frozenset[str] = field(
-        default_factory=lambda: frozenset({"git", "python", "python3", "pytest", "uv"})
-    )
+    allowed_programs: frozenset[str] = field(default_factory=lambda: _BUILT_IN_PROGRAMS)
     runtime_program: str | None = None
 
 
@@ -69,6 +70,8 @@ class CommandPolicy:
 class CommandPolicyDecision:
     allowed: bool
     reason: str
+    # Set when the Directive's Guardrails refused it: the layer and entry Evidence names.
+    refusal: GuardrailRefusal | None = None
 
 
 def evaluate_command_policy(
@@ -79,24 +82,28 @@ def evaluate_command_policy(
     base_branch: str,
     work_branch: str,
     policy: CommandPolicy,
-    denied_folders: DeniedFolders | None = None,
+    guardrails: DirectiveGuardrails | None = None,
 ) -> CommandPolicyDecision:
     """Evaluate a worker command using fail-closed hard-deny rules.
 
-    ``denied_folders`` is the Runner Limit's folders part (ADR-0022 §55), read over every
-    argument and the cwd. Its refusal names the entry's position only, never the path.
+    ``guardrails`` are the Directive's (Spec: Agent Guardrails rev 7): their folders are
+    read over every argument and the cwd, and their commands replace the built-in
+    allow-list once the Organisation lists any. A command a narrowing layer removed is
+    refused outright; one the Organisation's list does not name is :data:`NOT_ALLOWLISTED`,
+    which a runtime asked per command may hold for a person. The hard-deny rules bite
+    whatever the Guardrails say.
     """
 
     if not argv or not argv[0].strip():
-        return _deny("command is not allowlisted")
+        return _deny(NOT_ALLOWLISTED)
 
     if not _is_relative_to(cwd, workspace_root):
         return _deny("cwd must be under workspace root")
 
-    if denied_folders:
-        folder = denied_folders.refusal([str(cwd), *argv], cwd)
+    if guardrails is not None:
+        folder = guardrails.folder_refusal([str(cwd), *argv], cwd)
         if folder is not None:
-            return _deny(f"this Runner's Runner Limit denies {folder}")
+            return _refuse(folder)
 
     normalized_argv = [argument.strip() for argument in argv]
     command = Path(normalized_argv[0]).name
@@ -128,17 +135,40 @@ def evaluate_command_policy(
     if command == policy.runtime_program:
         return CommandPolicyDecision(allowed=True, reason="allowed")
 
+    if guardrails is not None:
+        removed = guardrails.removed_command(normalized_argv)
+        if removed is not None:
+            return _refuse(removed)
+        if guardrails.lists_commands:
+            if not guardrails.listed_command(normalized_argv):
+                return CommandPolicyDecision(
+                    allowed=False,
+                    reason=NOT_ALLOWLISTED,
+                    refusal=guardrails.unlisted_command(normalized_argv),
+                )
+            # A built-in program keeps the shape the policy holds it to; any other the
+            # Organisation listed runs as listed, under the hard-deny rules above.
+            if command in _BUILT_IN_PROGRAMS and not _is_safe_allowlisted_command(
+                command, normalized_argv, work_branch=work_branch
+            ):
+                return _deny(NOT_ALLOWLISTED)
+            return CommandPolicyDecision(allowed=True, reason="allowed")
+
     if command not in policy.allowed_programs:
-        return _deny("command is not allowlisted")
+        return _deny(NOT_ALLOWLISTED)
 
     if not _is_safe_allowlisted_command(command, normalized_argv, work_branch=work_branch):
-        return _deny("command is not allowlisted")
+        return _deny(NOT_ALLOWLISTED)
 
     return CommandPolicyDecision(allowed=True, reason="allowed")
 
 
 def _deny(reason: str) -> CommandPolicyDecision:
     return CommandPolicyDecision(allowed=False, reason=reason)
+
+
+def _refuse(refusal: GuardrailRefusal) -> CommandPolicyDecision:
+    return CommandPolicyDecision(allowed=False, reason=refusal.summary, refusal=refusal)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

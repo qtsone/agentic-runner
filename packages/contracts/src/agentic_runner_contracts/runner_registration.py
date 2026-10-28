@@ -55,7 +55,6 @@ from agentic_runner_contracts.oauth_connector import (
     OAuthStart,
     SealedOAuthCode,
 )
-from agentic_runner_contracts.runner_limit import RunnerLimit
 from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
@@ -147,41 +146,46 @@ class EgressPosture(StrEnum):
     UNENFORCED = "unenforced"
 
 
-class FolderPosture(StrEnum):
-    """How far one harness is held to the Runner Limit's folders (ADR-0022 §55).
+def without_retired_runner_limit(data: Any) -> Any:
+    """``data`` without the ``runner_limit`` key a Runner below 4.0 sends."""
 
-    ``CHECKED``: both the Runner and the harness refuse a denied path. ``UNENFORCED``: the
-    harness can read a path without asking, so only what it asks about is refused.
+    if isinstance(data, dict) and "runner_limit" in data:
+        return {key: value for key, value in data.items() if key != "runner_limit"}
+    return data
+
+
+class GuardrailPosture(StrEnum):
+    """How far one harness is held to one part of a Directive's Guardrails (ADR-0022 §58).
+
+    ``CHECKED``: the Runner refuses what the part does not allow before the harness acts.
+    ``UNENFORCED``: the harness can act without asking, so only what it asks about is
+    refused.
     """
 
     CHECKED = "checked"
     UNENFORCED = "unenforced"
 
 
-class RunnerLimitPosture(BaseModel):
-    """How strongly each part of the Runner Limit binds on this host.
+CliKindKey = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
 
-    ``tools`` is always ``enforced``: every verb needs a credential only the Runner holds
-    (§53). ``networks`` is the Runner's ``egress_posture`` (§54). ``folders`` is per
-    ``cli_kind`` the Runner serves (§55).
+
+class GuardrailsPosture(BaseModel):
+    """How strongly each part of the Guardrails binds on this host, as each beat says it.
+
+    The console shows it beside the Runner layer (Spec: Agent Guardrails rev 7), so a
+    layer that cannot bind here is not mistaken for one that does. ``network`` is the
+    Runner's ``egress_posture``; ``commands`` and ``folders`` are per ``cli_kind`` the
+    Runner serves; ``memory`` is whether this host caps a Directive's memory at all. The
+    wall-clock limit always binds: the Runner ends the turn itself.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    tools: Literal["enforced"] = "enforced"
-    networks: EgressPosture
-    folders: dict[
-        Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")], FolderPosture
-    ] = Field(default_factory=dict, max_length=8)
-
-
-class RunnerLimitReport(BaseModel):
-    """The Runner Limit and its posture, as registration and each heartbeat carry it (§57)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    limit: RunnerLimit
-    posture: RunnerLimitPosture
+    network: EgressPosture
+    commands: dict[CliKindKey, GuardrailPosture] = Field(default_factory=dict, max_length=8)
+    folders: dict[CliKindKey, GuardrailPosture] = Field(default_factory=dict, max_length=8)
+    memory: GuardrailPosture
+    wall_clock: Literal[GuardrailPosture.CHECKED] = GuardrailPosture.CHECKED
 
 
 class SlotProbe(StrEnum):
@@ -255,9 +259,12 @@ class BootstrapRequest(BaseModel):
     recipient_key: RecipientKey
     max_concurrent_directives: int = Field(default=1, ge=1, le=64)
     build_id: BuildId | None = None
-    # ADR-0022 §57-§58: what this Runner's host denies its Agents, and how far it binds.
-    # Optional so a Runner below 3.21 still registers.
-    runner_limit: RunnerLimitReport | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_runner_limit(cls, data: Any) -> Any:
+        # As on the heartbeat: a Runner below 4.0 registers and is told the floor holds it.
+        return without_retired_runner_limit(data)
 
     @model_validator(mode="after")
     def _exactly_one_token(self) -> BootstrapRequest:
@@ -269,10 +276,10 @@ class BootstrapRequest(BaseModel):
     def _omit_absent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A control plane below 3.16 forbids extra keys and requires `agent_token`, so a
         # body that names the field it does not know is refused whatever its value --
-        # upgrade the control plane before the Runner. Likewise `runner_limit` below 3.21.
+        # upgrade the control plane before the Runner.
         body = handler(self)
         if isinstance(body, dict):
-            for name in ("registration_token", "agent_token", "runner_limit"):
+            for name in ("registration_token", "agent_token"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body
@@ -886,6 +893,14 @@ class HeartbeatEnvelope(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_runner_limit(cls, data: Any) -> Any:
+        # A Runner below 4.0 reports its Runner Limit, which 4.0 retired. Dropped rather
+        # than refused, so its beat parses and the floor can hold it with a reason the
+        # console shows, instead of a schema error nobody reads.
+        return without_retired_runner_limit(data)
+
     runner_version: Version
     contracts_version: Version
     harnesses: list[HarnessVersion] = Field(default_factory=list, max_length=64)
@@ -952,9 +967,9 @@ class HeartbeatEnvelope(BaseModel):
     oauth_authorizations: list[OAuthAuthorizeUrl] = Field(default_factory=list, max_length=16)
     oauth_tokens: list[SealedCredential] = Field(default_factory=list, max_length=64)
     oauth_outcomes: list[OAuthOutcome] = Field(default_factory=list, max_length=64)
-    # ADR-0022 §57-§58: the Runner Limit read at start, on every beat. None from a Runner
-    # below 3.21, which the console shows as "not reported" rather than as no limit.
-    runner_limit: RunnerLimitReport | None = None
+    # ADR-0022 §58: how strongly this host binds each part of the Guardrails. None only
+    # from a Runner below 4.0, which the floor holds anyway.
+    guardrails_posture: GuardrailsPosture | None = None
     # Spec: Runners rev 3: the LLM access held for each Contract the last ack's
     # `llm_contracts` named, and where a command reaches this Runner. Both None until an
     # ack has carried `llm_contracts`: that is how the Runner knows the control plane is on
@@ -980,12 +995,11 @@ class HeartbeatEnvelope(BaseModel):
                 "oauth_authorizations",
                 "oauth_tokens",
                 "oauth_outcomes",
-                "runner_limit",
             ):
                 if not body.get(name):
                     body.pop(name, None)
             # An empty report is still sent: it says the Runner holds no LLM access.
-            for name in ("llm_access", "install", "pool_key_fingerprint"):
+            for name in ("llm_access", "install", "pool_key_fingerprint", "guardrails_posture"):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body

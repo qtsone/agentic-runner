@@ -20,6 +20,8 @@ from pydantic import (
     model_validator,
 )
 
+from agentic_runner_contracts.guardrails import Guardrails
+
 _FORBIDDEN_SECRET_VALUE_FIELDS = frozenset(
     {
         "secret_value",
@@ -43,13 +45,6 @@ class ProductVerifierCommandSource(BaseModel):
     def reject_secret_value_fields(cls, data: object) -> object:
         _reject_forbidden_secret_value_fields(data)
         return data
-
-
-# The Agent Runtime Profile's ``network_policy`` key naming the destinations a Directive
-# may reach (PRD issue 58, 06 §4): host names, ``host:port`` or ``*.domain`` patterns.
-# The Runner adds the ones it knows the Directive needs -- the git remote and each
-# granted Streamable HTTP MCP server -- and the LLM proxy is on loopback.
-EGRESS_ALLOW_LIST_KEY = "egress"
 
 
 class McpServerSpec(BaseModel):
@@ -104,7 +99,9 @@ class WorkerRuntimeContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     work_record_id: str
-    profile_slug: str
+    # The branch this Work Record's Directives push to, which the platform opened (or will
+    # open) its pull request from: `work_branch_name`, computed by the platform alone.
+    work_branch: Annotated[str, StringConstraints(min_length=1, max_length=255)]
     # Any harness a Profile names, the pattern the Runner's registration already reports
     # (local-agents 12 item 6). Which runtime serves it is the Runner's choice; a kind the
     # Runner does not serve fails closed there.
@@ -164,8 +161,11 @@ class WorkerRuntimeContext(BaseModel):
     # the fields above -- an older backend serves no manifest and the Runner resolves
     # nothing, which fails closed.
     credential_references: list[str] = Field(default_factory=list)
-    command_policy: dict[str, object] = Field(default_factory=dict)
-    network_policy: dict[str, object] = Field(default_factory=dict)
+    # Spec: Agent Guardrails rev 7: what the Agent may touch on the machine, compiled by
+    # the platform for this Directive. The Runner enforces it and adds the destinations it
+    # knows the Directive needs -- the git remote, each granted Streamable HTTP MCP server
+    # and the LLM proxy on loopback.
+    guardrails: Guardrails
     # PRD issue 58: the registry rows bound to this Work Record's Product. The Runner
     # decides per Directive which of them the Agent's Effective Grant lets it write into
     # the CLI's config; defaulted for the same version skew -- an older backend binds none.
@@ -219,15 +219,16 @@ _BRANCH_SLUG_MAX_LENGTH = 48
 _SLUG_TOKEN_RE = re.compile(r"[^a-z0-9]+")
 
 
-def work_branch_name(*, work_record_id: str, profile_slug: str) -> str:
+def work_branch_name(*, work_record_id: str, slug: str) -> str:
     """The branch a Work Record's Directives push to.
 
-    A contract, not a convenience: the platform writes this name into the PR body and the
-    branch it opens the PR from, and the Runner checks out and pushes the same name. One
-    definition, so the two sides cannot drift into opening a PR on a branch nothing pushed.
+    The platform builds it, writes it into the PR body and the branch it opens the PR from,
+    and sends it as ``WorkerRuntimeContext.work_branch``, which the Runner checks out and
+    pushes. ``slug`` is whatever the Work Record was created with, so a Work Record keeps
+    its branch for life.
     """
 
-    return f"agent/{work_record_id}-{sanitize_slug(profile_slug)}"
+    return f"agent/{work_record_id}-{sanitize_slug(slug)}"
 
 
 def sanitize_slug(value: str) -> str:
