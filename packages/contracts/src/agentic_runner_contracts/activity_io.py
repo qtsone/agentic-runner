@@ -318,8 +318,8 @@ class BranchPullRequestInput:
     grant_snapshot: dict[str, Any] = field(default_factory=dict)
     workspace_path: str = ""
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
     # PRD issue 53: the Swarm member this step runs as, and who leads. Empty is the
@@ -386,8 +386,8 @@ class PullRequestReadyInput:
     # against it rather than re-reading a Runner-local cache (ADR-0013 §3).
     grant_snapshot: dict[str, Any] = field(default_factory=dict)
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
     # PRD issue 53: the Swarm member this step runs as, and who leads. Empty is the
@@ -460,8 +460,8 @@ class ApprovalWaitInput:
     handoff_id: str
     required_human_approvals: int = 1
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
 
@@ -569,8 +569,8 @@ class PullRequestMergeInput:
     # read it from here, not from a Runner-local cache (ADR-0013 §3).
     grant_snapshot: dict[str, Any] = field(default_factory=dict)
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
     # PRD issue 53: the Swarm member this step runs as, and who leads. Empty is the
@@ -648,8 +648,8 @@ class FixDirectiveInput:
     workspace_path: str = ""
     grant_snapshot: dict[str, Any] = field(default_factory=dict)
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
     # PRD issue 53: the Swarm member this step runs as, and who leads. Empty is the
@@ -1147,8 +1147,8 @@ class VerifierRunInput:
     # from the Runner's workspace root, which is what a retry on a fresh Runner does.
     workspace_path: str = ""
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
 
@@ -1618,8 +1618,8 @@ class ContractResidueInput:
 
     contract_id: str
     # The routing decision this activity was dispatched by (PRD issue 42): the selector
-    # it was matched on and the Contract's host party, so the Runner fails closed before
-    # any verb when either disagrees with its own registration. Optional only so a
+    # it was matched on, so the Runner fails closed before any verb when it disagrees
+    # with its own registration. Optional only so a
     # history written before issue 42 still decodes; a registered Runner refuses None.
     routing: DirectiveRouting | None = None
 

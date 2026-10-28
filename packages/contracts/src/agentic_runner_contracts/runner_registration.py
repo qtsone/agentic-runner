@@ -22,8 +22,6 @@ Three rules are enforced by the schema itself rather than by a reviewer:
   outcome carries a status, an error code, an exception *type* and redacted frames --
   never a payload, a message or a repository path. The patterns below are what "scrubbed"
   means operationally.
-* **Host party is never here** (17 A3). It is fixed at registration from the Runner
-  Registration Token used and is a routing rule the control plane owns; a Runner cannot assert it.
 """
 
 from __future__ import annotations
@@ -841,9 +839,9 @@ class HostAttestation(BaseModel):
     """What a Runner says about its own build and host (23 item 5, 12 B7 as refined).
 
     **Self-reported, all of it.** Nothing here is verified by the platform, which is why
-    the consoles render it as *self-reported build identity* with the host party beside
-    every figure. Enumerations and short patterned strings only: an OS *release*, not a
-    hostname; a build digest, not a path.
+    the consoles render it as *self-reported build identity* beside every figure.
+    Enumerations and short patterned strings only: an OS *release*, not a hostname; a
+    build digest, not a path.
     """
 
     model_config = ConfigDict(extra="forbid")

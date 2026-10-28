@@ -191,7 +191,7 @@ class WorkerSettings(BaseSettings):
         gt=0,
         description=(
             "Default wall-clock ceiling for a Work Record whose Contract names "
-            "`runner_host: user` (PRD issue 47): a workstation's sleep is an outage the "
+            "runs on a person's workstation (PRD issue 47): a workstation's sleep is an outage the "
             "wall-clock keeps counting through"
         ),
     )

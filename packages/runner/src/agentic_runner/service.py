@@ -1678,8 +1678,8 @@ async def _run(
     try:
         config = load_config()
     except (ValidationError, ValueError, OSError) as error:
-        # A `[limits]` table (or any other setting) that does not parse stops the Runner
-        # here, rather than starting it with a limit the host did not write (ADR-0022 §57).
+        # A setting that does not parse stops the Runner here, rather than starting it on
+        # a value the host did not write.
         print(f"refusing to start (configuration_invalid): {error}", flush=True)
         return 1
     mode = isolation_mode()

@@ -140,7 +140,7 @@ def _matches(entry: str, host: str, port: int) -> bool:
         pattern, entry_port = parse_destination(entry)
     except ValueError:
         # Never a match, as before parsing: an allow-list entry that is not a destination
-        # admits nothing, and the Runner Limit refuses to start on one (`runner_limit`).
+        # admits nothing.
         return False
     if entry_port is not None and entry_port != port:
         return False
@@ -155,7 +155,7 @@ def destination_allowed(allow_list: Iterable[str], host: str, port: int) -> bool
 
 
 def destination_denied(deny_list: Sequence[str], host: str, port: int) -> int | None:
-    """The position of the first Runner Limit ``networks`` entry denying this, or None.
+    """The position of the first entry in ``deny_list`` denying this, or None.
 
     A hostname entry denies that name only: the proxy compares what the Directive asked
     for, never what it resolves to (ADR-0022 §54).
@@ -202,7 +202,7 @@ class EgressProxy:
         on_refused: Callable[[str, int, int | None], Awaitable[None]] | None = None,
         host: str = "127.0.0.1",
     ) -> None:
-        # None: no Profile allow-list, so only the Runner Limit's `networks` can refuse.
+        # None: no compiled network allow-list, so only the removed destinations refuse.
         self.allow_list = None if allow_list is None else tuple(dict.fromkeys(allow_list))
         self.deny_list = tuple(deny_list)
         self._token = token
@@ -248,8 +248,8 @@ class EgressProxy:
                 await self._reply(writer, 400)
                 return
             host, port = destination
-            # The Profile's list first, as the Grant is named before the Runner Limit: a
-            # destination both refuse is refused for the reason no other Runner would lift.
+            # The allow-list first: a destination both refuse is refused as unlisted, the
+            # reason no other layer's change alone would lift.
             allowed = self.allow_list is None or destination_allowed(self.allow_list, host, port)
             denied_by = None if not allowed else destination_denied(self.deny_list, host, port)
             if not allowed or denied_by is not None:

@@ -1749,10 +1749,10 @@ class RunnerRalphActivities:
         self._workspace_root = workspace_root
         self._contract_isolation = contract_isolation
         # What this process is, as the control plane registered it (PRD issue 42): its
-        # Runner id, its host party and its config-declared Tags, which the last heartbeat
-        # ack's Tags replace (`_current_routing_identity`). Every activity payload is
-        # checked against it before the body runs, so a stolen or misrouted task costs
-        # no verb. ``None`` in a process that never registered -- it polls no
+        # Runner id, whether a person operates it and its config-declared Tags, which the
+        # last heartbeat ack's Tags replace (`_current_routing_identity`). Every activity
+        # payload is checked against it before the body runs, so a stolen or misrouted
+        # task costs no verb. ``None`` in a process that never registered -- it polls no
         # ``runner.{runner_id}`` queue, so nothing routes to it and there is nothing to
         # assert against; the fail-closed check is on every Runner the router can pick.
         self._routing_identity = routing_identity
@@ -3226,7 +3226,7 @@ class RunnerRalphActivities:
         the Runner runs on exactly that, or refuses and never falls back to other access.
         None, from a control plane below contracts 3.25, keeps the Runner's own choice.
 
-        Decided from what this process can check -- the host party it was registered with,
+        Decided from what this process can check -- whether a person operates it,
         whether a key is present for the Contract, whether the Contract runs under its own
         uid here and whether its harness root holds a login (QTS-1450) -- never from the
         payload. A runtime that declares no modes (a test double built before the port

@@ -230,8 +230,7 @@ class RunnerPaths:
 
     @property
     def config_file(self) -> Path:
-        # The host's own `config.toml`, where its `[limits]` table goes (ADR-0022 §57).
-        # Never written by `install`: absent, the Runner limits nothing.
+        # The host's own `config.toml`. Never written by `install`.
         return self.state_dir / "config.toml"
 
     @property
