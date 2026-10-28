@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from temporalio.exceptions import ApplicationError
+from test_claude_subscription_directives import _allowing_snapshot
 
 from agentic_runner.activities import SKILLS_EVIDENCE_SOURCE, RunnerRalphActivities
 from agentic_runner.integrations.git.fake_workspace import FakeGitWorkspace
@@ -178,6 +179,7 @@ def _branch_pr_input() -> BranchPullRequestInput:
         branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
+        grant_snapshot=_allowing_snapshot(REPOSITORY),
     )
 
 
