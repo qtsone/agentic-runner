@@ -1863,17 +1863,27 @@ class RunnerRalphActivities:
             )
 
     def _current_routing_identity(self) -> RunnerRoutingIdentity | None:
-        """The registered identity, with the Tags the last heartbeat ack carried.
+        """The registered identity, with the Tags and operator the last heartbeat ack carried.
 
         The console edits a Runner's Tags after registration and the control plane routes
         on the edit at once (ADR-0022 §13); checking the bootstrap set instead would
-        refuse work routed on an added Tag on every retry.
+        refuse work routed on an added Tag on every retry. A Runner a person's token
+        registered before Spec: Runners rev 14 has no operator in its state file, and
+        learns it here (QTS-2378).
         """
 
-        acked = self._heartbeat_link.tags if self._heartbeat_link is not None else None
-        if self._routing_identity is None or acked is None:
-            return self._routing_identity
-        return replace(self._routing_identity, tags=acked)
+        identity = self._routing_identity
+        if identity is None or self._heartbeat_link is None:
+            return identity
+        acked = self._heartbeat_link.tags
+        if acked is not None:
+            identity = replace(identity, tags=acked)
+        operated = self._heartbeat_link.operated
+        return identity if operated is None else replace(identity, operated=operated)
+
+    def _operated(self) -> bool | None:
+        identity = self._current_routing_identity()
+        return None if identity is None else identity.operated
 
     async def _assert_connection_serves(
         self, work_record_id: str, contract_id: str | None, *, workspace_path: str = ""
@@ -3226,7 +3236,7 @@ class RunnerRalphActivities:
         """
 
         runtime = self._agent_runtimes.get(state.cli_kind)
-        operated = self._routing_identity.operated if self._routing_identity else None
+        operated = self._operated()
         contract_uid = self._runs_under_contract_uid(state)
         try:
             if access is not None:
@@ -3325,7 +3335,7 @@ class RunnerRalphActivities:
                 ),
                 "rule": refusal.rule,
                 "cli_kind": state.cli_kind,
-                "operated": (self._routing_identity.operated if self._routing_identity else None),
+                "operated": self._operated(),
                 "contract_id": state.contract_id,
                 **({} if access is None else {"llm_access": access.kind}),
             },
@@ -3358,7 +3368,7 @@ class RunnerRalphActivities:
         that names no access (a control plane below 3.25): a pool Runner's key never
         reached the proxy before, and that control plane caps none of its spend."""
 
-        return self._routing_identity is not None and self._routing_identity.operated
+        return self._operated() is True
 
     def _host_key_held(self, state: _RuntimeContextState) -> bool:
         provider = provider_for(state.cli_kind)
@@ -3408,7 +3418,7 @@ class RunnerRalphActivities:
         can see and act on.
         """
 
-        operated = self._routing_identity.operated if self._routing_identity else None
+        operated = self._operated()
         if (
             self._contract_isolation is None
             or not is_shared_runner(operated)

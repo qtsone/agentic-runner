@@ -1312,6 +1312,7 @@ class ControlPlaneStream:
             self.runner_token_expires_at = ack.runner_token_expires_at
         if ack.connections is not None:
             self._connections = list(ack.connections)
+            self._take_operator(ack.operator_user_profile_id)
         self.tag_set_version = ack.tag_set_version
         if ack.hold_reason:
             _logger.warning("control plane holds new Directives: %s", ack.hold_reason)
@@ -1388,6 +1389,19 @@ class ControlPlaneStream:
         self._llm_contracts = list(terms)
         if self.state_dir is not None:
             save_llm_contracts(self.state_dir, terms)
+
+    def _take_operator(self, operator: UUID | None) -> None:
+        """Save an operator the state file lacks, so `sign-in` and a restart know it.
+
+        A Runner a person's token registered before Spec: Runners rev 14 kept only its host
+        party, which contracts 4.0 retired (QTS-2378); the ack names its operator.
+        """
+
+        if operator is None or self.state.operator_user_profile_id == operator:
+            return
+        self.state = self.state.model_copy(update={"operator_user_profile_id": operator})
+        if self.state_dir is not None:
+            save_state(self.state_dir, self.state)
 
     def _take_organisation_name(self, name: str | None) -> None:
         """Keep the copy ``list`` reads when the ack's name changes. Unlike the Contract

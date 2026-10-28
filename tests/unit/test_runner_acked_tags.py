@@ -133,3 +133,21 @@ async def test_a_removed_tag_is_dropped_and_an_ack_without_tags_keeps_the_last_s
     await link.exchange()
     with pytest.raises(RoutingRefusedError, match="selector"):
         await activities._assert_routed(_directive())
+
+
+@pytest.mark.asyncio
+async def test_a_runner_with_no_operator_in_its_state_learns_it_from_the_ack() -> None:
+    """QTS-2378: a Runner a person's token registered before Spec: Runners rev 14 kept only
+    its retired host party; the ack names its operator, and subscriptions follow it."""
+
+    ack = _ack(None).model_copy(update={"connections": [], "operator_user_profile_id": UUID(int=7)})
+    link = HeartbeatLink(_Stream(ack))
+    activities = RunnerRalphActivities(
+        _NoEvidence(), routing_identity=BOOTSTRAPPED, heartbeat_link=link
+    )
+    assert activities._operated() is False
+
+    await link.exchange()
+
+    assert link.operated is True
+    assert activities._operated() is True
