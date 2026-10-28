@@ -61,7 +61,8 @@ SubscriptionSignIn = Callable[[str, str], Awaitable[int]]
 class SignIn:
     """One ``sign-in`` run. Everything it touches is passed in, so a test drives it whole."""
 
-    host_party: str | None
+    # Whether a person operates this Runner (Spec: Runners rev 14); None: not registered.
+    operated: bool | None
     # The ack's `llm_contracts`, as the running Runner last saved them; None before any.
     contracts: Sequence[ContractLlmTerms] | None
     # The Agent Runtimes this Runner serves (its CLIs on PATH), by `cli_kind`.
@@ -71,12 +72,10 @@ class SignIn:
     ask: Callable[[str], str]
     secret: Callable[[str], str]
     say: Callable[[str], None]
-    # Rev 14: a Runner `login` made, which has an operator and no host party.
-    operated: bool = False
 
     async def run(self, which: str) -> int:
-        if not (self.operated or self.host_party == "user"):
-            hosted = f"hosted by {self.host_party!r}" if self.host_party else "not registered"
+        if self.operated is not True:
+            hosted = "not registered" if self.operated is None else "the Organisation's own"
             self.say(
                 f"refusing to sign in: this Runner is {hosted}. `sign-in` gives a person's own "
                 "Runner their access; a pool Runner uses only its pool's keys"

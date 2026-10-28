@@ -168,4 +168,3 @@ class SlotDelivery(BaseModel):
     installations: int = Field(ge=0)
     delivered: int = Field(ge=0)
     stale: bool = False
-    host_party: str = ""

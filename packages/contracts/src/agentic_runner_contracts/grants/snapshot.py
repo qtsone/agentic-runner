@@ -89,12 +89,7 @@ class ProductReach:
 
 @dataclass(frozen=True)
 class GrantSnapshot:
-    """The three Grants plus the registry, as the control plane hands them over.
-
-    ``enforced`` is always true from the platform (issue 88): a Work Record with no Agent
-    bound is held, never run unattenuated. A false one decides ``allow`` and says so in
-    its Evidence; it survives only for wire compatibility with installed Runners.
-    """
+    """The three Grants plus the registry, as the control plane hands them over."""
 
     agent_id: str | None = None
     contract_id: str | None = None
@@ -111,18 +106,11 @@ class GrantSnapshot:
     root: Grant = EMPTY_GRANT
     agent: Grant = EMPTY_GRANT
     persona: Grant = EMPTY_GRANT
-    # PRD issue 34, map ticket 21 A5: the Account Contract root a Leaf's Effective Grant
-    # also intersects. ``None`` -- every direct Contract, and every payload from a backend
-    # that predates the field -- leaves the chain three links long, exactly as before.
-    account_contract: Grant | None = None
-    account_contract_id: str | None = None
     resources: tuple[ResourceRegistration, ...] = ()
     # ADR-0018 §3: the live Products of the Contract's effective scope. Re-read with the
     # rest of the snapshot, so a Product dropped from the Contract leaves at the next
     # Directive. Empty from a backend that predates the field.
     reach: tuple[ProductReach, ...] = ()
-    # TODO(issue 88): remove ``enforced`` at the next contracts major.
-    enforced: bool = True
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> GrantSnapshot:
@@ -138,16 +126,6 @@ class GrantSnapshot:
             root=Grant.model_validate(payload["root_grant"]),
             agent=Grant.model_validate(payload["agent_grant"]),
             persona=Grant.model_validate(payload["persona_allow_list"]),
-            account_contract=(
-                None
-                if payload.get("account_contract_root_grant") is None
-                else Grant.model_validate(payload["account_contract_root_grant"])
-            ),
-            account_contract_id=(
-                None
-                if payload.get("account_contract_id") is None
-                else str(payload["account_contract_id"])
-            ),
             resources=tuple(
                 ResourceRegistration(
                     resource_type=str(resource["resource_type"]),
@@ -267,4 +245,7 @@ class GrantSnapshot:
         return max(matches, default=DEFAULT_REQUIRED_HUMAN_APPROVALS)
 
 
-UNENFORCED_SNAPSHOT: Final = GrantSnapshot(enforced=False)
+# What a Work Record with no snapshot decides on: empty Grants and no registry, so every
+# verb is denied. A Work Record with no Agent bound is held, never run unattenuated (issue
+# 88).
+EMPTY_SNAPSHOT: Final = GrantSnapshot()

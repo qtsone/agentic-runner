@@ -200,10 +200,9 @@ def runner_task_queue(runner_id: UUID) -> str:
 
     A Runner is activity-only: the loop runs on platform-hosted Platform Workers and
     dispatches each Directive to exactly one Runner by name, so the queue is the Runner's
-    own platform-issued id and nothing else. Runner Tags, the host party and the
-    Organisation deliberately stay out of it -- tags are operator-typed free text (§6
-    bans that from a displayed name), and host party is a routing rule the control plane
-    resolves before it picks the queue (17 A3), never a name Temporal displays.
+    own platform-issued id and nothing else. Runner Tags and the Organisation
+    deliberately stay out of it: tags are operator-typed free text (§6 bans that from a
+    displayed name).
     """
     return f"runner{_SEPARATOR}{runner_id}"
 

@@ -95,7 +95,7 @@ class RunnerTriageActivities:
         proxy: LlmProxy,
         model: str,
         timeout_seconds: float,
-        host_party: str | None = None,
+        operated: bool = False,
         llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
         client: httpx.AsyncClient | None = None,
         connection_organisation: Callable[[], UUID | None] | None = None,
@@ -103,7 +103,7 @@ class RunnerTriageActivities:
         self._proxy = proxy
         self._model = model
         self._timeout_seconds = timeout_seconds
-        self._host_party = host_party
+        self._operated = operated
         self._llm_contracts = llm_contracts
         self._client = client
         # As on the Ralph activities: a connection spends only its own Organisation's
@@ -147,7 +147,7 @@ class RunnerTriageActivities:
         Directive that names no access follows (QTS-1736, QTS-1751)."""
 
         named = self._llm_contracts() if self._llm_contracts is not None else None
-        return self._host_party != "user" and named is None
+        return not self._operated and named is None
 
 
 def _optional_uuid(value: str) -> UUID | None:

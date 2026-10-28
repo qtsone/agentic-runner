@@ -25,6 +25,7 @@ from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.connections import contract_refusal
 from agentic_runner.triage_activities import RunnerTriageActivities
 from agentic_runner_contracts import activity_io as contracts
+from agentic_runner_contracts.guardrails import Guardrails
 from agentic_runner_contracts.runner_registration import ContractLlmTerms, SubscriptionRight
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContext
 
@@ -59,7 +60,8 @@ class _Resolver:
     async def resolve(self, work_record_id: str, *, agent_id: str | None = None) -> Any:
         return WorkerRuntimeContext(
             work_record_id=work_record_id,
-            profile_slug="builder",
+            work_branch="agent/wr-builder",
+            guardrails=Guardrails(),
             cli_kind="codex_cli",
             repo="acme/app",
             base_branch="main",

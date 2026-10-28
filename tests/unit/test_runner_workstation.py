@@ -196,7 +196,7 @@ async def test_install_registers_writes_the_launch_agent_and_status_reports_it(
 ) -> None:
     home = tmp_path / "home"
     paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
-    plane = FakeControlPlane(host_party="user")
+    plane = FakeControlPlane(bootstraps_operated=True)
     commands = Commands()
 
     async with httpx.AsyncClient(transport=plane.transport()) as http:
@@ -928,7 +928,7 @@ def test_a_subscription_sign_in_needs_only_the_workstation_run_environment(
             private_key_pem="unused",
             temporal_namespace="org-x",
             task_queue="runner.x",
-            host_party="user",
+            operator_user_profile_id=uuid4(),
         ),
     )
     contract = uuid4()
@@ -993,7 +993,7 @@ async def test_reinstalling_over_a_registered_state_dir_says_the_token_was_not_u
     tmp_path: Path, bin_dir: Path
 ) -> None:
     paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
-    plane = FakeControlPlane(host_party="organisation")
+    plane = FakeControlPlane()
 
     async def install(token: str) -> list[str]:
         async with httpx.AsyncClient(transport=plane.transport()) as http:
@@ -1027,7 +1027,7 @@ async def test_two_installs_on_one_machine_hold_their_own_identity_and_recipient
     root = tmp_path / "state"
     first = workstation.RunnerPaths(root=root, name="acme")
     second = workstation.RunnerPaths(root=root, name="acme-billing")
-    plane = FakeControlPlane(host_party="user")
+    plane = FakeControlPlane(bootstraps_operated=True)
 
     async def register(paths: workstation.RunnerPaths, token: str) -> None:
         async with httpx.AsyncClient(transport=plane.transport()) as http:
@@ -1061,13 +1061,11 @@ async def test_two_installs_on_one_machine_hold_their_own_identity_and_recipient
         open_sealed(private_key=billing_pair.private_key, binding=binding, ciphertext=sealed)
 
 
-def test_the_next_step_follows_who_hosts_the_runner() -> None:
-    [user] = workstation.next_step_lines("user")
-    assert "/me/work/new" in user and "a Runner you host" in user
-    [organisation] = workstation.next_step_lines("organisation")
-    assert "hosted by the organisation" in organisation and "/me/" not in organisation
-    # A control plane older than issue 42 names no host party; nothing to point at.
-    assert workstation.next_step_lines("") == []
+def test_the_next_step_follows_who_operates_the_runner() -> None:
+    [own] = workstation.next_step_lines(operated=True)
+    assert "/me/work/new" in own
+    [organisation] = workstation.next_step_lines(operated=False)
+    assert "the Organisation's work" in organisation and "/me/" not in organisation
 
 
 def test_the_token_prompt_names_both_places_a_token_comes_from(
@@ -1271,7 +1269,7 @@ async def test_the_runner_never_opens_a_file_under_any_harness_root(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(harness_roots[0]))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(harness_roots[1]))
-    plane = FakeControlPlane(host_party="user")
+    plane = FakeControlPlane(bootstraps_operated=True)
     opened.clear()  # the setup above wrote them; from here on it is the Runner
 
     async with httpx.AsyncClient(transport=plane.transport()) as http:

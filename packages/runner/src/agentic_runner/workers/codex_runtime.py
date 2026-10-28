@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Final
 
+from agentic_runner.guardrails import GuardrailRefusal, turn_timeout
 from agentic_runner.llm_proxy import PROXY_API_KEY_ENV, PROXY_BASE_URL_ENV
 from agentic_runner.workers._runtime_support import (
     AsyncSubprocessRunner,
@@ -202,13 +203,17 @@ class CodexRuntime(ResumableAgentRuntime):
             else {"on_first_stdout_line": _thread_started_reporter(request.on_session_started)}
         )
 
+        refusals: tuple[GuardrailRefusal, ...] = ()
+        timeout_seconds, overrun = turn_timeout(
+            self._settings.CODEX_CLI_TIMEOUT_SECONDS, request.guardrails
+        )
         try:
             raw_result = await self._runner(
                 argv=argv,
                 cwd=workspace_path,
                 env=env,
                 stdin=request.prompt,
-                timeout_seconds=self._settings.CODEX_CLI_TIMEOUT_SECONDS,
+                timeout_seconds=timeout_seconds,
                 output_limit_bytes=self._settings.CODEX_CLI_OUTPUT_LIMIT_BYTES,
                 sandbox=sandbox,
                 **report_session,
@@ -219,6 +224,9 @@ class CodexRuntime(ResumableAgentRuntime):
         except TimeoutError as exception:
             raw_result = SubprocessResult(exit_code=124, stdout="", stderr="")
             error = str(exception) or "Codex CLI timed out"
+            if overrun is not None:
+                refusals = (overrun,)
+                notes.append(f"turn ended: {overrun.summary}")
         except OSError as exception:
             raw_result = SubprocessResult(exit_code=127, stdout="", stderr="")
             error = str(exception)
@@ -267,6 +275,7 @@ class CodexRuntime(ResumableAgentRuntime):
             error=redacted_error,
             command_hash=command_hash,
             evidence=evidence,
+            guardrail_refusals=refusals,
             model=request.model,
         )
 

@@ -19,6 +19,11 @@ Three things live together because they are one fact about "may this verb run no
   (map ticket 03): three minutes without an acknowledged exchange refuses every privileged
   verb, because a Runner that cannot hear a narrowing must not act on what it last heard.
 
+A push only ever narrows (Spec: Agent Guardrails rev 7, A3): the activity decides each verb
+on the more restrictive of this store's snapshot and the Directive's own, so a narrowing
+bites at the next verb and a widening waits for the next Directive. The Runner never
+computes, widens or narrows a Grant itself.
+
 This is the one place the Runner keeps state between activities, and it is a deliberate
 exception to ADR-0013 §3: what is cached is not a fetch result the activity could carry on
 its own input, it *is* the control plane's current word, delivered out of band. Everything
@@ -128,6 +133,7 @@ class HeartbeatLink:
         # every verb -- and `max_concurrent_directives` is itself bounded by this number.
         self._held: OrderedDict[_Key, _Held] = OrderedDict()
         self._tags: dict[str, str] | None = None
+        self._operated: bool | None = None
         self._last_ack: float | None = None
         self._seen_monotonic, self._seen_wall = self._clock()
         self._woke = False
@@ -182,6 +188,15 @@ class HeartbeatLink:
 
         return None if self._tags is None else dict(self._tags)
 
+    @property
+    def operated(self) -> bool | None:
+        """Whether a person operates this Runner, as the last ack said (Spec: Runners rev 14).
+
+        ``None`` until an ack names the connections, which carry the operator beside them.
+        """
+
+        return self._operated
+
     def applied(self) -> list[AppliedSnapshot]:
         return [
             AppliedSnapshot(
@@ -207,6 +222,8 @@ class HeartbeatLink:
 
         if ack.tags is not None:
             self._tags = dict(ack.tags)
+        if ack.connections is not None:
+            self._operated = ack.operator_user_profile_id is not None
         for push in ack.grant_pushes:
             agent_id = str(push.agent_id)
             key: _Key = (agent_id, None if push.contract_id is None else str(push.contract_id))

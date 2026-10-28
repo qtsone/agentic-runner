@@ -95,13 +95,14 @@ class _Client:
         return {
             "work_record_id": WORK_RECORD_ID,
             "contract_id": CONTRACT_ID,
-            "profile_slug": "engineer",
+            "work_branch": f"agent/{WORK_RECORD_ID}-engineer",
             "cli_kind": "claude_code",
             "repo": "qts/agentic-os",
             "base_branch": "main",
             "completion_criteria": "Add a Production section",
             "task_queue": "ralph-pr-loop",
             "worker_secret_refs": [],
+            "guardrails": {},
             "product_verifier_command_source": {
                 "source": "runtime-profile",
                 "available": True,
@@ -226,11 +227,33 @@ def _activities(
         git_workspace=FakeGitWorkspace(status_evidence=" M README.md", diff_evidence="+change"),
         github_client=FakeGitHubClient(),
         workspace_root=tmp_path / "workspaces",
-        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, host_party="user", tags={}),
+        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, operated=True, tags={}),
         llm_proxy=proxy,  # type: ignore[arg-type]
         contract_isolation=isolation,
         usage_windows=usage_windows,
     )
+
+
+def _allowing_snapshot(repository: str) -> dict[str, object]:
+    grant = {
+        "entries": [
+            {
+                "resource_type": "repo",
+                "selector": repository,
+                "verbs": {verb: "allow" for verb in ("read", "branch", "push", "pr.open")},
+            }
+        ]
+    }
+    return {
+        "agent_id": None,
+        "contract_id": CONTRACT_ID,
+        "contract_state": "active",
+        "dispatchable": True,
+        "root_grant": grant,
+        "agent_grant": grant,
+        "persona_allow_list": grant,
+        "resources": [{"resource_type": "repo", "selector": repository, "in_contract_scope": True}],
+    }
 
 
 def _branch_pr_input() -> BranchPullRequestInput:
@@ -238,10 +261,11 @@ def _branch_pr_input() -> BranchPullRequestInput:
         work_record_id=WORK_RECORD_ID,
         repository="qts/agentic-os",
         base_ref="main",
-        branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer"),
+        branch_name=work_branch_name(work_record_id=WORK_RECORD_ID, slug="engineer"),
         pr_title="Add a Production section",
         pr_body="body",
-        routing=DirectiveRouting(runner_id=RUNNER_ID, host_party="user"),
+        routing=DirectiveRouting(runner_id=RUNNER_ID),
+        grant_snapshot=_allowing_snapshot("qts/agentic-os"),
     )
 
 
@@ -400,7 +424,7 @@ async def test_a_usage_limit_makes_the_windows_the_heartbeat_reports_due_at_once
     isolation = _isolation(tmp_path)
     _sign_in(isolation)
     built = build_usage_windows(
-        host_party="user",
+        operated=True,
         runtimes=_default_runtimes(tmp_path),
         isolation=isolation,
         in_flight=DirectivesInFlight(),

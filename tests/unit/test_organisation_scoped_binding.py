@@ -143,9 +143,7 @@ def _activities(
         client,  # type: ignore[arg-type]
         git_workspace=git,
         workspace_root=root,
-        routing_identity=RunnerRoutingIdentity(
-            runner_id=RUNNER_ID, host_party="organisation", tags=dict(tags or {})
-        ),
+        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, tags=dict(tags or {})),
     )
 
 

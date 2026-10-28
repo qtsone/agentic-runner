@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from agentic_runner_contracts.grants import (
-    UNENFORCED_SNAPSHOT,
+    EMPTY_SNAPSHOT,
     Decision,
     Grant,
     GrantLink,
@@ -120,11 +120,11 @@ def test_an_unregistered_resource_is_out_of_scope_whatever_the_selector_says() -
     assert decision.deciding_link is None
 
 
-def test_an_unenforced_snapshot_allows_and_says_so_in_its_evidence() -> None:
-    evidence = decide_verb(UNENFORCED_SNAPSHOT, verb="push", identifier=REPOSITORY).evidence()
+def test_a_work_record_with_no_snapshot_is_refused_every_verb() -> None:
+    evidence = decide_verb(EMPTY_SNAPSHOT, verb="push", identifier=REPOSITORY).evidence()
 
-    assert evidence["decision"] == "allow"
-    assert evidence["enforced"] is False
+    assert evidence["decision"] == "deny"
+    assert "enforced" not in evidence
     assert evidence["agent_id"] is None
 
 
@@ -155,7 +155,6 @@ def test_the_snapshot_parses_the_control_planes_payload_shape() -> None:
 
     snapshot = GrantSnapshot.from_payload(payload)
 
-    assert snapshot.enforced is True
     assert snapshot.in_contract_scope(resource_type="repo", identifier=REPOSITORY)
     assert not snapshot.in_contract_scope(resource_type="repo", identifier="other/repo")
     # A payload from a backend before contracts 2.2 carries no reach: nothing is reachable

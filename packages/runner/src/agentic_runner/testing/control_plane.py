@@ -71,6 +71,7 @@ from agentic_runner.registration import (
 )
 from agentic_runner.sealed_box import seal
 from agentic_runner_contracts import __version__ as contracts_version
+from agentic_runner_contracts.guardrails import Guardrails
 from agentic_runner_contracts.public_metadata import namespace as organisation_namespace
 from agentic_runner_contracts.public_metadata import runner_task_queue
 from agentic_runner_contracts.runner_login import (
@@ -112,6 +113,7 @@ from agentic_runner_contracts.runner_signature import (
 from agentic_runner_contracts.runtime_context import (
     ProductVerifierCommandSource,
     WorkerRuntimeContext,
+    work_branch_name,
 )
 from agentic_runner_contracts.sealed_credential import SealedCredential, delivery_binding
 
@@ -224,7 +226,9 @@ class FakeControlPlane:
     """
 
     namespace: str = DEFAULT_NAMESPACE
-    host_party: str = "organisation"
+    # Whether a Runner bootstrapped here is a person's own (`operator` below operates it),
+    # not the Organisation's: what a person's own Runner decides subscriptions on.
+    bootstraps_operated: bool = False
     heartbeat_interval_seconds: int = 30
     contracts_floor: str = contracts_version
     contract_id: UUID = DEFAULT_CONTRACT_ID
@@ -513,9 +517,9 @@ class FakeControlPlane:
             tag_set_version=1,
             floor_state=FloorState.OK,
             contracts_floor=self.contracts_floor,
-            host_party=self.host_party,
             heartbeat_interval_seconds=self.heartbeat_interval_seconds,
             temporal_address=self.temporal_address,
+            operator_user_profile_id=self.operator if self.bootstraps_operated else None,
         )
         return _Answer(
             200,
@@ -808,12 +812,13 @@ class FakeControlPlane:
             work_record_id=work_record_id,
             contract_id=str(self.contract_id),
             agent_id=str(self.agent_id),
-            profile_slug="learner",
+            work_branch=work_branch_name(work_record_id=work_record_id, slug="learner"),
             cli_kind=self.cli_kind,
             repo="conformance/repo",
             base_branch="main",
             task_queue="",
             worker_secret_refs=[],
+            guardrails=Guardrails(),
             product_verifier_command_source=ProductVerifierCommandSource(
                 source="runtime-profile", available=True, metadata={"command": "true"}
             ),

@@ -49,7 +49,7 @@ async def main(address: str, namespace: str, runner_id: str) -> None:
         "directive_number": 1,
         "learner_agent_id": "00000000-0000-4000-8000-0000000000a1",
         "ending_kind": "merged",
-        "routing": {"runner_id": runner_id, "host_party": "organisation"},
+        "routing": {"runner_id": runner_id},
     }
     async with Worker(client, task_queue=DRIVER_QUEUE, workflows=[ChartTestDirective]):
         result = await client.execute_workflow(

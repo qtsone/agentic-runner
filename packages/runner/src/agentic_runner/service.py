@@ -122,12 +122,6 @@ from agentic_runner.registration import (
     require_isolation_supported,
     save_state,
 )
-from agentic_runner.runner_limit import (
-    EMPTY_RUNNER_LIMIT,
-    AppliedRunnerLimit,
-    DeniedFolders,
-    RunnerLimitError,
-)
 from agentic_runner.sealed_box import (
     RECIPIENT_KEY_FILENAME,
     RecipientKeyStore,
@@ -178,7 +172,8 @@ from agentic_runner_contracts.runner_registration import (
     CredentialValidity,
     DirectiveOutcome,
     EgressPosture,
-    FolderPosture,
+    GuardrailPosture,
+    GuardrailsPosture,
     HarnessVersion,
     HeartbeatAck,
     HeartbeatEnvelope,
@@ -191,7 +186,6 @@ from agentic_runner_contracts.runner_registration import (
     ResourcePressure,
     RunnerConnection,
     RunnerInstall,
-    RunnerLimitReport,
     RuntimeSubscriptionReport,
     SlotProbe,
     SubscriptionState,
@@ -375,7 +369,6 @@ async def register(
     control_plane: str | None = None,
     registration_token: str | None = None,
     isolation: IsolationMode | None = None,
-    runner_limit: RunnerLimitReport | None = None,
 ) -> tuple[RunnerState, str]:
     """First boot (PRD issue 41): exchange the Runner Registration Token for this
     process's identity.
@@ -405,7 +398,6 @@ async def register(
         recipient_key=recipient,
         max_concurrent_directives=_max_concurrent_directives(),
         can_separate_uids=can_separate_uids,
-        runner_limit=runner_limit,
     )
     save_state(state_dir, state)
     return state, (
@@ -719,8 +711,6 @@ _RUNTIMES: dict[str, Callable[[WorkerSettings], AgentRuntime]] = {
 def build_agent_runtimes(
     settings: WorkerSettings,
     clis: Sequence[CliVersion],
-    *,
-    denied_folders: DeniedFolders | None = None,
 ) -> dict[str, AgentRuntime]:
     """Every Agent Runtime this process serves, by the Profile's `cli_kind` (ADR-0006).
 
@@ -734,15 +724,13 @@ def build_agent_runtimes(
     Runner's setting (`ACP_CLI_KINDS`), never the payload's (local-agents 12 items 6, 7).
     A kind the host opted in to run a Profile-named command for (`ACP_PROFILE_CLI_KINDS`,
     local-agents 18) reaches `clis` through :func:`with_profile_acp_cli_kinds`.
-    ``denied_folders`` is the Runner Limit's folders part: the ACP permission seam is where
-    a harness asks before it reads a path, so the ACP runtimes are the ones that take it.
     """
 
     pinned_kinds = _pinned_acp_cli_kinds(settings)
     profile_kinds = set(profile_acp_executables(settings))
     return {
         cli.cli_kind: (
-            AcpRuntime(cli_kind=cli.cli_kind, settings=settings, denied_folders=denied_folders)
+            AcpRuntime(cli_kind=cli.cli_kind, settings=settings)
             if cli.cli_kind in profile_kinds or cli.cli_kind in pinned_kinds
             else _RUNTIMES[cli.cli_kind](settings)
         )
@@ -751,28 +739,32 @@ def build_agent_runtimes(
     }
 
 
-def runner_limit_report(
-    limit: AppliedRunnerLimit,
+def guardrails_posture(
     runtimes: Mapping[str, AgentRuntime],
     *,
     egress_posture: EgressPosture,
-) -> RunnerLimitReport | None:
-    """The Runner Limit with how far each part binds here (ADR-0022 §53-§55).
+    can_limit_memory: bool,
+) -> GuardrailsPosture:
+    """How far each part of the Guardrails binds here (ADR-0022 §58).
 
-    Folders are ``checked`` only for a runtime whose harness asks before it reads a path;
-    every other harness reads what it likes, so the list is ``unenforced`` against it.
+    Commands and folders are ``checked`` only for a runtime whose harness asks before it
+    runs a command or reads a path; every other harness acts without asking, so those
+    parts are ``unenforced`` against it.
     """
 
-    return limit.report(
-        egress_posture=egress_posture,
-        folders={
-            kind: (
-                FolderPosture.CHECKED
-                if isinstance(runtime, AcpRuntime) and runtime.folders_checked
-                else FolderPosture.UNENFORCED
-            )
-            for kind, runtime in runtimes.items()
-        },
+    checked = {
+        kind: (
+            GuardrailPosture.CHECKED
+            if isinstance(runtime, AcpRuntime) and runtime.guardrails_checked
+            else GuardrailPosture.UNENFORCED
+        )
+        for kind, runtime in runtimes.items()
+    }
+    return GuardrailsPosture(
+        network=egress_posture,
+        commands=checked,
+        folders=checked,
+        memory=GuardrailPosture.CHECKED if can_limit_memory else GuardrailPosture.UNENFORCED,
     )
 
 
@@ -1061,8 +1053,8 @@ class ControlPlaneStream:
     pool_key_fingerprint: str | None = None
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
-    # ADR-0022 §57: the Runner Limit read at start and its posture; None while it is empty.
-    runner_limit: RunnerLimitReport | None = None
+    # ADR-0022 §58: how far this host binds each part of the Guardrails, on every beat.
+    guardrails_posture: GuardrailsPosture | None = None
     _delivered: set[tuple[str, str]] = field(default_factory=set)
     # ADR-0022 §7: the Contracts the last ack asked this Runner to report references for.
     _manifests: list[CredentialManifest] = field(default_factory=list)
@@ -1281,7 +1273,7 @@ class ControlPlaneStream:
             oauth_authorizations=self.oauth.take_authorizations() if self.oauth else [],
             oauth_tokens=self.oauth.uploads() if self.oauth else [],
             oauth_outcomes=self.oauth.take_outcomes() if self.oauth else [],
-            runner_limit=self.runner_limit,
+            guardrails_posture=self.guardrails_posture,
             llm_access=self._llm_access_report(),
             install=self._install_report(),
             pool_key_fingerprint=self.pool_key_fingerprint if self._pool is not None else None,
@@ -1320,6 +1312,7 @@ class ControlPlaneStream:
             self.runner_token_expires_at = ack.runner_token_expires_at
         if ack.connections is not None:
             self._connections = list(ack.connections)
+            self._take_operator(ack.operator_user_profile_id)
         self.tag_set_version = ack.tag_set_version
         if ack.hold_reason:
             _logger.warning("control plane holds new Directives: %s", ack.hold_reason)
@@ -1396,6 +1389,19 @@ class ControlPlaneStream:
         self._llm_contracts = list(terms)
         if self.state_dir is not None:
             save_llm_contracts(self.state_dir, terms)
+
+    def _take_operator(self, operator: UUID | None) -> None:
+        """Save an operator the state file lacks, so `sign-in` and a restart know it.
+
+        A Runner a person's token registered before Spec: Runners rev 14 kept only its host
+        party, which contracts 4.0 retired (QTS-2378); the ack names its operator.
+        """
+
+        if operator is None or self.state.operator_user_profile_id == operator:
+            return
+        self.state = self.state.model_copy(update={"operator_user_profile_id": operator})
+        if self.state_dir is not None:
+            save_state(self.state_dir, self.state)
 
     def _take_organisation_name(self, name: str | None) -> None:
         """Keep the copy ``list`` reads when the ack's name changes. Unlike the Contract
@@ -1578,8 +1584,7 @@ async def sign_in(which: str, *, store: KeyStore, method: str = OAUTH_TOKEN) -> 
             return 1
 
     return await SignIn(
-        host_party=(state.host_party if state is not None else "") or None,
-        operated=state is not None and state.operator_user_profile_id is not None,
+        operated=None if state is None else state.operator_user_profile_id is not None,
         contracts=load_llm_contracts(state_dir),
         served=[kind for kind, cli in _SIGN_IN_CLIS.items() if shutil.which(cli)],
         store=store,
@@ -1673,8 +1678,8 @@ async def _run(
     try:
         config = load_config()
     except (ValidationError, ValueError, OSError) as error:
-        # A `[limits]` table (or any other setting) that does not parse stops the Runner
-        # here, rather than starting it with a limit the host did not write (ADR-0022 §57).
+        # A setting that does not parse stops the Runner here, rather than starting it on
+        # a value the host did not write.
         print(f"refusing to start (configuration_invalid): {error}", flush=True)
         return 1
     mode = isolation_mode()
@@ -1695,13 +1700,6 @@ async def _run(
         attestation = with_profile_acp_cli_kinds(with_acp_bridges(attestation, settings), settings)
     except ValueError as error:
         print(f"refusing to start: {error}", flush=True)
-        return 1
-    try:
-        runner_limit = AppliedRunnerLimit.from_config(
-            config.limits, workspace_roots=(config.workspace_root, settings.WORKSPACE_ROOT)
-        )
-    except RunnerLimitError as error:
-        print(f"refusing to start (runner_limit): {error}", flush=True)
         return 1
     state_dir = config.state_dir
     try:
@@ -1731,7 +1729,6 @@ async def _run(
             host_store=host_store,
             attestation=attestation,
             install=install,
-            runner_limit=runner_limit,
             pool_key=pool_key,
         )
     finally:
@@ -1755,25 +1752,14 @@ async def _serve(
     host_store: HostCredentialStore | None,
     attestation: HostAttestation | None,
     install: RunnerInstall | None = None,
-    runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
     pool_key: PoolKey | None = None,
 ) -> int:
-    limit_report = runner_limit_report(
-        runner_limit,
-        build_agent_runtimes(
-            settings,
-            attestation.clis if attestation is not None else [],
-            denied_folders=runner_limit.folders,
-        ),
-        egress_posture=egress_posture_from_env(),
-    )
     try:
         state, outcome = await _before_stop(
             register(
                 state_dir=state_dir,
                 can_separate_uids=can_change_uid,
                 client=http_client,
-                runner_limit=limit_report,
             ),
             stop,
         )
@@ -1829,7 +1815,6 @@ async def _serve(
             attestation=attestation,
             install=install,
             lifecycle=lifecycle,
-            runner_limit=runner_limit,
             pool_key=pool_key,
         )
     except _StoppedBeforeStartError:
@@ -1862,18 +1847,13 @@ async def _serve_registered(
     attestation: HostAttestation | None,
     lifecycle: LifecycleOutbox,
     install: RunnerInstall | None = None,
-    runner_limit: AppliedRunnerLimit = EMPTY_RUNNER_LIMIT,
     pool_key: PoolKey | None = None,
 ) -> int:
     load = _LoadInterceptor()
     proxy = LlmProxy(slots=SlotStore(), ceilings=CeilingStore(), outbox=UsageOutbox())
     credentials = build_credential_resolver(config, host_store=host_store)
     isolation = build_contract_isolation(settings, can_separate_uids=can_change_uid)
-    runtimes = build_agent_runtimes(
-        settings,
-        attestation.clis if attestation is not None else [],
-        denied_folders=runner_limit.folders,
-    )
+    runtimes = build_agent_runtimes(settings, attestation.clis if attestation is not None else [])
     egress_posture = egress_posture_from_env()
     in_flight = DirectivesInFlight()
     self_tests = HarnessSelfTests(
@@ -1885,7 +1865,10 @@ async def _serve_registered(
         monotonic=time.monotonic,
     )
     usage_windows = build_usage_windows(
-        host_party=state.host_party, runtimes=runtimes, isolation=isolation, in_flight=in_flight
+        operated=state.operator_user_profile_id is not None,
+        runtimes=runtimes,
+        isolation=isolation,
+        in_flight=in_flight,
     )
     # One store for both: it caches the key file, and a renewal through the stream must
     # be the key the LLM Key opener reads too.
@@ -1918,7 +1901,9 @@ async def _serve_registered(
         contracts=isolation,
         self_tests=self_tests,
         usage_windows=usage_windows,
-        runner_limit=runner_limit_report(runner_limit, runtimes, egress_posture=egress_posture),
+        guardrails_posture=guardrails_posture(
+            runtimes, egress_posture=egress_posture, can_limit_memory=isolation.can_limit_memory
+        ),
         install=install,
         state_dir=state_dir,
         pool_key_fingerprint=llm_keys.fingerprint,
@@ -1988,7 +1973,6 @@ async def _serve_registered(
                     messages=messages,
                     tool_servers=tool_servers,
                     usage_windows=usage_windows,
-                    runner_limit=runner_limit,
                     llm_contracts=lambda: stream.llm_contracts,
                     llm_keys=llm_keys,
                     # The wake signal rides the connection the Directive came in on: its
@@ -2169,7 +2153,7 @@ async def _self_test_forever(
 
 def build_usage_windows(
     *,
-    host_party: str,
+    operated: bool,
     runtimes: Mapping[str, AgentRuntime],
     isolation: ContractIsolation,
     in_flight: DirectivesInFlight,
@@ -2179,7 +2163,7 @@ def build_usage_windows(
     (``auth_mode.runs_subscriptions``, QTS-1450).
     """
 
-    if not runs_subscriptions(host_party, separates_contract_uids=isolation.can_separate_uids):
+    if not runs_subscriptions(operated, separates_contract_uids=isolation.can_separate_uids):
         return None
     probes: dict[str, UsageWindowProbe] = {
         "codex_cli": CodexRateLimitsProbe(),
@@ -2235,7 +2219,6 @@ def _activities(
     signaller: TemporalWorkflowSignaller | None = None,
     tool_servers: ToolServerHealthLog | None = None,
     usage_windows: UsageWindows | None = None,
-    runner_limit: AppliedRunnerLimit | None = None,
     llm_contracts: Callable[[], list[ContractLlmTerms] | None] | None = None,
     llm_keys: LlmKeyOpener | None = None,
     connection_organisation: Callable[[], UUID | None] | None = None,
@@ -2266,14 +2249,10 @@ def _activities(
         github_client=github_client,
         workspace_root=settings.WORKSPACE_ROOT,
         contract_isolation=isolation,
-        # The host party is the control plane's to assign (17 A3); a state file written
-        # before issue 42 carries none, and such a process makes no routing assertion.
-        routing_identity=(
-            RunnerRoutingIdentity(
-                runner_id=str(state.runner_id), host_party=state.host_party, tags=dict(state.tags)
-            )
-            if state.host_party
-            else None
+        routing_identity=RunnerRoutingIdentity(
+            runner_id=str(state.runner_id),
+            tags=dict(state.tags),
+            operated=state.operator_user_profile_id is not None,
         ),
         hooks=hooks,
         socket_dir=build_socket_dir(config),
@@ -2287,7 +2266,6 @@ def _activities(
         attempt_records=attempt_records,
         directives_in_flight=directives_in_flight,
         usage_windows=usage_windows,
-        runner_limit=runner_limit,
         llm_contracts=llm_contracts,
         llm_keys=llm_keys,
         connection_organisation=connection_organisation,
@@ -2298,7 +2276,7 @@ def _activities(
             proxy=proxy,
             model=settings.TRIAGE_MODEL,
             timeout_seconds=settings.TRIAGE_DIRECTIVE_TIMEOUT_SECONDS,
-            host_party=state.host_party,
+            operated=state.operator_user_profile_id is not None,
             llm_contracts=llm_contracts,
             connection_organisation=connection_organisation,
         ).activity_callables(),

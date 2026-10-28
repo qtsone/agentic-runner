@@ -83,13 +83,13 @@ from agentic_runner.credentials import (
     UnresolvableCredentialReferenceError,
 )
 from agentic_runner.egress import (
-    EGRESS_REFUSED_SOURCE,
     EgressProxy,
     Resolver,
     destination_denied,
     host_of,
     url_destination,
 )
+from agentic_runner.guardrails import DirectiveGuardrails
 from agentic_runner.harness_self_test import DirectivesInFlight
 from agentic_runner.heartbeat_link import HeartbeatLink, SeamUnavailableError
 from agentic_runner.hooks import (
@@ -132,11 +132,6 @@ from agentic_runner.mcp import (
 from agentic_runner.message_store import MessageStore, WorkflowSignaller
 from agentic_runner.pool_key import LlmKeyOpener, LlmKeyUnopenableError
 from agentic_runner.registration import RunnerRegistrationError
-from agentic_runner.runner_limit import (
-    EMPTY_RUNNER_LIMIT,
-    RUNNER_LIMIT_EVIDENCE_SOURCE,
-    AppliedRunnerLimit,
-)
 from agentic_runner.runtime import verifier_command
 from agentic_runner.runtime.verifier_command import CommandValidationError
 from agentic_runner.usage_windows import UsageWindows
@@ -275,6 +270,7 @@ from agentic_runner_contracts.grants import (
     CHANNEL_READ_VERB,
     CHANNEL_RESOURCE_TYPE,
     CHANNEL_WRITE_VERB,
+    EMPTY_SNAPSHOT,
     PR_COMMENT_VERB,
     PR_MERGE_VERB,
     PR_OPEN_VERB,
@@ -282,12 +278,16 @@ from agentic_runner_contracts.grants import (
     PUSH_VERB,
     READ_VERB,
     REPO_RESOURCE_TYPE,
-    UNENFORCED_SNAPSHOT,
     Decision,
-    GrantLink,
     GrantSnapshot,
 )
+from agentic_runner_contracts.grants.model import DECISION_RANK
 from agentic_runner_contracts.grants.seam import VerbDecision, decide_verb
+from agentic_runner_contracts.guardrails import (
+    GUARDRAILS_EVIDENCE_SOURCE,
+    GuardrailLimitName,
+    Guardrails,
+)
 from agentic_runner_contracts.llm_access import LlmAccess, LlmAccessKind, provider_for
 from agentic_runner_contracts.llm_key import LlmKeyRelease, LlmKeyReleaseRequest
 from agentic_runner_contracts.questions import WORK_ASK_VERB
@@ -305,12 +305,10 @@ from agentic_runner_contracts.runner_registration import (
     SubscriptionState,
 )
 from agentic_runner_contracts.runtime_context import (
-    EGRESS_ALLOW_LIST_KEY,
     McpServerSpec,
     SkillVersionSpec,
     WorkerRuntimeContext,
     WorkerRuntimeContextResolver,
-    work_branch_name,
 )
 from agentic_runner_contracts.swarm import ROLE_LEAD
 
@@ -646,18 +644,14 @@ class _RuntimeContextState:
     # The Agent's model, which every Directive runs (ADR-0021); None for the Runner's
     # default for `cli_kind`.
     model: str | None = None
-    # The Agent Runtime Profile's per-process memory ceiling (map ticket 17 A7), carried
-    # on the Profile's `command_policy` blob — the sandbox floor already lives there, and
-    # a ceiling is exactly a floor rule. None means the Runner's own default applies.
-    memory_limit_bytes: int | None = None
-    # PRD decision 12: what a runtime asked per command does when the command policy has
-    # no answer. Carried on the same `command_policy` blob as the ceiling above.
-    permission_fallback: PermissionFallback = PermissionFallback.DENY
+    # Spec: Agent Guardrails rev 7: what the Agent may touch on the machine, compiled by
+    # the platform for this Directive. The Runner enforces it and never changes it.
+    guardrails: Guardrails = field(default_factory=Guardrails)
     # Local-agents 18: the Profile-named ACP command, for a kind with no pinned bridge.
     acp_command: tuple[str, ...] = ()
     # Pushed on change and applied on receipt (ADR-0011 §11, PRD issue 44): the evaluator
     # is local, so a narrowing lands on the next verb this state is read for.
-    grant_snapshot: GrantSnapshot = UNENFORCED_SNAPSHOT
+    grant_snapshot: GrantSnapshot = EMPTY_SNAPSHOT
     # The snapshot exactly as the control plane served it. Carried beside the parsed form
     # so a Runner activity can hand the same bytes to the next one through activity I/O
     # (ADR-0013 §3) without re-serialising a parsed model.
@@ -685,9 +679,8 @@ class _RuntimeContextState:
     # Directive boundary like the Grant snapshot beside it.
     credential_references: tuple[str, ...] = ()
     # PRD issue 58: the MCP registry rows bound to the Work Record's Product, decided per
-    # Directive against the Grant, and the Profile's egress allow-list.
+    # Directive against the Grant.
     mcp_servers: tuple[McpServerSpec, ...] = ()
-    egress_allow_list: tuple[str, ...] = ()
     # Console-v2 issue 23: a `report` Work Record's Directives run in an empty directory --
     # no clone, nothing committed or pushed.
     kind: str = KIND_WORK
@@ -727,11 +720,15 @@ class _DirectiveAttempt:
         return tuple(sorted(self.extra_env.items()))
 
 
-def _egress_allow_list(network_policy: Mapping[str, object]) -> tuple[str, ...]:
-    entries = network_policy.get(EGRESS_ALLOW_LIST_KEY)
-    if not isinstance(entries, list):
-        return ()
-    return tuple(str(entry) for entry in entries if str(entry).strip())
+def _directive_guardrails(state: _RuntimeContextState) -> DirectiveGuardrails:
+    return DirectiveGuardrails(state.guardrails, workspace=state.workspace_path or Path.cwd())
+
+
+def _memory_limit_bytes(state: _RuntimeContextState) -> int | None:
+    """The Guardrails' memory limit, or None for the Runner's own default."""
+
+    limit = state.guardrails.limit(GuardrailLimitName.MEMORY_LIMIT_BYTES)
+    return None if limit is None else limit.value
 
 
 def _optional_uuid(value: str | None) -> UUID | None:
@@ -1406,15 +1403,6 @@ class _InPlaceDirective:
     push_when_clean: bool = True
 
 
-def _profile_memory_limit_bytes(command_policy: Mapping[str, object]) -> int | None:
-    """The Agent Runtime Profile's `memory_limit_bytes`, or None for the Runner default."""
-
-    value = command_policy.get("memory_limit_bytes")
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return None
-
-
 def _model_usage_reports(
     cli_kind: str, model_usage: Sequence[ModelUsage]
 ) -> list[tuple[dict[str, Any], str | None]]:
@@ -1455,14 +1443,6 @@ def _model_usage_reports(
         )
         for row in model_usage
     ]
-
-
-def _profile_permission_fallback(command_policy: Mapping[str, object]) -> PermissionFallback:
-    """The Profile's `permission_fallback`; anything but exactly ``hold`` is ``deny``."""
-
-    if command_policy.get("permission_fallback") == PermissionFallback.HOLD.value:
-        return PermissionFallback.HOLD
-    return PermissionFallback.DENY
 
 
 def _contract_workspace_path(
@@ -1735,7 +1715,6 @@ class RunnerRalphActivities:
         attempt_records: AttemptRecords | None = None,
         directives_in_flight: DirectivesInFlight | None = None,
         usage_windows: UsageWindows | None = None,
-        runner_limit: AppliedRunnerLimit | None = None,
         llm_contracts: Callable[[], Sequence[ContractLlmTerms] | None] | None = None,
         llm_keys: LlmKeyOpener | None = None,
         connection_organisation: Callable[[], UUID | None] | None = None,
@@ -1750,9 +1729,6 @@ class RunnerRalphActivities:
         # Opens the pool's LLM Keys with the Pool Key (Spec: Runners rev 3). None, or one
         # holding no Pool Key, fails every `llm_key` Directive closed.
         self._llm_keys = llm_keys
-        # What this Runner's host denies every Agent on it, checked at start (ADR-0022
-        # §52-§55). Empty by default, which narrows nothing.
-        self._runner_limit = runner_limit or EMPTY_RUNNER_LIMIT
         # Read by the harness self-test, which never runs beside a Contract's Directive.
         self._directives_in_flight = directives_in_flight or DirectivesInFlight()
         # Local-agents 10: None off a user-hosted Runner, which reports no usage windows.
@@ -1773,10 +1749,10 @@ class RunnerRalphActivities:
         self._workspace_root = workspace_root
         self._contract_isolation = contract_isolation
         # What this process is, as the control plane registered it (PRD issue 42): its
-        # Runner id, its host party and its config-declared Tags, which the last heartbeat
-        # ack's Tags replace (`_current_routing_identity`). Every activity payload is
-        # checked against it before the body runs, so a stolen or misrouted task costs
-        # no verb. ``None`` in a process that never registered -- it polls no
+        # Runner id, whether a person operates it and its config-declared Tags, which the
+        # last heartbeat ack's Tags replace (`_current_routing_identity`). Every activity
+        # payload is checked against it before the body runs, so a stolen or misrouted
+        # task costs no verb. ``None`` in a process that never registered -- it polls no
         # ``runner.{runner_id}`` queue, so nothing routes to it and there is nothing to
         # assert against; the fail-closed check is on every Runner the router can pick.
         self._routing_identity = routing_identity
@@ -1887,17 +1863,27 @@ class RunnerRalphActivities:
             )
 
     def _current_routing_identity(self) -> RunnerRoutingIdentity | None:
-        """The registered identity, with the Tags the last heartbeat ack carried.
+        """The registered identity, with the Tags and operator the last heartbeat ack carried.
 
         The console edits a Runner's Tags after registration and the control plane routes
         on the edit at once (ADR-0022 §13); checking the bootstrap set instead would
-        refuse work routed on an added Tag on every retry.
+        refuse work routed on an added Tag on every retry. A Runner a person's token
+        registered before Spec: Runners rev 14 has no operator in its state file, and
+        learns it here (QTS-2378).
         """
 
-        acked = self._heartbeat_link.tags if self._heartbeat_link is not None else None
-        if self._routing_identity is None or acked is None:
-            return self._routing_identity
-        return replace(self._routing_identity, tags=acked)
+        identity = self._routing_identity
+        if identity is None or self._heartbeat_link is None:
+            return identity
+        acked = self._heartbeat_link.tags
+        if acked is not None:
+            identity = replace(identity, tags=acked)
+        operated = self._heartbeat_link.operated
+        return identity if operated is None else replace(identity, operated=operated)
+
+    def _operated(self) -> bool | None:
+        identity = self._current_routing_identity()
+        return None if identity is None else identity.operated
 
     async def _assert_connection_serves(
         self, work_record_id: str, contract_id: str | None, *, workspace_path: str = ""
@@ -2259,7 +2245,10 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
-                    permission_fallback=runtime_state.permission_fallback,
+                    permission_fallback=PermissionFallback(
+                        runtime_state.guardrails.permission_fallback
+                    ),
+                    guardrails=runtime_state.guardrails,
                     acp_command=runtime_state.acp_command,
                     model=runtime_state.model or "",
                     prompt=attempt.skills_preamble
@@ -2278,6 +2267,9 @@ class RunnerRalphActivities:
                 )
             )
             await attempt.hooks.phase(HookName.POST_RUNTIME)
+            await self._record_guardrail_refusals(
+                request.work_record_id, runtime_state, codex_result, request.directive_number
+            )
             await self._fastapi_client.append_evidence(
                 request.work_record_id,
                 source="ralph.codex_run",
@@ -2699,7 +2691,7 @@ class RunnerRalphActivities:
         return self._contract_isolation.sandbox(
             state.contract_id,
             runtime_kind=state.cli_kind,
-            memory_limit_bytes=state.memory_limit_bytes,
+            memory_limit_bytes=_memory_limit_bytes(state),
         )
 
     def _contract_sandbox(self, state: _RuntimeContextState) -> DirectiveSandbox | None:
@@ -2715,7 +2707,7 @@ class RunnerRalphActivities:
         return self._contract_isolation.sandbox(
             state.contract_id,
             runtime_kind=state.cli_kind,
-            memory_limit_bytes=state.memory_limit_bytes,
+            memory_limit_bytes=_memory_limit_bytes(state),
         )
 
     @contextlib.asynccontextmanager
@@ -2977,12 +2969,13 @@ class RunnerRalphActivities:
             identifier=",".join(spec.slug for spec in state.mcp_servers),
             resource_type="mcp",
         )
+        directive, *pushed = self._snapshots(state)
         plan = plan_mcp(
-            self._current_snapshot(state),
+            directive,
             state.mcp_servers,
+            narrowed_by=pushed[0] if pushed else None,
             consented=consented,
             declined=declined,
-            runner_limit=self._runner_limit.tools_grant,
         )
         granted = list(plan.granted)
         withheld = list(plan.withheld)
@@ -3037,8 +3030,9 @@ class RunnerRalphActivities:
         proxy variables.
         """
 
-        denied_networks = self._runner_limit.networks
-        needs_token = bool(state.egress_allow_list or denied_networks) or any(
+        guardrails = _directive_guardrails(state)
+        allowed_networks, denied_networks = guardrails.allowed_network, guardrails.denied_network
+        needs_token = bool(allowed_networks or denied_networks) or any(
             spec.credential_reference is not None for spec, _ in plan.granted
         )
         if needs_token and CALLBACK_TOKEN_ENV not in env:
@@ -3072,11 +3066,11 @@ class RunnerRalphActivities:
 
         await self._refuse_denied_destinations(work_record_id, state, entries, env)
         allow_list: tuple[str, ...] = ()
-        if state.egress_allow_list:
+        if allowed_networks:
             allow_list = tuple(
                 dict.fromkeys(
                     (
-                        *state.egress_allow_list,
+                        *allowed_networks,
                         *(
                             host
                             for host in (
@@ -3094,25 +3088,22 @@ class RunnerRalphActivities:
                 )
             )
 
-        if state.egress_allow_list or denied_networks:
+        if allowed_networks or denied_networks:
 
-            async def refused(host: str, port: int, limit_entry: int | None) -> None:
-                payload: dict[str, object] = {"event": "egress.refused", "host": host, "port": port}
-                if limit_entry is not None:
-                    payload.update(
-                        deciding_link=GrantLink.RUNNER_LIMIT.value,
-                        entry=f"networks[{limit_entry}]",
-                    )
+            async def refused(host: str, port: int, _denied_by: int | None) -> None:
+                refusal = guardrails.network_refusal(host, port)
                 await self._fastapi_client.append_evidence(
-                    work_record_id, source=EGRESS_REFUSED_SOURCE, payload=payload
+                    work_record_id,
+                    source=GUARDRAILS_EVIDENCE_SOURCE,
+                    payload=refusal.evidence(host=host, port=port, cli_kind=state.cli_kind),
                 )
 
-            # No Profile allow-list leaves the proxy only the Runner Limit to refuse with:
-            # `allow_list` stays empty, so a runtime that opens the network on a Profile
-            # list (Codex) keeps it shut exactly as before.
+            # No allow-list leaves the proxy only the removed destinations to refuse with:
+            # `allow_list` stays empty, so a runtime that opens the network on a list
+            # (Codex) keeps it shut exactly as before.
             proxy = await stack.enter_async_context(
                 EgressProxy(
-                    allow_list if state.egress_allow_list else None,
+                    allow_list if allowed_networks else None,
                     token=env[CALLBACK_TOKEN_ENV],
                     deny_list=denied_networks,
                     resolver=self._egress_resolver,
@@ -3133,6 +3124,25 @@ class RunnerRalphActivities:
             )
         return (tuple(entries) if state.mcp_servers else None), allow_list
 
+    async def _record_guardrail_refusals(
+        self,
+        work_record_id: str,
+        state: _RuntimeContextState,
+        result: DirectiveResult,
+        directive_number: int,
+    ) -> None:
+        """One Evidence Event per thing the Directive's Guardrails refused during its turn,
+        naming the layer that refused it (Spec: Agent Guardrails rev 7)."""
+
+        for refusal in result.guardrail_refusals:
+            await self._fastapi_client.append_evidence(
+                work_record_id,
+                source=GUARDRAILS_EVIDENCE_SOURCE,
+                payload=refusal.evidence(
+                    cli_kind=state.cli_kind, directive_number=directive_number
+                ),
+            )
+
     async def _refuse_denied_destinations(
         self,
         work_record_id: str,
@@ -3140,14 +3150,15 @@ class RunnerRalphActivities:
         entries: Sequence[McpServerEntry],
         env: Mapping[str, str],
     ) -> None:
-        """Fail the Directive at its start when something it needs is denied (§54).
+        """Fail the Directive at its start when something it needs is a removed destination.
 
-        The git remote, each granted MCP server's URL and each LLM endpoint: denied, the
+        The git remote, each granted MCP server's URL and each LLM endpoint: refused, the
         Directive could only fail half-way, so it fails now, non-retryably, naming the
-        entry by its position and the destination it needed.
+        layer that removed it and the destination it needed.
         """
 
-        if not self._runner_limit.networks:
+        guardrails = _directive_guardrails(state)
+        if not guardrails.denied_network:
             return
         needed = [
             ("git remote", _github_remote_url(state.repository)),
@@ -3158,27 +3169,21 @@ class RunnerRalphActivities:
             destination = url_destination(url)
             if destination is None:
                 continue
-            index = destination_denied(self._runner_limit.networks, *destination)
-            if index is None:
+            if destination_denied(guardrails.denied_network, *destination) is None:
                 continue
+            refusal = guardrails.network_refusal(*destination)
             await _raise_recorded(
                 ApplicationError(
-                    f"this Runner's Runner Limit networks[{index}] denies {destination[0]}, "
-                    f"which this Directive's {needed_for} needs",
+                    f"{refusal.summary}, which this Directive's {needed_for} needs",
                     non_retryable=True,
                 ),
                 self._fastapi_client,
                 work_record_id,
-                source=RUNNER_LIMIT_EVIDENCE_SOURCE,
+                source=GUARDRAILS_EVIDENCE_SOURCE,
                 actor=self._actor(),
-                payload={
-                    "event": "runner_limit.destination_denied",
-                    "deciding_link": GrantLink.RUNNER_LIMIT.value,
-                    "entry": f"networks[{index}]",
-                    "host": destination[0],
-                    "port": destination[1],
-                    "needed_for": needed_for,
-                },
+                payload=refusal.evidence(
+                    host=destination[0], port=destination[1], needed_for=needed_for
+                ),
             )
 
     async def _resolve_credentials(
@@ -3221,7 +3226,7 @@ class RunnerRalphActivities:
         the Runner runs on exactly that, or refuses and never falls back to other access.
         None, from a control plane below contracts 3.25, keeps the Runner's own choice.
 
-        Decided from what this process can check -- the host party it was registered with,
+        Decided from what this process can check -- whether a person operates it,
         whether a key is present for the Contract, whether the Contract runs under its own
         uid here and whether its harness root holds a login (QTS-1450) -- never from the
         payload. A runtime that declares no modes (a test double built before the port
@@ -3231,13 +3236,13 @@ class RunnerRalphActivities:
         """
 
         runtime = self._agent_runtimes.get(state.cli_kind)
-        host_party = self._routing_identity.host_party if self._routing_identity else None
+        operated = self._operated()
         contract_uid = self._runs_under_contract_uid(state)
         try:
             if access is not None:
                 return require_named_access(
                     access,
-                    host_party=host_party,
+                    operated=operated,
                     host_key_held=self._host_key_held(state),
                     subscription=self._subscription_state(state),
                     subscription_right=self._subscription_right(state),
@@ -3245,7 +3250,7 @@ class RunnerRalphActivities:
                     pool_key_held=self._llm_keys is not None and self._llm_keys.holds_pool_key,
                 )
             return choose_auth_mode(
-                host_party=host_party,
+                operated=operated,
                 key_present=self._api_key_present(state, runtime),
                 runtime_modes=getattr(runtime, "auth_modes", frozenset({AuthMode.API_KEY})),
                 contract_uid=contract_uid,
@@ -3330,9 +3335,7 @@ class RunnerRalphActivities:
                 ),
                 "rule": refusal.rule,
                 "cli_kind": state.cli_kind,
-                "host_party": (
-                    self._routing_identity.host_party if self._routing_identity else None
-                ),
+                "operated": self._operated(),
                 "contract_id": state.contract_id,
                 **({} if access is None else {"llm_access": access.kind}),
             },
@@ -3361,11 +3364,11 @@ class RunnerRalphActivities:
         )
 
     def _personal_runner(self) -> bool:
-        """Hosted by its person. Only such a Runner spends its store's key on a Directive
+        """Operated by its person. Only such a Runner spends its store's key on a Directive
         that names no access (a control plane below 3.25): a pool Runner's key never
         reached the proxy before, and that control plane caps none of its spend."""
 
-        return self._routing_identity is not None and self._routing_identity.host_party == "user"
+        return self._operated() is True
 
     def _host_key_held(self, state: _RuntimeContextState) -> bool:
         provider = provider_for(state.cli_kind)
@@ -3415,10 +3418,10 @@ class RunnerRalphActivities:
         can see and act on.
         """
 
-        host_party = self._routing_identity.host_party if self._routing_identity else None
+        operated = self._operated()
         if (
             self._contract_isolation is None
-            or not is_shared_runner(host_party)
+            or not is_shared_runner(operated)
             or self._runs_under_contract_uid(state)
             or state.contract_id in self._residue_checked
         ):
@@ -3434,7 +3437,7 @@ class RunnerRalphActivities:
             payload={
                 "event": "harness.login_residue",
                 "contract_id": state.contract_id,
-                "host_party": host_party,
+                "operated": operated,
                 "login_files": counts,
             },
         )
@@ -3806,7 +3809,7 @@ class RunnerRalphActivities:
         itself, which the evaluator refuses as out of scope -- and records so.
         """
 
-        selector = self._current_snapshot(state).channel_selector(channel_id)
+        selector = state.grant_snapshot.channel_selector(channel_id)
         try:
             return await self._evaluate_verb(
                 work_record_id,
@@ -3824,7 +3827,6 @@ class RunnerRalphActivities:
                 reason=error.reason,
                 agent_id=state.agent_id,
                 contract_state=state.grant_snapshot.contract_state,
-                enforced=True,
             )
 
     async def _verify_hook(
@@ -3885,12 +3887,12 @@ class RunnerRalphActivities:
         re-assembles on any Runner, and a retry on a fresh pod behaves like a first
         attempt instead of quietly losing state a dictionary was holding.
 
-        The Grant snapshot is the one thing that no longer arrives either way when this
-        Runner has a heartbeat stream (PRD issue 44): the control plane pushes it on
-        change and the link holds the current one per Agent and Contract, read under the
-        Contract this context names for the Work Record (QTS-1706), so narrowing bites at
-        the next *verb* rather than the next Directive. ``grant_snapshot`` carried on the
-        input is the link-less host's source and is ignored wherever a link is attached.
+        The Grant snapshot comes two ways (Spec: Agent Guardrails rev 7, A3): the
+        Directive's own, on the input, and the current Effective Grant the heartbeat pushes
+        per Agent and Contract (PRD issue 44, QTS-1706). This state holds the Directive's
+        -- the link's, at this boundary, where the input carries none -- and every verb is
+        decided on the narrower of it and whatever was pushed since, so a narrowing bites at
+        the next *verb* and a widening waits for the next Directive.
         """
 
         runtime_context = await self._runtime_context_resolver.resolve(
@@ -3906,32 +3908,26 @@ class RunnerRalphActivities:
                 contract_id=runtime_context.contract_id,
                 work_record_id=work_record_id,
             )
-        snapshot_payload = (
-            self._heartbeat_link.payload_for(runtime_context.agent_id, runtime_context.contract_id)
-            if self._heartbeat_link is not None
-            else dict(grant_snapshot or {})
-        )
+        snapshot_payload = dict(grant_snapshot or {})
+        if not snapshot_payload and self._heartbeat_link is not None:
+            snapshot_payload = self._heartbeat_link.payload_for(
+                runtime_context.agent_id, runtime_context.contract_id
+            )
         snapshot = (
-            GrantSnapshot.from_payload(snapshot_payload)
-            if snapshot_payload
-            else UNENFORCED_SNAPSHOT
+            GrantSnapshot.from_payload(snapshot_payload) if snapshot_payload else EMPTY_SNAPSHOT
         )
         return _RuntimeContextState(
             reviewer=runtime_context.reviewer,
             repository=runtime_context.repo,
             verifier_argv=_runtime_verifier_argv(runtime_context),
-            work_branch=work_branch_name(
-                work_record_id=runtime_context.work_record_id,
-                profile_slug=runtime_context.profile_slug,
-            ),
+            work_branch=runtime_context.work_branch,
             completion_criteria=runtime_context.completion_criteria,
             base_branch=runtime_context.base_branch,
             agent_id=runtime_context.agent_id,
             contract_id=runtime_context.contract_id,
             cli_kind=runtime_context.cli_kind,
             model=runtime_context.model,
-            memory_limit_bytes=_profile_memory_limit_bytes(runtime_context.command_policy),
-            permission_fallback=_profile_permission_fallback(runtime_context.command_policy),
+            guardrails=runtime_context.guardrails,
             acp_command=tuple(runtime_context.acp_command or ()),
             grant_snapshot=snapshot,
             grant_snapshot_payload=snapshot_payload,
@@ -3951,7 +3947,6 @@ class RunnerRalphActivities:
             tier_within_contract_ceiling=runtime_context.tier_within_contract_ceiling,
             credential_references=tuple(runtime_context.credential_references),
             mcp_servers=tuple(runtime_context.mcp_servers),
-            egress_allow_list=_egress_allow_list(runtime_context.network_policy),
             kind=runtime_context.kind,
         )
 
@@ -3998,7 +3993,6 @@ class RunnerRalphActivities:
                 ),
                 agent_id=request.agent_id or None,
                 contract_state="active",
-                enforced=True,
             )
         )
 
@@ -4052,7 +4046,6 @@ class RunnerRalphActivities:
                 reason=reason,
                 agent_id=request.agent_id or None,
                 contract_state="active",
-                enforced=True,
             )
         )
 
@@ -4145,15 +4138,17 @@ class RunnerRalphActivities:
         await self._require_live_link(
             work_record_id, state, verb=verb, identifier=identifier, resource_type=resource_type
         )
-        snapshot = self._current_snapshot(state)
-        decision = decide_verb(
-            snapshot,
-            verb=verb,
-            identifier=identifier,
-            resource_type=resource_type,
-            runner_limit=self._runner_limit.tools_grant,
-        )
+        snapshots = self._snapshots(state)
+        decisions = [
+            decide_verb(snapshot, verb=verb, identifier=identifier, resource_type=resource_type)
+            for snapshot in snapshots
+        ]
+        # The first most restrictive: the Directive's own wins a tie.
+        decision = min(decisions, key=lambda each: DECISION_RANK[each.decision])
+        snapshot = snapshots[decisions.index(decision)]
         evidence = decision.evidence()
+        if snapshot is not state.grant_snapshot:
+            evidence["decided_on"] = "heartbeat"
         refusal = (
             None
             if decision.decision is Decision.DENY or resource_type != REPO_RESOURCE_TYPE
@@ -4369,22 +4364,25 @@ class RunnerRalphActivities:
             product_id=product_id,
         )
 
-    def _current_snapshot(self, state: _RuntimeContextState) -> GrantSnapshot:
-        """The snapshot to decide *this* verb on, not the one the activity started with.
+    def _snapshots(self, state: _RuntimeContextState) -> tuple[GrantSnapshot, ...]:
+        """The snapshots *this* verb is decided on: the Directive's, then the pushed one.
 
         ``state.grant_snapshot`` is materialised once per activity, but a push -- including
         the one the wake-forced exchange in ``_require_live_link`` just applied -- replaces
         what the link holds mid-Directive. Reading through the link here is what makes a
-        narrowing bite at the next verb rather than the next activity (PRD issue 44); a
-        link-less host has only what came in on the input, which is what it falls back to.
+        narrowing bite at the next verb rather than the next activity (PRD issue 44). The
+        Runner never widens a Grant (A3), so a push decides only where it is narrower: the
+        caller keeps the most restrictive answer of the two.
         """
 
-        if self._heartbeat_link is None:
-            return state.grant_snapshot
-        return (
-            self._heartbeat_link.snapshot_for(state.agent_id, state.contract_id)
-            or state.grant_snapshot
+        pushed = (
+            None
+            if self._heartbeat_link is None
+            else self._heartbeat_link.snapshot_for(state.agent_id, state.contract_id)
         )
+        if pushed is None or pushed is state.grant_snapshot:
+            return (state.grant_snapshot,)
+        return (state.grant_snapshot, pushed)
 
     async def _require_live_link(
         self,
@@ -4424,7 +4422,6 @@ class RunnerRalphActivities:
                     "reason": error.reason,
                     "detail": str(error),
                     "contract_state": state.grant_snapshot.contract_state,
-                    "enforced": True,
                 },
             )
             raise
@@ -4766,7 +4763,10 @@ class RunnerRalphActivities:
         return tuple(retargeted)
 
     def _required_human_approvals(self, state: _RuntimeContextState, *, repository: str) -> int:
-        return self._current_snapshot(state).required_human_approvals(identifier=repository)
+        return max(
+            snapshot.required_human_approvals(identifier=repository)
+            for snapshot in self._snapshots(state)
+        )
 
     async def _count_human_approvals(self, request: PullRequestMergeInput) -> int:
         """Distinct org humans whose approval stands on the head about to be merged.
@@ -5422,7 +5422,8 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
-                    permission_fallback=state.permission_fallback,
+                    permission_fallback=PermissionFallback(state.guardrails.permission_fallback),
+                    guardrails=state.guardrails,
                     acp_command=state.acp_command,
                     model=state.model or "",
                     prompt=attempt.skills_preamble
@@ -5436,6 +5437,9 @@ class RunnerRalphActivities:
                 )
             )
             await attempt.hooks.phase(HookName.POST_RUNTIME)
+            await self._record_guardrail_refusals(
+                request.work_record_id, state, result, request.directive_number
+            )
             lessons = _read_lessons(output_path)
             output_path.unlink(missing_ok=True)
             await self._report_harness_usage(
@@ -5616,7 +5620,7 @@ class RunnerRalphActivities:
             # Directives bites at this Directive's first verb (ADR-0011 §11). The
             # snapshot on the input is what a link-less host has (until issue 46 that is
             # every host in production), so it must be passed on or the Directive falls
-            # back to UNENFORCED_SNAPSHOT and runs unattenuated.
+            # back to EMPTY_SNAPSHOT and every verb is refused.
             state = await self._runtime_state(
                 request.work_record_id,
                 workspace_path=request.workspace_path,
@@ -5690,7 +5694,8 @@ class RunnerRalphActivities:
                     mcp_servers=attempt.mcp_servers,
                     egress_allow_list=attempt.egress_allow_list,
                     auth_mode=attempt.auth_mode,
-                    permission_fallback=state.permission_fallback,
+                    permission_fallback=PermissionFallback(state.guardrails.permission_fallback),
+                    guardrails=state.guardrails,
                     acp_command=state.acp_command,
                     model=state.model or "",
                     prompt=attempt.skills_preamble + await kind.prompt(state, prompt_notes),
@@ -5699,6 +5704,9 @@ class RunnerRalphActivities:
                 )
             )
             await attempt.hooks.phase(HookName.POST_RUNTIME)
+            await self._record_guardrail_refusals(
+                request.work_record_id, state, codex_result, request.directive_number
+            )
             await self._fastapi_client.append_evidence(
                 request.work_record_id,
                 source=kind.run_source,

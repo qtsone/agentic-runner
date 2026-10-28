@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from test_claude_subscription_directives import _allowing_snapshot
 
 from agentic_runner.activities import RunnerRalphActivities
 from agentic_runner.callback import CALLBACK_SOCKET_ENV, CALLBACK_TOKEN_ENV
@@ -41,7 +42,7 @@ from agentic_runner_contracts.runtime_context import work_branch_name
 WORK_RECORD_ID = "123e4567-e89b-12d3-a456-426614174000"
 REPOSITORY = "qts/agentic-os"
 APPROVED_HEAD_SHA = "a" * 40
-WORK_BRANCH = work_branch_name(work_record_id=WORK_RECORD_ID, profile_slug="engineer")
+WORK_BRANCH = work_branch_name(work_record_id=WORK_RECORD_ID, slug="engineer")
 
 # Every Directive slot except `checkout`, which is an override and is installed only by
 # the test that means to override (map ticket 26 §1).
@@ -65,7 +66,7 @@ class _FakeClient:
     async def get_runtime_context(self, work_record_id: str) -> dict[str, Any]:
         return {
             "work_record_id": WORK_RECORD_ID,
-            "profile_slug": "engineer",
+            "work_branch": f"agent/{WORK_RECORD_ID}-engineer",
             "cli_kind": "codex_cli",
             "repo": REPOSITORY,
             "base_branch": "main",
@@ -75,8 +76,7 @@ class _FakeClient:
             "persona_instructions": "",
             "task_queue": "ralph-pr-loop",
             "worker_secret_refs": [],
-            "command_policy": {},
-            "network_policy": {},
+            "guardrails": {},
             "product_verifier_command_source": {
                 "source": "runtime-profile",
                 "available": True,
@@ -204,6 +204,7 @@ def _branch_pr_input() -> BranchPullRequestInput:
         branch_name=WORK_BRANCH,
         pr_title="Add a Production section",
         pr_body="body",
+        grant_snapshot=_allowing_snapshot(REPOSITORY),
     )
 
 

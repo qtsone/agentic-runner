@@ -88,7 +88,7 @@ class _Vendor:
 def _sign_in(
     person: _Person,
     *,
-    host_party: str | None = "user",
+    operated: bool | None = True,
     right: SubscriptionRight | None = SubscriptionRight.ALLOWED,
     served: tuple[str, ...] = BOTH,
     store: FakeCredentialStore | None = None,
@@ -97,7 +97,7 @@ def _sign_in(
     store = store if store is not None else FakeCredentialStore()
     vendor = vendor or _Vendor()
     command = SignIn(
-        host_party=host_party,
+        operated=operated,
         contracts=(
             None if right is None else [ContractLlmTerms(contract_id=CONTRACT, subscription=right)]
         ),
@@ -225,10 +225,10 @@ async def test_a_skipped_runtime_changes_nothing() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("host_party", ["organisation", "account", None])
-async def test_a_pool_runner_refuses_before_asking_anything(host_party: str | None) -> None:
+@pytest.mark.parametrize("operated", [False, None])
+async def test_a_pool_runner_refuses_before_asking_anything(operated: bool | None) -> None:
     person = _Person(answers=[])
-    command, store, vendor = _sign_in(person, host_party=host_party)
+    command, store, vendor = _sign_in(person, operated=operated)
 
     assert await command.run("claude") == 1
 
@@ -255,7 +255,6 @@ OWN = ContractLlmTerms(
 def _logged_in(person: _Person, contracts: list[ContractLlmTerms]) -> tuple[SignIn, _Vendor]:
     vendor = _Vendor()
     command = SignIn(
-        host_party=None,
         operated=True,
         contracts=contracts,
         served=BOTH,
@@ -371,7 +370,7 @@ def runner_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return state_dir
 
 
-def _registered(state_dir: Path, host_party: str) -> None:
+def _registered(state_dir: Path, *, operated: bool) -> None:
     save_state(
         state_dir,
         RunnerState(
@@ -380,7 +379,7 @@ def _registered(state_dir: Path, host_party: str) -> None:
             private_key_pem="unused",
             temporal_namespace="org-x",
             task_queue="runner.x",
-            host_party=host_party,
+            operator_user_profile_id=uuid4() if operated else None,
         ),
     )
 
@@ -390,7 +389,7 @@ def _registered(state_dir: Path, host_party: str) -> None:
 async def test_the_command_signs_in_the_contract_the_last_ack_named(
     runner_env: Path, monkeypatch: pytest.MonkeyPatch, which: str, cli_kind: str
 ) -> None:
-    _registered(runner_env, "user")
+    _registered(runner_env, operated=True)
     save_llm_contracts(
         runner_env,
         [ContractLlmTerms(contract_id=CONTRACT, subscription=SubscriptionRight.ALLOWED)],
@@ -417,18 +416,18 @@ async def test_the_command_signs_in_the_contract_the_last_ack_named(
 async def test_the_command_refuses_on_a_registered_pool_runner(
     runner_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _registered(runner_env, "organisation")
+    _registered(runner_env, operated=False)
     monkeypatch.setattr("builtins.input", _no_prompt)
 
     assert await service.sign_in("claude", store=FakeCredentialStore()) == 1
-    assert "hosted by 'organisation'" in capsys.readouterr().err
+    assert "the Organisation's own" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
 async def test_an_environment_without_a_callback_url_is_refused_naming_the_field(
     runner_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _registered(runner_env, "user")
+    _registered(runner_env, operated=True)
     save_llm_contracts(
         runner_env,
         [ContractLlmTerms(contract_id=CONTRACT, subscription=SubscriptionRight.ALLOWED)],
@@ -452,7 +451,7 @@ async def test_a_key_typed_into_sign_in_reaches_the_proxy_and_the_next_heartbeat
     store, the running Runner reads it by the provider's key name, probes it, serves it
     from its proxy, and reports it -- held, with its probe, never its value."""
 
-    _registered(runner_env, "user")
+    _registered(runner_env, operated=True)
     config = RunnerConfig(state_dir=runner_env)
     monkeypatch.setattr("builtins.input", lambda _prompt: "k")
     monkeypatch.setattr(service.getpass, "getpass", lambda _prompt: "sk-ant-api03-typed")
@@ -492,7 +491,7 @@ async def test_a_key_typed_into_sign_in_reaches_the_proxy_and_the_next_heartbeat
             private_key_pem="unused",
             temporal_namespace="org-x",
             task_queue=f"runner.{runner_id}",
-            host_party="user",
+            operator_user_profile_id=uuid4(),
         ),
         isolation=IsolationMode.NONE,
         proxy=LlmProxy(

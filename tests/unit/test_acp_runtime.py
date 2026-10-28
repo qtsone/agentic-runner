@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from agentic_runner.activities import _model_usage_reports, _profile_permission_fallback
+from agentic_runner.activities import _model_usage_reports
 from agentic_runner.service import (
     build_agent_runtimes,
     with_acp_bridges,
@@ -910,21 +910,6 @@ def test_model_usage_reports_in_the_shapes_the_usage_route_prices() -> None:
             }
         },
     }
-
-
-@pytest.mark.parametrize(
-    ("command_policy", "expected"),
-    [
-        ({}, PermissionFallback.DENY),
-        ({"permission_fallback": "deny"}, PermissionFallback.DENY),
-        ({"permission_fallback": "hold"}, PermissionFallback.HOLD),
-        ({"permission_fallback": "allow"}, PermissionFallback.DENY),
-    ],
-)
-def test_permission_fallback_is_read_off_the_profiles_command_policy(
-    command_policy: dict[str, object], expected: PermissionFallback
-) -> None:
-    assert _profile_permission_fallback(command_policy) == expected
 
 
 def test_acp_cli_kinds_picks_the_bridge_per_kind(tmp_path: Path) -> None:

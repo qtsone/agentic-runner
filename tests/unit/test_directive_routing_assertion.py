@@ -33,7 +33,6 @@ from agentic_runner_contracts.routing import (
 
 IDENTITY = RunnerRoutingIdentity(
     runner_id="11111111-1111-4111-8111-111111111111",
-    host_party="organisation",
     tags={"region": "eu-west-1", "gpu": "h100"},
 )
 
@@ -41,7 +40,6 @@ IDENTITY = RunnerRoutingIdentity(
 def _routing(**overrides: Any) -> DirectiveRouting:
     fields: dict[str, Any] = {
         "runner_id": IDENTITY.runner_id,
-        "host_party": "organisation",
         "selector": {"region": "eu-west-1"},
         "contract_id": "contract-7",
     }
@@ -62,7 +60,6 @@ def test_the_routed_runner_accepts_its_own_payload() -> None:
     [
         (None, "routing_absent"),
         (_routing(runner_id="22222222-2222-4222-8222-222222222222"), "runner_mismatch"),
-        (_routing(host_party="user"), "host_party_mismatch"),
         (_routing(selector={"zone": "trusted"}), "selector_unsatisfied"),
         (
             _routing(
@@ -117,8 +114,8 @@ def test_the_directive_input_carries_the_llm_access_it_was_routed_with() -> None
 
 
 def test_a_directive_input_from_a_323_control_plane_still_decodes() -> None:
-    """No `llm_access`, and the retired `funding_party`: the Runner keeps its own choice
-    of access, and drops the key its dataclass no longer has."""
+    """No `llm_access`, and the retired `funding_party` and `host_party` (QTS-2378): the
+    Runner keeps its own choice of access, and drops the keys its dataclass no longer has."""
 
     decoded = _fix_directive_input(
         {"runner_id": IDENTITY.runner_id, "host_party": "organisation", "funding_party": "user"}
@@ -148,8 +145,8 @@ class _RecordingClient:
 @pytest.mark.parametrize(
     ("routing", "reason"),
     [
-        (_routing(host_party="user"), "host_party_mismatch"),
         (_routing(selector={"zone": "trusted"}), "selector_unsatisfied"),
+        (_routing(runner_id="22222222-2222-4222-8222-222222222222"), "runner_mismatch"),
     ],
 )
 async def test_a_misrouted_directive_is_refused_with_evidence_before_the_body_runs(

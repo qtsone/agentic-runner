@@ -3,7 +3,7 @@
 Matching is **control-plane-side** (map ticket 25 §9; Buildkite matches server-side too,
 26 §3): a platform activity picks the Runner and the workflow dispatches to
 ``runner.{runner_id}``. What travels from there is the decision itself -- the selector it
-was matched on and the Contract's host party -- so the Runner can assert the same facts
+was matched on -- so the Runner can assert the same facts
 before it acts (25 §9, 17 A3). That assertion is why this module lives in the *contracts*
 distribution rather than in the platform: a stolen or misrouted task has to fail on the
 Runner with the same vocabulary the router used, and a Runner cannot import the
@@ -13,16 +13,12 @@ Stdlib only, like :mod:`agentic_runner_contracts.activity_io`: ``DirectiveRoutin
 every Runner activity payload, so this module is imported into Temporal's determinism
 sandbox with the workflow.
 
-Three rules the shapes here carry:
+Two rules the shapes here carry:
 
 * **A selector is Kubernetes' ``matchExpressions``, never globs** (ADR-0022 §22, 25 §9):
   requirements over exact values, all of which must hold. A glob would make "which Runners
   can see this Contract's workspace" a pattern-matching question, and an operator-typed
   pattern is exactly the free text ADR-0010 §6 keeps out of routing.
-* **Host party is a routing rule, never a tag** (17 A3). It is fixed at registration from
-  the Runner Registration Token used, so it cannot be declared in config next to the tags;
-  keeping it a separate field is what stops a contractor's laptop tagging itself into another
-  contractor's work.
 * **No credential is ever in here.** The Directive's own control-plane token is pulled by
   id over the heartbeat stream (25 §11), so nothing credential-shaped enters Temporal
   history; ``tests/unit/test_directive_routing_assertion.py`` is the structural gate.
@@ -162,14 +158,12 @@ class DirectiveRouting:
     """The routing decision one Directive was dispatched by, carried in its payload.
 
     Present on every Runner activity input so the Runner can fail closed before any verb
-    (25 §9): it re-checks the selector against its own Tags and the host party against
-    its own registration, and refuses with Evidence when either disagrees. The Runner is
-    told what it was matched *on*, never trusted to decide it.
+    (25 §9): it re-checks the selector against its own Tags, and refuses with Evidence
+    when they disagree. The Runner is told what it was matched *on*, never trusted to
+    decide it.
     """
 
     runner_id: str
-    # `organisation` | `account` | `user` -- the Contract's ``runner_host`` (17 A3).
-    host_party: str
     # The legacy ``{key: value}`` selector. Kept beside ``requirements`` rather than
     # replaced so a Runner one minor behind, which reads only this field, still decodes
     # the payload during its `warn` window (ADR-0013 §7). Remove at the next major.
@@ -202,8 +196,10 @@ class RunnerRoutingIdentity:
     """
 
     runner_id: str
-    host_party: str
     tags: dict[str, str] = field(default_factory=dict)
+    # Spec: Runners rev 14: a person operates this Runner (`agentic-runner login`); False
+    # for an Organisation's own. What a subscription is decided on (QTS-2378).
+    operated: bool = False
 
 
 class RoutingRefusedError(RuntimeError):
@@ -233,12 +229,6 @@ def assert_routed(routing: DirectiveRouting | None, identity: RunnerRoutingIdent
         raise RoutingRefusedError(
             "runner_mismatch",
             f"payload was routed to Runner {routing.runner_id}, not to {identity.runner_id}",
-        )
-    if routing.host_party != identity.host_party:
-        raise RoutingRefusedError(
-            "host_party_mismatch",
-            f"Contract requires a Runner hosted by {routing.host_party!r}; this Runner is "
-            f"hosted by {identity.host_party!r}",
         )
     selector = routing.selector_requirements()
     if not selector_satisfied(selector, identity.tags):

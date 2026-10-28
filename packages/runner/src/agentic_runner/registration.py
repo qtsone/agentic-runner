@@ -30,7 +30,7 @@ from uuid import UUID
 import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from agentic_runner import __version__ as runner_version
 from agentic_runner.build import build_id
@@ -60,7 +60,6 @@ from agentic_runner_contracts.runner_registration import (
     IsolationMode,
     RecipientKey,
     RunnerConnection,
-    RunnerLimitReport,
 )
 from agentic_runner_contracts.runner_signature import (
     RUNNER_ID_HEADER,
@@ -122,6 +121,16 @@ class RunnerState(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_host_party(cls, data: Any) -> Any:
+        # A state file written before contracts 4.0 carries the host party the control
+        # plane registered it as (QTS-2378). The operator replaced it; a Runner must not
+        # refuse to start on its own file.
+        if isinstance(data, dict) and "host_party" in data:
+            return {key: value for key, value in data.items() if key != "host_party"}
+        return data
+
     runner_id: UUID
     identity_id: str
     private_key_pem: str
@@ -129,12 +138,8 @@ class RunnerState(BaseModel):
     # `login` made, which learns every namespace from its ack's connections (rev 14).
     temporal_namespace: str = ""
     task_queue: str
-    # What this Runner asserts every Directive's routing against (PRD issue 42): the host
-    # party the control plane registered it as, and the Tags it registered with. Both
-    # default so a state file written before issue 42 still loads -- such a process makes
-    # no routing assertion until it re-bootstraps, which is the introduce-before-require
-    # posture every other seam here takes.
-    host_party: str = ""
+    # What this Runner asserts every Directive's routing against (PRD issue 42): the Tags
+    # it registered with.
     tags: dict[str, str] = {}
     max_concurrent_directives: int = 1
     # The control plane's cadence, as bootstrap told it (06 §4's 30 s by default); a
@@ -279,7 +284,6 @@ class RunnerRegistrationClient:
         recipient_key: RecipientKey,
         max_concurrent_directives: int = 1,
         can_separate_uids: bool,
-        runner_limit: RunnerLimitReport | None = None,
     ) -> tuple[RunnerState, BootstrapResponse]:
         """Exchange the Runner Registration Token for this process's durable identity."""
 
@@ -293,7 +297,6 @@ class RunnerRegistrationClient:
             recipient_key=recipient_key,
             max_concurrent_directives=max_concurrent_directives,
             build_id=build_id(),
-            runner_limit=runner_limit,
         )
         payload = await self._post(BOOTSTRAP_PATH, content=request.model_dump_json(), headers={})
         response = BootstrapResponse.model_validate(payload)
@@ -301,7 +304,6 @@ class RunnerRegistrationClient:
             **response.identity.model_dump(),
             temporal_namespace=response.temporal_namespace,
             task_queue=response.task_queue,
-            host_party=response.host_party,
             tags=dict(tags),
             max_concurrent_directives=max_concurrent_directives,
             heartbeat_interval_seconds=response.heartbeat_interval_seconds,

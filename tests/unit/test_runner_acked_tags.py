@@ -28,12 +28,9 @@ from agentic_runner_contracts.routing import (
 from agentic_runner_contracts.runner_registration import FloorState, HeartbeatAck
 
 RUNNER_ID = "11111111-1111-4111-8111-111111111111"
-BOOTSTRAPPED = RunnerRoutingIdentity(
-    runner_id=RUNNER_ID, host_party="organisation", tags={"region": "eu"}
-)
+BOOTSTRAPPED = RunnerRoutingIdentity(runner_id=RUNNER_ID, tags={"region": "eu"})
 ON_A100 = DirectiveRouting(
     runner_id=RUNNER_ID,
-    host_party="organisation",
     requirements=(SelectorRequirement(key="gpu", operator=SelectorOperator.IN, values=("a100",)),),
 )
 
@@ -101,7 +98,7 @@ def test_a_directive_routed_on_an_added_tag_holds_against_the_acked_tags() -> No
     with pytest.raises(RoutingRefusedError):
         assert_routed(ON_A100, BOOTSTRAPPED)
 
-    assert_routed(ON_A100, RunnerRoutingIdentity(RUNNER_ID, "organisation", {"gpu": "a100"}))
+    assert_routed(ON_A100, RunnerRoutingIdentity(RUNNER_ID, {"gpu": "a100"}))
 
 
 # ------------------------------------------------------------------ the Runner
@@ -136,3 +133,21 @@ async def test_a_removed_tag_is_dropped_and_an_ack_without_tags_keeps_the_last_s
     await link.exchange()
     with pytest.raises(RoutingRefusedError, match="selector"):
         await activities._assert_routed(_directive())
+
+
+@pytest.mark.asyncio
+async def test_a_runner_with_no_operator_in_its_state_learns_it_from_the_ack() -> None:
+    """QTS-2378: a Runner a person's token registered before Spec: Runners rev 14 kept only
+    its retired host party; the ack names its operator, and subscriptions follow it."""
+
+    ack = _ack(None).model_copy(update={"connections": [], "operator_user_profile_id": UUID(int=7)})
+    link = HeartbeatLink(_Stream(ack))
+    activities = RunnerRalphActivities(
+        _NoEvidence(), routing_identity=BOOTSTRAPPED, heartbeat_link=link
+    )
+    assert activities._operated() is False
+
+    await link.exchange()
+
+    assert link.operated is True
+    assert activities._operated() is True

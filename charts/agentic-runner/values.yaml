@@ -61,24 +61,10 @@ tags: {}
 isolation: contract_uid
 maxConcurrentDirectives: 1
 # What this Runner reports it can reach: unrestricted | allowlisted | blocked | unenforced
-# (06 §4). `allowlisted` is the claim that a Directive under a Profile egress allow-list
+# (06 §4). `allowlisted` is the claim that a Directive under a Guardrails network allow-list
 # reaches nothing else: the Runner hands it an allow-listing proxy (PRD issue 58), and the
 # claim holds only if the namespace's NetworkPolicy also stops what ignores the proxy.
 egressPosture: unrestricted
-
-# The Runner Limit (ADR-0022 §52-§58): what every Agent on these Runners may not use, on
-# top of the Grants, the Profile's network policy and the command policy. Three deny-lists,
-# each empty by default; empty limits nothing. Read at start, so a change rolls the pods,
-# and a value the Runner cannot apply stops it starting (see docs/helm.md).
-limits: {}
-#  tools:                     # Grant entries with `deny` only
-#    - resource_type: repo
-#      selector: "acme/*"
-#      verbs: {"pr.merge": deny}
-#  networks:                  # network_policy destinations: host, host:port, *.domain
-#    - pastebin.com
-#  folders:                   # absolute paths on the node, never one holding the Workspaces
-#    - /mnt/shared-cache
 
 # Runner Hooks (PRD issue 45): catalogue-named scripts, mounted 0755. Keys are the hook
 # names, values the script bodies.

@@ -19,7 +19,6 @@ def main() -> None:
     parser.add_argument("port", type=int, nargs="?", default=8000)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--namespace", default=DEFAULT_NAMESPACE)
-    parser.add_argument("--host-party", default="organisation")
     parser.add_argument(
         "--deliver",
         action="append",
@@ -32,7 +31,6 @@ def main() -> None:
 
     plane = FakeControlPlane(
         namespace=arguments.namespace,
-        host_party=arguments.host_party,
         confirm_logins=arguments.confirm_logins,
     )
     for delivery in arguments.deliver:

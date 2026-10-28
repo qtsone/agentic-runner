@@ -113,7 +113,7 @@ async def test_a_directive_dispatched_to_the_runner_queue_comes_back_answered(
         contract_id = str(plane.contract_id)
         request = ContractResidueInput(
             contract_id=contract_id,
-            routing=DirectiveRouting(runner_id=str(runner_id), host_party=plane.host_party),
+            routing=DirectiveRouting(runner_id=str(runner_id)),
         )
 
         # The workflow is this suite's, not the platform's; the kit's own modules pass
@@ -140,10 +140,10 @@ async def test_a_directive_dispatched_to_the_runner_queue_comes_back_answered(
     assert answer.workspaces_wiped == 0
 
 
-async def _round_trip(client: Client, runner_id: Any, host_party: str, contract_id: str) -> str:
+async def _round_trip(client: Client, runner_id: Any, contract_id: str) -> str:
     request = ContractResidueInput(
         contract_id=contract_id,
-        routing=DirectiveRouting(runner_id=str(runner_id), host_party=host_party),
+        routing=DirectiveRouting(runner_id=str(runner_id)),
     )
     async with Worker(
         client,
@@ -207,13 +207,11 @@ async def test_a_persons_runner_answers_in_each_organisation_it_is_connected_to(
         in_other = await Client.connect(target, namespace=other)
 
         acme_contract = str(plane.contract_for(acme))
-        await _round_trip(temporal.client, state.runner_id, plane.host_party, acme_contract)
-        await _round_trip(
-            in_other, state.runner_id, plane.host_party, str(plane.contract_for(globex))
-        )
+        await _round_trip(temporal.client, state.runner_id, acme_contract)
+        await _round_trip(in_other, state.runner_id, str(plane.contract_for(globex)))
         # Delivered in Globex's namespace, Acme's Contract is refused, not served.
         with pytest.raises(WorkflowFailureError) as refused:
-            await _round_trip(in_other, state.runner_id, plane.host_party, acme_contract)
+            await _round_trip(in_other, state.runner_id, acme_contract)
         assert isinstance(refused.value.cause, ActivityError)
         assert isinstance(refused.value.cause.cause, ApplicationError)
         assert refused.value.cause.cause.type == "contract_of_another_organisation"

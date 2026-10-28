@@ -20,10 +20,11 @@ import pytest
 from agentic_runner import service
 from agentic_runner.activities import RunnerRalphActivities, _RuntimeContextState
 from agentic_runner.callback import CALLBACK_TOKEN_ENV
-from agentic_runner.egress import EGRESS_REFUSED_SOURCE, destination_allowed
+from agentic_runner.egress import destination_allowed
 from agentic_runner.mcp import McpPlan
 from agentic_runner.workers._runtime_support import apply_extra_env
 from agentic_runner.workstation import RunnerPaths, WorkstationSettings, run_environment
+from agentic_runner_contracts.guardrails import GUARDRAILS_EVIDENCE_SOURCE, Guardrails
 from agentic_runner_contracts.runner_registration import EgressPosture, InstallChannel
 
 LISTED = "api.listed.example"
@@ -94,7 +95,7 @@ async def test_a_directive_under_a_profile_allow_list_cannot_reach_an_unlisted_h
         work_branch="agent/work",
         completion_criteria="do the work",
         contract_id="contract-1",
-        egress_allow_list=(LISTED,),
+        guardrails=Guardrails(network=(LISTED,)),
     )
     env = {CALLBACK_TOKEN_ENV: "attempt-bearer"}
     try:
@@ -122,9 +123,9 @@ async def test_a_directive_under_a_profile_allow_list_cannot_reach_an_unlisted_h
 
     assert reached == "listed-origin"
     assert blocked == "refused 403"
-    assert (EGRESS_REFUSED_SOURCE, {"event": "egress.refused", "host": PLANTED, "port": 80}) in (
-        client.appended
-    )
+    [(source, refusal)] = client.appended
+    assert source == GUARDRAILS_EVIDENCE_SOURCE
+    assert (refusal["host"], refusal["port"], refusal["layer"]) == (PLANTED, 80, "organisation")
 
 
 @pytest.mark.asyncio
@@ -137,7 +138,7 @@ async def test_the_proxy_refuses_a_caller_without_the_attempt_bearer() -> None:
         verifier_argv=("true",),
         work_branch="agent/work",
         completion_criteria="do the work",
-        egress_allow_list=(LISTED,),
+        guardrails=Guardrails(network=(LISTED,)),
     )
     env: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:

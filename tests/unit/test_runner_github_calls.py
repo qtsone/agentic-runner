@@ -238,7 +238,9 @@ async def test_a_misrouted_call_is_refused_before_github_is_touched(name: str) -
     github = _RaisingGitHubClient()
     activities = _activities(
         github,
-        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, host_party="organisation"),
+        routing_identity=RunnerRoutingIdentity(
+            runner_id=RUNNER_ID,
+        ),
     )
     activities._fastapi_client = _RecordingEvidence()  # type: ignore[assignment]
 
@@ -254,13 +256,13 @@ async def test_a_routed_probe_reaches_github() -> None:
     github.record_repository(repo=REPOSITORY)
     activities = _activities(
         github,
-        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, host_party="organisation"),
+        routing_identity=RunnerRoutingIdentity(
+            runner_id=RUNNER_ID,
+        ),
     )
 
     output = await activities.probe_repository_access(
-        RepositoryProbeInput(
-            REPOSITORY, routing=DirectiveRouting(runner_id=RUNNER_ID, host_party="organisation")
-        )
+        RepositoryProbeInput(REPOSITORY, routing=DirectiveRouting(runner_id=RUNNER_ID))
     )
 
     assert output.failure is None

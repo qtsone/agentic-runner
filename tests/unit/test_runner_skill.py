@@ -148,7 +148,7 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     (bin_dir / "claude").write_text("#!/bin/sh\necho '2.1.279 (Claude Code)'\n")
     (bin_dir / "claude").chmod(0o755)
     # The skill passes no Temporal address: the Runner takes it from here (QTS-1540).
-    plane = FakeControlPlane(host_party="user", temporal_address="temporal-grpc.test:443")
+    plane = FakeControlPlane(bootstraps_operated=True, temporal_address="temporal-grpc.test:443")
     real_install = workstation.install
 
     async def install_against_the_fake(*args: Any, **kwargs: Any) -> list[str]:
@@ -174,7 +174,7 @@ async def test_the_skills_commands_in_order_leave_a_runner_registered_and_heartb
     assert await asyncio.to_thread(cli.main, install) == 0
     monkeypatch.delenv(cli.AGENT_TOKEN_ENV)
     # The person answers `sign-in` at its own prompts: an API key, typed without echo. The
-    # fake control plane registered this Runner as the person's own (`host_party="user"`).
+    # fake control plane registered this Runner as the person's own (`bootstraps_operated`).
     # `sign-in` takes on the Runner's environment; registered here so teardown restores it.
     for name in workstation.run_environment(paths, workstation.WorkstationSettings.load(paths)):
         monkeypatch.setenv(name, os.environ.get(name, ""))

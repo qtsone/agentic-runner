@@ -157,7 +157,6 @@ def _decode(payload: object) -> DirectiveRouting:
 def test_routing_carries_requirements_over_the_wire() -> None:
     routing = DirectiveRouting(
         runner_id="r-1",
-        host_party="organisation",
         requirements=(_req("product", IN, "a", "b"), _req("zone", DOES_NOT_EXIST)),
     )
 
@@ -176,7 +175,6 @@ def test_a_routing_payload_from_before_requirements_still_decodes() -> None:
 def test_routing_is_matched_on_its_legacy_map_and_its_requirements_together() -> None:
     routing = DirectiveRouting(
         runner_id="r-1",
-        host_party="organisation",
         selector={"gpu": PRESENT},
         requirements=(_req("product", NOT_IN, "c"),),
     )

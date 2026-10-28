@@ -37,23 +37,11 @@ class Decision(StrEnum):
 
 
 class GrantLink(StrEnum):
-    """Which link of the chain a Grant is, which fixes the decisions it may carry.
+    """Which link of the chain a Grant is, which fixes the decisions it may carry."""
 
-    ``ACCOUNT_CONTRACT`` is the parent root of a Leaf Contract (PRD issue 34, map ticket
-    21 A5): the same ``allow | deny`` shape as ``ROOT``, and stored on the Account
-    Contract's own ``root_grant`` column -- there is no fourth Grant column anywhere, only
-    a fourth term in the intersection.
-
-    ``RUNNER_LIMIT`` is the tools part of the Runner's own Runner Limit (ADR-0022 §53): a
-    deny-list its host sets in config, so ``deny`` is the only decision it carries. It is
-    not stored by the platform; the Runner passes it to the evaluator from its config.
-    """
-
-    ACCOUNT_CONTRACT = "account_contract"
     ROOT = "root"
     AGENT = "agent"
     PERSONA = "persona"
-    RUNNER_LIMIT = "runner_limit"
 
 
 # Ordered by how much they permit. Intersection is the minimum, so ``deny`` anywhere in the
@@ -65,11 +53,9 @@ DECISION_RANK: Final[dict[Decision, int]] = {
 }
 
 _DECISIONS_BY_LINK: Final[dict[GrantLink, frozenset[Decision]]] = {
-    GrantLink.ACCOUNT_CONTRACT: frozenset({Decision.ALLOW, Decision.DENY}),
     GrantLink.ROOT: frozenset({Decision.ALLOW, Decision.DENY}),
     GrantLink.AGENT: frozenset({Decision.ALLOW, Decision.CONFIRM, Decision.DENY}),
     GrantLink.PERSONA: frozenset({Decision.ALLOW, Decision.DENY}),
-    GrantLink.RUNNER_LIMIT: frozenset({Decision.DENY}),
 }
 
 

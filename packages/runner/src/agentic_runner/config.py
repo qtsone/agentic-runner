@@ -12,31 +12,50 @@ namespace and task queues are delivered at bootstrap and never typed. ``WorkerSe
 remains the pod's env-only surface for the Temporal/FastAPI wiring; this is the surface a
 workstation Runner (PRD issue 47) and the Helm chart (issue 46) actually fill.
 
-``limits`` is the Runner Limit (ADR-0022 §57): a ``[limits]`` table in the file, or JSON in
-``AGENTIC_RUNNER_LIMITS`` (what the chart's ``limits`` value renders to). One that is present
-but does not parse raises here, and the Runner refuses to start: never an empty limit in
-its place, which would let the host believe a limit holds that does not.
+The Runner Limit (a ``[limits]`` table, or ``AGENTIC_RUNNER_LIMITS``) is gone: what an
+Agent may touch on this machine is the Runner layer of its Guardrails, set in the console
+(Spec: Agent Guardrails rev 7). One left behind is ignored with one warning, so the host
+learns it no longer binds rather than believing it does.
 """
 
 from __future__ import annotations
 
-import json
+import functools
+import logging
 import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict
 
-from agentic_runner.runner_limit import expand_home
-from agentic_runner_contracts.runner_limit import RunnerLimit
-
-__all__ = ["CONFIG_FILE_ENV", "DEFAULT_CONFIG_FILE", "ENV_PREFIX", "RunnerConfig", "load"]
+__all__ = [
+    "CONFIG_FILE_ENV",
+    "DEFAULT_CONFIG_FILE",
+    "ENV_PREFIX",
+    "RETIRED_LIMITS_WARNING",
+    "RunnerConfig",
+    "load",
+]
 
 ENV_PREFIX: Final[str] = "AGENTIC_RUNNER_"
 CONFIG_FILE_ENV: Final[str] = f"{ENV_PREFIX}CONFIG"
 DEFAULT_CONFIG_FILE: Final[Path] = Path("/etc/agentic-runner/config.toml")
+_RETIRED_LIMITS_KEY: Final[str] = "limits"
+RETIRED_LIMITS_WARNING: Final[str] = (
+    "ignoring the Runner Limit (`[limits]` / AGENTIC_RUNNER_LIMITS): it no longer binds. "
+    "Set what Agents on this Runner may not touch as the Runner's Guardrails in the console"
+)
+
+_logger = logging.getLogger(__name__)
+
+
+# Once per process: a bare `run` on a workstation loads the config twice (the state dir,
+# then the start), and the spec allows one warning.
+@functools.cache
+def warn_retired_limits() -> None:
+    _logger.warning(RETIRED_LIMITS_WARNING)
 
 
 class RunnerConfig(BaseModel):
@@ -66,21 +85,6 @@ class RunnerConfig(BaseModel):
     openai_base_url: str | None = None
     anthropic_base_url: str | None = None
     log_level: str = "info"
-    # What this Runner's host denies every Agent on it (ADR-0022 §52); empty narrows nothing.
-    limits: RunnerLimit = Field(default_factory=RunnerLimit)
-
-    @field_validator("limits", mode="before")
-    @classmethod
-    def _expand_folder_homes(cls, value: object) -> object:
-        # A folder entry must be absolute (the contracts model), and `~/clients` is what a
-        # person writes: expanded here, against the Runner's own home, before that check.
-        if isinstance(value, Mapping) and isinstance(value.get("folders"), list | tuple):
-            folders = [
-                expand_home(folder) if isinstance(folder, str) else folder
-                for folder in value["folders"]
-            ]
-            return {**value, "folders": folders}
-        return value
 
 
 def load(
@@ -98,7 +102,11 @@ def load(
 
     env = os.environ if environ is None else environ
     path = config_file or _path_from_env(env) or DEFAULT_CONFIG_FILE
-    values: dict[str, Any] = _from_file(path)
+    loaded = _read_file(path)
+    if _RETIRED_LIMITS_KEY in loaded or env.get(f"{ENV_PREFIX}LIMITS", "").strip():
+        warn_retired_limits()
+    known = set(RunnerConfig.model_fields)
+    values: dict[str, Any] = {key: value for key, value in loaded.items() if key in known}
     values.update(_from_env(env))
     values.update({name: value for name, value in flags.items() if value is not None})
     return RunnerConfig(**values)
@@ -109,8 +117,8 @@ def _path_from_env(env: Mapping[str, str]) -> Path | None:
     return Path(raw) if raw else None
 
 
-def _from_file(path: Path) -> dict[str, Any]:
-    """The config file's keys, ignoring any this release does not know.
+def _read_file(path: Path) -> dict[str, Any]:
+    """The config file's keys; :func:`load` keeps the ones this release knows.
 
     Unknown keys are dropped rather than refused: a file is shared across a fleet an
     operator upgrades one Runner at a time, and a key added for a newer Runner must not
@@ -121,20 +129,12 @@ def _from_file(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     with path.open("rb") as handle:
-        loaded = tomllib.load(handle)
-    known = set(RunnerConfig.model_fields)
-    return {key: value for key, value in loaded.items() if key in known}
+        return tomllib.load(handle)
 
 
 def _from_env(env: Mapping[str, str]) -> dict[str, Any]:
-    values: dict[str, Any] = {
+    return {
         field: env[f"{ENV_PREFIX}{field.upper()}"]
         for field in RunnerConfig.model_fields
         if env.get(f"{ENV_PREFIX}{field.upper()}", "").strip()
     }
-    if "limits" in values:
-        try:
-            values["limits"] = json.loads(values["limits"])
-        except ValueError as error:
-            raise ValueError(f"{ENV_PREFIX}LIMITS is not JSON: {error}") from None
-    return values
