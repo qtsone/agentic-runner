@@ -116,6 +116,7 @@ from agentic_runner_contracts.runtime_context import (
     work_branch_name,
 )
 from agentic_runner_contracts.sealed_credential import SealedCredential, delivery_binding
+from agentic_runner_contracts.user_key import SealedUserKey, enrolment_binding
 
 __all__ = [
     "DEFAULT_AGENT_ID",
@@ -215,6 +216,7 @@ class _PendingLogin:
     user_code: str
     confirmed: bool = False
     expired: bool = False
+    user_key: SealedUserKey | None = None
 
 
 @dataclass
@@ -279,11 +281,36 @@ class FakeControlPlane:
         with self._lock:
             self._registered[runner_id].revoked = True
 
-    def confirm_login(self, user_code: str) -> None:
-        """The person confirms ``user_code`` in the browser."""
+    def confirm_login(
+        self, user_code: str, *, user_key: tuple[str, str, str] | None = None
+    ) -> None:
+        """The person confirms ``user_code`` in the browser.
+
+        ``user_key`` is their User Key as ``(private, public, fingerprint)``: the browser
+        seals it to the Runner's Recipient Key, as the console does with the passkey
+        (Spec: Agent Guardrails rev 7, S5).
+        """
 
         with self._lock:
-            next(p for p in self._logins.values() if p.user_code == user_code).confirmed = True
+            pending = next(p for p in self._logins.values() if p.user_code == user_code)
+            pending.confirmed = True
+            if user_key is not None:
+                private, public, fingerprint = user_key
+                recipient = pending.request.recipient_key
+                pending.user_key = SealedUserKey(
+                    public_key=public,
+                    fingerprint=fingerprint,
+                    recipient_key_id=recipient.key_id,
+                    sealed_private=seal(
+                        public_key=recipient.public_key,
+                        binding=enrolment_binding(
+                            user_profile_id=str(self.operator),
+                            user_key_fingerprint=fingerprint,
+                            recipient_key_id=recipient.key_id,
+                        ),
+                        plaintext=private,
+                    ),
+                )
 
     def expire_logins(self) -> None:
         """Every code still waiting runs out, as one does after ``expires_in``."""
@@ -688,6 +715,7 @@ class FakeControlPlane:
             contracts_floor=self.contracts_floor,
             heartbeat_interval_seconds=self.heartbeat_interval_seconds,
             temporal_address=self.temporal_address,
+            user_key=pending.user_key,
         )
         return _Answer(200, response.model_dump(mode="json"))
 

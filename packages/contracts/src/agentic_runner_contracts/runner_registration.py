@@ -980,6 +980,11 @@ class HeartbeatEnvelope(BaseModel):
     # holds none. Sent only once an ack carried `pool`, which a control plane on 3.26 or
     # later sends; an older one refuses the field.
     pool_key_fingerprint: Fingerprint | None = None
+    # Spec: Agent Guardrails rev 7, S6: the fingerprint of the operator's User Key this
+    # Runner holds, None when it holds none. Only a control plane on 4.3 or later hands a
+    # User Key out at `login`, so a Runner that has one to report talks to one that parses
+    # it.
+    user_key_fingerprint: Fingerprint | None = None
 
     @model_serializer(mode="wrap")
     def _omit_empty_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -997,7 +1002,13 @@ class HeartbeatEnvelope(BaseModel):
                 if not body.get(name):
                     body.pop(name, None)
             # An empty report is still sent: it says the Runner holds no LLM access.
-            for name in ("llm_access", "install", "pool_key_fingerprint", "guardrails_posture"):
+            for name in (
+                "llm_access",
+                "install",
+                "pool_key_fingerprint",
+                "user_key_fingerprint",
+                "guardrails_posture",
+            ):
                 if body.get(name) is None:
                     body.pop(name, None)
         return body

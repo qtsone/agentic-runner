@@ -136,6 +136,13 @@ from agentic_runner.usage_windows import (
     UsageWindowProbe,
     UsageWindows,
 )
+from agentic_runner.user_key import (
+    USER_KEY_FILENAME,
+    UserKeyError,
+    load_user_key,
+    open_user_key,
+    save_user_key,
+)
 from agentic_runner.user_sources import ProxyTriage, UserSourcePoller
 from agentic_runner.workers.acp_runtime import ACP_BRIDGES, AcpRuntime, profile_acp_executables
 from agentic_runner.workers.agent_runtime import AgentRuntime
@@ -284,6 +291,7 @@ _PRIVATE_STATE_FILES = (
     UID_MAP_FILENAME,
     LLM_CONTRACTS_FILENAME,
     POOL_KEY_FILENAME,
+    USER_KEY_FILENAME,
 )
 
 
@@ -438,7 +446,7 @@ async def login(
             f"{state_dir} already holds Runner {existing.runner_id}; `connect` it to an "
             "Organisation, or log in under another name",
         )
-    recipient, _ = recipient_key(state_dir)
+    recipient, recipient_fingerprint = recipient_key(state_dir)
     registration = RunnerRegistrationClient(base_url=control_plane, client=client)
     tags = parse_tags(os.environ.get(TAGS_ENV, ""))
     max_concurrent = _max_concurrent_directives()
@@ -458,6 +466,9 @@ async def login(
         authorization.verification_uri_complete or authorization.verification_uri, control_plane
     )
     say(f"code           {_printable(authorization.user_code)}")
+    # The console shows the key it seals the User Key to beside the code: the person
+    # compares the two (Spec: Agent Guardrails rev 7, S5).
+    say(f"runner key     {recipient_fingerprint}")
     say(f"confirm at     {page}")
     open_browser(page)
     interval = float(authorization.interval)
@@ -486,6 +497,22 @@ async def login(
         temporal_address=response.temporal_address,
     )
     save_state(state_dir, state)
+    if response.user_key is not None:
+        # The Runner is made and its identity saved: a User Key that does not open here
+        # leaves it logged in without one, opening none of the person's Secrets, rather
+        # than half made.
+        try:
+            save_user_key(
+                state_dir,
+                open_user_key(
+                    response.user_key,
+                    user_profile_id=str(response.operator_user_profile_id),
+                    recipient_keys=RecipientKeyStore(state_dir),
+                ),
+            )
+            say(f"user key       {response.user_key.fingerprint}")
+        except UserKeyError as error:
+            say(f"user key       not kept: {error}; your own Secrets do not open here")
     return state, (
         f"logged in {response.name} ({state.runner_id}); connect it to an Organisation with "
         "`agentic-runner connect`"
@@ -1051,6 +1078,9 @@ class ControlPlaneStream:
     # none. Reported only once an ack named the pool (`_pool`), which a control plane on
     # 3.26 or later does.
     pool_key_fingerprint: str | None = None
+    # Spec: Agent Guardrails rev 7, S6: the fingerprint of the operator's User Key `login`
+    # handed this Runner; None when it holds none.
+    user_key_fingerprint: str | None = None
     # Console-v2 issue 30: the OAuth Connectors whose code, tokens and verifier stay here.
     oauth: OAuthConnectors | None = None
     # ADR-0022 §58: how far this host binds each part of the Guardrails, on every beat.
@@ -1277,6 +1307,7 @@ class ControlPlaneStream:
             llm_access=self._llm_access_report(),
             install=self._install_report(),
             pool_key_fingerprint=self.pool_key_fingerprint if self._pool is not None else None,
+            user_key_fingerprint=self.user_key_fingerprint,
         )
         ack = await self.client.heartbeat(self.state, envelope)
         if self.sources is not None:
@@ -1883,7 +1914,16 @@ async def _serve_registered(
             if url
         }
     )
-    llm_keys = LlmKeyOpener(pool_key=pool_key, recipient_keys=recipient_keys, endpoints=llm_slots)
+    try:
+        user_key = load_user_key(state_dir)
+    except UserKeyError as error:
+        # Started without it: routing then sends this Runner none of the person's Secrets,
+        # and everything else it serves still runs.
+        _logger.warning("the User Key in %s is unreadable (%s); ignoring it", state_dir, error)
+        user_key = None
+    llm_keys = LlmKeyOpener(
+        pool_key=pool_key, recipient_keys=recipient_keys, endpoints=llm_slots, user_key=user_key
+    )
     stream = ControlPlaneStream(
         client=RunnerRegistrationClient(base_url=control_plane, client=http_client),
         state=state,
@@ -1907,6 +1947,7 @@ async def _serve_registered(
         install=install,
         state_dir=state_dir,
         pool_key_fingerprint=llm_keys.fingerprint,
+        user_key_fingerprint=llm_keys.user_key_fingerprint,
     )
     triage = ProxyTriage(
         proxy=proxy,

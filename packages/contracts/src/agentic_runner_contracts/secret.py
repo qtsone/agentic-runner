@@ -1,12 +1,12 @@
 """Secrets: the two shares, their bindings and the release (Spec: Agent Guardrails rev 7, S3-S4).
 
-A Secret is a named value stored once at one scope -- the Organisation's or a Product's
-in this release -- and never readable back. It generalises the pool's LLM Key
+A Secret is a named value stored once at one scope (:class:`SecretScope`) and never
+readable back. It generalises the pool's LLM Key
 (:mod:`.llm_key`): the browser where the value is typed splits it into two shares, the
 value XOR a random share, seals the random one to a **holder key** and sends the control
 plane the other, which the control plane encrypts with its own platform key. The holder
 key of an Organisation or Product secret is the **Organisation Key** (the Pool Key of
-Spec: Runners, same key); a member's own secrets will seal to their User Key.
+Spec: Runners, same key); a member's own secrets seal to their **User Key**.
 
 At Directive start the Runner asks for the secrets the work needs that it does not hold
 on its own host (A2: a value the host installed under the same name still counts). The
@@ -68,10 +68,16 @@ class HolderKind(StrEnum):
 
 
 class SecretScope(StrEnum):
-    """Where a secret is set. The more specific scope wins for one name (S1)."""
+    """Where a secret is set. The more specific scope wins for one name (S1): a Runner's,
+    then an Agent's, then a member's for a Product, then a Product's, then the
+    Organisation's. The last two are an Admin's and sealed to the Organisation Key; the
+    first three are a member's own and sealed to their User Key (:mod:`.user_key`)."""
 
     ORGANISATION = "organisation"
     PRODUCT = "product"
+    MEMBER_PRODUCT = "member_product"
+    AGENT = "agent"
+    RUNNER = "runner"
 
 
 def holder_share_binding(
