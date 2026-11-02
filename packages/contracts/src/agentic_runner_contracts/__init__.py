@@ -204,6 +204,12 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # 4.5 reseals only to a User Key whose tag verifies under its Organisation Key, so the
 # control plane hands reseals only to a Runner on 4.5; a 4.4 body has no tag and is
 # refused, and no refusal is reported to a control plane that sent no member.
+# 4.6.0 (QTS-2701, Spec: Agent Guardrails rev 12, S5, S7): marked Secrets.
+# `secret_availability` -- the availability tag and
+# `fixtures/secret-availability.fixture.json`; `HolderReseal.availability_tag`. Additive.
+# A Runner on 4.6 reseals only a Secret whose tag verifies under its Organisation Key, so
+# the control plane hands reseals only to a Runner on 4.6; a 4.5 body has no tag and is
+# refused, logged only.
 __version__ = "4.5.0"
 
 __all__ = ["__version__"]

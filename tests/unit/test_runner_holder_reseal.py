@@ -14,6 +14,10 @@ Organisation Key), ``fixtures/user-key.fixture.json`` (a member's User Key) and
 * a reseal with no approval tag, or a tag for another member, Organisation or fingerprint,
   or one keyed by anything but the Organisation Key, is refused and its key reported
   unapproved, once; one naming no member (a 4.4 control plane) is refused unreported;
+* a reseal with no availability tag (QTS-2701, rev 12, S5), or one for another Secret or
+  Organisation, keyed by anything but the Organisation Key, or an approval tag in its
+  place, is refused unreported even though the member is approved
+  (``fixtures/secret-availability.fixture.json``);
 * the ack's reseals are answered on the next envelope, once, and an envelope with none
   says nothing, so an older control plane still parses it.
 """
@@ -53,6 +57,7 @@ from agentic_runner_contracts.secret import (
     UnapprovedUserKey,
     holder_share_binding,
 )
+from agentic_runner_contracts.secret_availability import availability_tag
 from agentic_runner_contracts.user_key_approval import approval_tag
 
 
@@ -64,6 +69,7 @@ def _fixture(name: str) -> dict[str, Any]:
 SECRET = _fixture("secret")
 USER_KEY = _fixture("user-key")
 APPROVAL = _fixture("user-key-approval")
+AVAILABILITY = _fixture("secret-availability")
 UNAPPROVED = UnapprovedUserKey(
     organisation_id=SECRET["organisation_id"],
     user_id=USER_KEY["user_profile_id"],
@@ -81,6 +87,7 @@ def _reseal(**overrides: str | None) -> HolderReseal:
             "user_key_public_key": USER_KEY["user_key_public"],
             "user_id": USER_KEY["user_profile_id"],
             "approval_tag": APPROVAL["approval_tag"],
+            "availability_tag": AVAILABILITY["availability_tag"],
             **overrides,
         }
     )
@@ -159,8 +166,19 @@ def test_the_organisation_runner_reseals_a_share_the_members_runner_opens(
     "overrides",
     [
         pytest.param({"holder_fingerprint": ":".join(["0000"] * 8)}, id="another-organisation-key"),
-        pytest.param({"secret_id": str(uuid4())}, id="bound-to-another-secret"),
-        # Approved there, so the share's own binding is what refuses it.
+        # Marked there, so the share's own binding is what refuses it.
+        pytest.param(
+            {
+                "secret_id": (other_secret := str(uuid4())),
+                "availability_tag": availability_tag(
+                    organisation_key_private=SECRET["organisation_key_private"],
+                    organisation_id=SECRET["organisation_id"],
+                    secret_id=other_secret,
+                ),
+            },
+            id="bound-to-another-secret",
+        ),
+        # Approved and marked there, so the share's own binding is what refuses it.
         pytest.param(
             {
                 "organisation_id": (other := str(uuid4())),
@@ -169,6 +187,11 @@ def test_the_organisation_runner_reseals_a_share_the_members_runner_opens(
                     organisation_id=other,
                     user_id=USER_KEY["user_profile_id"],
                     user_key_fingerprint=USER_KEY["user_key_fingerprint"],
+                ),
+                "availability_tag": availability_tag(
+                    organisation_key_private=SECRET["organisation_key_private"],
+                    organisation_id=other,
+                    secret_id=SECRET["secret_id"],
                 ),
             },
             id="bound-to-another-organisation",
@@ -198,12 +221,39 @@ def test_a_user_key_with_no_valid_approval_is_refused_and_reported(
     tmp_path: Path, tag: str | None
 ) -> None:
     outcome = _organisation_runner(tmp_path).reseal(
-        [_reseal(approval_tag=tag), _reseal(approval_tag=tag, secret_id=str(uuid4()))]
+        [_reseal(approval_tag=tag), _reseal(approval_tag=tag)]
     )
 
     assert outcome.resealed == []
     # One report per key, not per Secret, naming the tag refused.
     assert outcome.unapproved == [UNAPPROVED.model_copy(update={"approval_tag": tag})]
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        pytest.param(None, id="no-tag"),
+        *(
+            pytest.param(refused["availability_tag"], id=refused["why"].replace(" ", "-"))
+            for refused in AVAILABILITY["refused"]
+        ),
+    ],
+)
+def test_a_secret_with_no_valid_availability_tag_is_refused_and_not_reported(
+    tmp_path: Path, tag: str | None
+) -> None:
+    # The member is approved; the Secret is what an Admin never marked here.
+    outcome = _organisation_runner(tmp_path).reseal([_reseal(availability_tag=tag)])
+
+    assert outcome == ResealOutcome()
+
+
+def test_a_valid_availability_tag_does_not_carry_to_another_secret(tmp_path: Path) -> None:
+    # The control plane keeps a marked Secret's tag and hands it with another Secret's
+    # share: the tag is checked on the Secret the share is bound to.
+    outcome = _organisation_runner(tmp_path).reseal([_reseal(secret_id=str(uuid4()))])
+
+    assert outcome == ResealOutcome()
 
 
 def test_a_valid_tag_does_not_approve_another_members_key(tmp_path: Path) -> None:
