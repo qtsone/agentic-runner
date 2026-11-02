@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [4.1.0](https://github.com/qtsone/agentic-runner/compare/v4.0.0...v4.1.0) (2026-11-02)
+
+
+### Features
+
+* **contracts:** release Organisation and Product Secrets to a Runner at Directive start (QTS-2477) ([#92](https://github.com/qtsone/agentic-runner/issues/92)) ([76ccdc5](https://github.com/qtsone/agentic-runner/commit/76ccdc5974137fb37907fcf9292489926b6d503d))
+
 # [4.0.0](https://github.com/qtsone/agentic-runner/compare/v3.34.0...v4.0.0) (2026-10-28)
 
 
