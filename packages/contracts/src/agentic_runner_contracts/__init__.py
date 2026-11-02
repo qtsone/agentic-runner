@@ -185,6 +185,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # no existing body changes. A Runner on 4.1 asks for the Secrets a Directive needs and its
 # host does not hold; an older one never asks, so the control plane counts no Secret as
 # openable on it when it routes.
-__version__ = "4.1.0"
+__version__ = "4.2.0"
 
 __all__ = ["__version__"]

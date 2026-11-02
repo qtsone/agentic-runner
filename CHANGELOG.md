@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [4.2.0](https://github.com/qtsone/agentic-runner/compare/v4.1.0...v4.2.0) (2026-11-02)
+
+
+### Features
+
+* **workstation:** uninstall one Runner from a workstation (QTS-2687) ([#97](https://github.com/qtsone/agentic-runner/issues/97)) ([a68100c](https://github.com/qtsone/agentic-runner/commit/a68100ca6bc5e15ae457dd76e494409cb76a5b0c))
+
 # [4.1.0](https://github.com/qtsone/agentic-runner/compare/v4.0.0...v4.1.0) (2026-11-02)
 
 
