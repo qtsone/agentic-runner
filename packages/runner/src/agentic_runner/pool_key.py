@@ -253,6 +253,11 @@ class LlmKeyOpener:
         verify under this Runner's Organisation Key is refused and its key reported
         unapproved; one with no member at all comes from a control plane on 4.4, which
         would not parse the report, so it is only logged.
+
+        Only a Secret an Admin marked (rev 12, S5): which Secrets are "Also members'
+        Runners" is the control plane's word too, so a reseal whose availability tag does
+        not verify under this Runner's Organisation Key is refused before the member's
+        approval is looked at, and only logged: the member may well be approved.
         """
 
         if self._pool_key is None:
@@ -262,6 +267,11 @@ class LlmKeyOpener:
             if item.holder_fingerprint != self._pool_key.fingerprint:
                 _logger.warning(
                     "Secret %s is sealed to another Organisation Key; not resealed", item.secret_id
+                )
+                continue
+            if not item.available(self._pool_key.private_key):
+                _logger.warning(
+                    "Secret %s has no valid availability tag here; not resealed", item.secret_id
                 )
                 continue
             if not item.approved(self._pool_key.private_key):

@@ -66,14 +66,20 @@ def _private_half(organisation_key_private: str) -> bytes:
     return raw
 
 
-def approval_key(organisation_key_private: str) -> bytes:
-    """HKDF-SHA256 (RFC 5869) of the Organisation Key's private half, one 32-byte block.
+def organisation_key_hmac_key(organisation_key_private: str, domain: str) -> bytes:
+    """HKDF-SHA256 (RFC 5869) of the Organisation Key's private half, one 32-byte block,
+    with ``domain`` as HKDF's info, so each kind of tag keyed from it has its own key
+    (:mod:`.secret_availability` too).
 
     An empty salt is HMAC's all-zero key, which is what WebCrypto's HKDF uses too.
     """
 
     prk = hmac.new(b"", _private_half(organisation_key_private), hashlib.sha256).digest()
-    return hmac.new(prk, APPROVAL_DOMAIN.encode("utf-8") + b"\x01", hashlib.sha256).digest()
+    return hmac.new(prk, domain.encode("utf-8") + b"\x01", hashlib.sha256).digest()
+
+
+def approval_key(organisation_key_private: str) -> bytes:
+    return organisation_key_hmac_key(organisation_key_private, APPROVAL_DOMAIN)
 
 
 def approval_message(*, organisation_id: str, user_id: str, user_key_fingerprint: str) -> bytes:
