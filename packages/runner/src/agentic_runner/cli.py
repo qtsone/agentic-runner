@@ -11,10 +11,11 @@ namespace and queue this process was assigned. It is idempotent by state file --
 restart re-reads what is already there rather than registering a second Runner against
 the Organisation's cap.
 
-``install | start | stop | restart | status <name>``, ``credential set`` and ``list`` are the
-workstation Runner (PRD issue 47, ``workstation.py``): one login agent per Runner, managed
-by the user who hosts it, with no ``sudo`` anywhere. ``<name>`` is the Runner's, the one the
-console lists it under (QTS-1773); a machine with one Runner needs none (QTS-1774).
+``install | start | stop | restart | uninstall | status <name>``, ``credential set`` and
+``list`` are the workstation Runner (PRD issue 47, ``workstation.py``): one login agent per
+Runner, managed by the user who hosts it, with no ``sudo`` anywhere. ``<name>`` is the
+Runner's, the one the console lists it under (QTS-1773); a machine with one Runner needs
+none (QTS-1774), except ``uninstall``, which deletes the identity and so infers nothing.
 
 ``sign-in claude|codex`` gives a person's own Runner their LLM access: their subscription,
 through the vendor's own sign-in in this terminal, or an API key stored in the Runner's
@@ -251,6 +252,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         driven.add_argument("name", nargs="?", help=_INSTALLED_NAME_HELP)
         driven.add_argument("--root", default=None, type=Path)
 
+    # The name is required even on a machine with one Runner: nothing is inferred for a
+    # removal that deletes the identity.
+    removed = subcommands.add_parser(
+        "uninstall",
+        help="remove one workstation Runner from this machine: its login agent, stored "
+        "credentials and state directory",
+    )
+    removed.add_argument("name", help="the Runner's name, as `agentic-runner list` shows it")
+    removed.add_argument("--yes", action="store_true", help="do not ask to type the name")
+    removed.add_argument("--root", default=None, type=Path)
+
     restart = subcommands.add_parser(
         "restart",
         help="restart running workstation Runners on the agentic-runner installed now, as "
@@ -424,6 +436,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _workstation(arguments)
     if arguments.command == "restart":
         return _restart(arguments)
+    if arguments.command == "uninstall":
+        return _uninstall(arguments)
     if arguments.command == "list":
         for line in workstation.list_lines(arguments.root or workstation.default_root()):
             print(line)
@@ -516,6 +530,30 @@ def _workstation(arguments: argparse.Namespace) -> int:
     except (FileNotFoundError, RuntimeError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1
+
+
+def _uninstall(arguments: argparse.Namespace) -> int:
+    """``uninstall <name>``: exit 2 names the Runners installed here, exit 1 is a refusal."""
+
+    root = arguments.root or workstation.default_root()
+    try:
+        paths = workstation.installed_runner(root, arguments.name)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+    if not arguments.yes:
+        typed = input(f"This deletes {paths.state_dir}. Type {paths.name} to confirm: ")
+        if typed.strip() != paths.name:
+            print(f"{paths.name} was not removed", file=sys.stderr)
+            return 1
+    try:
+        lines = workstation.uninstall(paths)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"{paths.name}: uninstall failed: {error}", file=sys.stderr)
+        return 1
+    for line in lines:
+        print(line)
+    return 0
 
 
 def _restart(arguments: argparse.Namespace) -> int:

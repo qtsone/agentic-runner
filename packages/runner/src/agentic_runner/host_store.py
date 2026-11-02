@@ -47,6 +47,7 @@ class WorkstationStore(Protocol):
 
     def get(self, reference: str) -> str | None: ...
     def put(self, reference: str, value: str) -> None: ...
+    def clear(self) -> None: ...
 
 
 def _single_segment(reference: str) -> str:
@@ -72,6 +73,11 @@ class FileCredentialStore(DirectoryCredentialStore):
 
     def put(self, reference: str, value: str) -> None:
         private_write(self.root / _single_segment(reference), value.encode("utf-8"))
+
+    def clear(self) -> None:
+        if self.root.is_dir():
+            for path in self.root.iterdir():
+                path.unlink()
 
 
 class KeychainStore:
@@ -134,6 +140,23 @@ class KeychainStore:
         if stored.returncode != 0 or stored.stderr.strip():
             raise RuntimeError(f"Keychain refused the value: {stored.stderr.strip()}")
 
+    def clear(self) -> None:
+        # `delete-generic-password` deletes the first item it matches, so it runs until it
+        # matches none; the bound only stops a keychain that never says so.
+        for _ in range(_CLEAR_LIMIT):
+            deleted = self._run(
+                ["security", "delete-generic-password", "-s", self._service, *self._keychain],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if deleted.returncode != 0:
+                return
+        raise RuntimeError(f"Keychain still holds {self._service} items after {_CLEAR_LIMIT}")
+
+
+_CLEAR_LIMIT = 1000
+
 
 def _quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -186,6 +209,17 @@ class SecretServiceStore:
         if stored.returncode != 0:
             raise RuntimeError(f"Secret Service refused the value: {stored.stderr.strip()}")
 
+    def clear(self) -> None:
+        # `secret-tool clear` exits 1 with nothing on stderr when no item matched.
+        cleared = self._run(
+            ["secret-tool", "clear", "service", self._service],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if cleared.returncode != 0 and cleared.stderr.strip():
+            raise RuntimeError(f"Secret Service refused the clear: {cleared.stderr.strip()}")
+
     def _attributes(self, reference: str) -> Sequence[str]:
         return ["service", self._service, "account", _single_segment(reference)]
 
@@ -213,6 +247,9 @@ class WindowsCredentialStore:
         if sys.platform != "win32":
             raise RuntimeError("Credential Manager exists only on Windows")
         _win_write(self._target(reference), value)
+
+    def clear(self) -> None:
+        _win_clear(f"{self._service}/*")
 
 
 if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
@@ -265,6 +302,20 @@ if sys.platform == "win32":  # pragma: no cover - exercised on Windows only
         if not _advapi.CredWriteW(ctypes.byref(credential), 0):
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def _win_clear(pattern: str) -> None:
+        count = wintypes.DWORD()
+        found = ctypes.POINTER(ctypes.POINTER(_Credential))()
+        # CredEnumerateW fails with ERROR_NOT_FOUND when nothing matches the pattern.
+        if not _advapi.CredEnumerateW(pattern, 0, ctypes.byref(count), ctypes.byref(found)):
+            return
+        try:
+            targets = [found[index].contents.TargetName for index in range(count.value)]
+        finally:
+            _advapi.CredFree(found)
+        for target in targets:
+            if not _advapi.CredDeleteW(target, _CRED_TYPE_GENERIC, 0):
+                raise ctypes.WinError(ctypes.get_last_error())
+
 else:
 
     def _win_read(target: str) -> str | None:
@@ -272,6 +323,9 @@ else:
 
     def _win_write(target: str, value: str) -> None:
         raise RuntimeError("Credential Manager exists only on Windows")
+
+    def _win_clear(pattern: str) -> None:
+        return None
 
 
 def open_workstation_store(
