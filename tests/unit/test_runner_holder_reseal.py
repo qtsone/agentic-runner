@@ -202,8 +202,8 @@ def test_a_user_key_with_no_valid_approval_is_refused_and_reported(
     )
 
     assert outcome.resealed == []
-    # One report per key, not per Secret.
-    assert outcome.unapproved == [UNAPPROVED]
+    # One report per key, not per Secret, naming the tag refused.
+    assert outcome.unapproved == [UNAPPROVED.model_copy(update={"approval_tag": tag})]
 
 
 def test_a_valid_tag_does_not_approve_another_members_key(tmp_path: Path) -> None:
@@ -321,7 +321,7 @@ async def test_an_unapproved_key_is_reported_once_on_the_next_envelope(tmp_path:
 
     _, second, third = registration.sent
     assert second.holder_reseals == []
-    assert second.unapproved_user_keys == [UNAPPROVED]
+    assert second.unapproved_user_keys == [UNAPPROVED]  # no tag was sent, none is named
     assert "unapproved_user_keys" not in third.model_dump(mode="json")
 
 

@@ -288,13 +288,15 @@ class ResealedHolderShare(BaseModel):
 
 class UnapprovedUserKey(BaseModel):
     """A member's User Key a reseal was refused for: its approval tag is missing or does
-    not verify under this Runner's Organisation Key (rev 10, S5)."""
+    not verify under this Runner's Organisation Key (rev 10, S5). ``approval_tag`` is the
+    tag refused, so the control plane drops that approval and never a newer one."""
 
     model_config = ConfigDict(extra="forbid")
 
     organisation_id: Identifier
     user_id: Identifier
     user_key_fingerprint: Fingerprint
+    approval_tag: ApprovalTag | None = None
 
 
 def _b64(raw: bytes) -> str:

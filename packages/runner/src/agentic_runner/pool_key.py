@@ -277,6 +277,7 @@ class LlmKeyOpener:
                         organisation_id=item.organisation_id,
                         user_id=item.user_id,
                         user_key_fingerprint=item.user_key_fingerprint,
+                        approval_tag=item.approval_tag,
                     )
                 )
                 if refused is not None and refused not in outcome.unapproved:

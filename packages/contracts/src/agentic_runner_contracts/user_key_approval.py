@@ -20,6 +20,10 @@ approval.
 ``HKDF-SHA256(organisation_key_private, salt="", info=APPROVAL_DOMAIN)``, 32 bytes; the
 tag is ``HMAC-SHA256(key, approval_message(...))``, base64.
 
+A tag does not expire. Removing a member deletes their approval on the control plane,
+which a control plane that is taken over could restore with the member's old key; only a
+new Organisation Key revokes every tag at once.
+
 ``fixtures/user-key-approval.fixture.json`` is one tag computed by these rules, with the
 inputs that must not verify. The contracts tests check it, and the console's tests read
 the same file.
