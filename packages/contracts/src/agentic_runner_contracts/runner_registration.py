@@ -57,6 +57,7 @@ from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
 )
+from agentic_runner_contracts.secret import RESEALS_MAX, HolderReseal, ResealedHolderShare
 from agentic_runner_contracts.user_sources import SourceStatus, UserSourceAssignment
 
 # 23 item 4 (Buildkite's own numbers): heartbeat every 30 s, stale at 3 min. Stale is a
@@ -985,6 +986,10 @@ class HeartbeatEnvelope(BaseModel):
     # User Key out at `login`, so a Runner that has one to report talks to one that parses
     # it.
     user_key_fingerprint: Fingerprint | None = None
+    # Spec: Agent Guardrails rev 7, A1, S5: the holder shares this Runner resealed to
+    # members' User Keys from the last ack's `holder_reseals`. Only a control plane on 4.4
+    # hands reseals out, so a Runner with some to report talks to one that parses them.
+    holder_reseals: list[ResealedHolderShare] = Field(default_factory=list, max_length=RESEALS_MAX)
 
     @model_serializer(mode="wrap")
     def _omit_empty_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -998,6 +1003,7 @@ class HeartbeatEnvelope(BaseModel):
                 "oauth_authorizations",
                 "oauth_tokens",
                 "oauth_outcomes",
+                "holder_reseals",
             ):
                 if not body.get(name):
                     body.pop(name, None)
@@ -1124,6 +1130,12 @@ class HeartbeatAck(BaseModel):
     # later.
     operator_user_profile_id: UUID | None = None
     connections: list[RunnerConnection] | None = Field(default=None, max_length=CONNECTIONS_MAX)
+    # Spec: Agent Guardrails rev 7, A1, S5: holder shares of "Also members' Runners"
+    # secrets this Organisation Runner reseals to members' User Keys, answered on the next
+    # envelope's `holder_reseals`. Sent only to an Organisation Runner on 4.4 or later that
+    # holds the current Organisation Key; the ack forbids extra keys, so it is omitted
+    # while empty.
+    holder_reseals: list[HolderReseal] = Field(default_factory=list, max_length=RESEALS_MAX)
 
     @model_serializer(mode="wrap")
     def _omit_unsent_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -1136,8 +1148,9 @@ class HeartbeatAck(BaseModel):
         # nowhere.
         body = handler(self)
         if isinstance(body, dict):
-            if not body.get("credential_manifests"):
-                body.pop("credential_manifests", None)
+            for name in ("credential_manifests", "holder_reseals"):
+                if not body.get(name):
+                    body.pop(name, None)
             for name in (
                 "tags",
                 "llm_contracts",

@@ -199,6 +199,7 @@ from agentic_runner_contracts.runner_registration import (
 )
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContextResolver
 from agentic_runner_contracts.sealed_credential import key_fingerprint
+from agentic_runner_contracts.secret import ResealedHolderShare
 
 __all__ = [
     "AGENT_TOKEN_ENV",
@@ -1085,7 +1086,12 @@ class ControlPlaneStream:
     oauth: OAuthConnectors | None = None
     # ADR-0022 §58: how far this host binds each part of the Guardrails, on every beat.
     guardrails_posture: GuardrailsPosture | None = None
+    # Spec: Agent Guardrails rev 7, A1, S5: reseals the ack's holder shares to members'
+    # User Keys; only an Organisation Runner, which holds the Organisation Key, does any.
+    llm_keys: LlmKeyOpener | None = None
     _delivered: set[tuple[str, str]] = field(default_factory=set)
+    # The holder shares resealed from the last ack, reported on the next envelope.
+    _resealed: list[ResealedHolderShare] = field(default_factory=list)
     # ADR-0022 §7: the Contracts the last ack asked this Runner to report references for.
     _manifests: list[CredentialManifest] = field(default_factory=list)
     _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -1308,8 +1314,15 @@ class ControlPlaneStream:
             install=self._install_report(),
             pool_key_fingerprint=self.pool_key_fingerprint if self._pool is not None else None,
             user_key_fingerprint=self.user_key_fingerprint,
+            holder_reseals=self._resealed,
         )
         ack = await self.client.heartbeat(self.state, envelope)
+        # Reported once: one the control plane did not store, it hands out again.
+        self._resealed = (
+            self.llm_keys.reseal(ack.holder_reseals)
+            if self.llm_keys is not None and ack.holder_reseals
+            else []
+        )
         if self.sources is not None:
             self.sources.assign(ack.user_sources)
         await self._deliver_transcripts(ack)
@@ -1948,6 +1961,7 @@ async def _serve_registered(
         state_dir=state_dir,
         pool_key_fingerprint=llm_keys.fingerprint,
         user_key_fingerprint=llm_keys.user_key_fingerprint,
+        llm_keys=llm_keys,
     )
     triage = ProxyTriage(
         proxy=proxy,
