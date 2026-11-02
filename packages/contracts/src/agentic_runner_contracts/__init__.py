@@ -197,6 +197,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `HeartbeatAck.holder_reseals` and `HeartbeatEnvelope.holder_reseals`. Additive and
 # omitted while empty: the control plane hands reseals only to an Organisation Runner on
 # 4.4, so only such a Runner has resealed shares to report.
-__version__ = "4.3.0"
+__version__ = "4.4.0"
 
 __all__ = ["__version__"]
