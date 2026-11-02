@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [4.3.0](https://github.com/qtsone/agentic-runner/compare/v4.2.0...v4.3.0) (2026-11-02)
+
+
+### Features
+
+* **contracts:** hand a person's User Key to their Runner at login and open their own Secrets (QTS-2478) ([#98](https://github.com/qtsone/agentic-runner/issues/98)) ([3335105](https://github.com/qtsone/agentic-runner/commit/33351050749a4e3a1a916ec166d53f7f75af0e1a)), closes [qtsone/agentic-os#783](https://github.com/qtsone/agentic-os/issues/783)
+
 # [4.2.0](https://github.com/qtsone/agentic-runner/compare/v4.1.0...v4.2.0) (2026-11-02)
 
 
