@@ -123,7 +123,13 @@ def bin_dir(tmp_path: Path) -> Path:
 
 
 def _all_commands(definition: workstation.ServiceDefinition) -> list[list[str]]:
-    return definition.install + definition.start + definition.stop + definition.restart
+    return (
+        definition.install
+        + definition.start
+        + definition.stop
+        + definition.restart
+        + definition.remove
+    )
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
@@ -780,6 +786,147 @@ def test_stop_on_linux_leaves_the_drain_to_systemd(
     ]
 
 
+# ------------------------------------------------------------------ uninstall (QTS-2687)
+
+
+def _installed_with_login_agent(
+    root: Path, home: Path, name: str, keychain: FakeKeychain
+) -> workstation.RunnerPaths:
+    paths = _installed(root, name, organisation=uuid4())
+    definition = workstation.service_definition(
+        paths, workstation.WorkstationSettings.load(paths), platform="darwin", home=home
+    )
+    definition.path.parent.mkdir(parents=True, exist_ok=True)
+    definition.path.write_bytes(definition.content)
+    keychain.items[(f"agentic-runner.{name}", "deploy_key")] = f"{name}-value"
+    return paths
+
+
+def test_uninstall_removes_one_runner_and_leaves_every_other_one_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    monkeypatch.setattr(KeychainStore, "available", lambda _self: True)
+    root, home, keychain = tmp_path / "state", tmp_path / "home", FakeKeychain()
+    gone = _installed_with_login_agent(root, home, "stale", keychain)
+    kept = _installed_with_login_agent(root, home, "acme", keychain)
+    state = load_state(gone.state_dir)
+    assert state is not None
+
+    lines = workstation.uninstall(gone, platform="darwin", home=home, run=keychain)
+
+    agents = home / "Library/LaunchAgents"
+    assert not (agents / "agentic-runner.stale.plist").exists()
+    assert not gone.state_dir.exists()
+    assert (agents / "agentic-runner.acme.plist").is_file()
+    assert workstation.installed_names(root) == ["acme"]
+    assert list(keychain.items) == [("agentic-runner.acme", "deploy_key")]
+    launchctl = [argv for argv in keychain.argv_seen if argv[0] == "launchctl"]
+    assert launchctl == [["launchctl", "bootout", "gui/501/agentic-runner.stale"]]
+    assert any(str(state.runner_id) in line for line in lines)
+    assert any("/me/runners, choose Delete" in line for line in lines)
+    assert any("Admin chooses Remove" in line for line in lines)
+    assert kept.settings_file.is_file()
+
+
+def test_uninstall_of_a_login_agent_already_unloaded_still_removes_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    root, home = tmp_path / "state", tmp_path / "home"
+    paths = _installed_with_login_agent(root, home, "stale", FakeKeychain())
+
+    def unloaded(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["launchctl", "bootout"]:
+            return subprocess.CompletedProcess(argv, 3, "", "Boot-out failed: 3: No such process")
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+    lines = workstation.uninstall(paths, platform="darwin", home=home, run=unloaded)
+
+    assert not paths.state_dir.exists()
+    assert not (home / "Library/LaunchAgents/agentic-runner.stale.plist").exists()
+    assert lines[0].startswith("not loaded")
+
+
+def test_uninstall_whose_stop_fails_on_a_live_process_removes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workstation.os, "getuid", lambda: 501)
+    monkeypatch.setattr(workstation, "process_id", lambda _p: None)
+    root, home = tmp_path / "state", tmp_path / "home"
+    paths = _installed_with_login_agent(root, home, "acme", FakeKeychain())
+
+    def refused(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        # The stop ran no drain (no pid yet); the process is seen once it refuses.
+        monkeypatch.setattr(workstation, "process_id", lambda _p: 4242)
+        return subprocess.CompletedProcess(argv, 5, "", "Input/output error")
+
+    with pytest.raises(RuntimeError, match="exited 5"):
+        workstation.uninstall(paths, platform="darwin", home=home, run=refused)
+
+    assert paths.settings_file.is_file()
+    assert (home / "Library/LaunchAgents/agentic-runner.acme.plist").is_file()
+
+
+@pytest.mark.parametrize(
+    ("platform", "removal"),
+    [
+        ("linux", ["systemctl", "--user", "daemon-reload"]),
+        ("win32", ["schtasks", "/Delete", "/TN", "\\agentic-runner\\acme", "/F"]),
+    ],
+)
+def test_uninstall_unregisters_the_service_after_its_file_is_gone(
+    tmp_path: Path, platform: str, removal: list[str]
+) -> None:
+    paths = _installed(tmp_path / "state", "acme")
+    commands = Commands()
+
+    workstation.uninstall(paths, platform=platform, home=tmp_path / "home", run=commands)
+
+    assert removal in commands.ran
+    assert not paths.state_dir.exists()
+
+
+def test_uninstall_needs_the_name_typed_and_exits_2_for_one_not_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "state"
+    paths = _installed(root, "acme")
+    monkeypatch.setattr(workstation, "uninstall", lambda _p: pytest.fail("not confirmed"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "acm")
+
+    assert cli.main(["uninstall", "nope", "--root", str(root)]) == 2
+    assert "installed: acme" in capsys.readouterr().err
+    assert cli.main(["uninstall", "acme", "--root", str(root)]) == 1
+    assert paths.settings_file.is_file()
+    with pytest.raises(SystemExit):
+        cli.main(["uninstall", "--root", str(root)])
+
+
+@pytest.mark.parametrize("cancel", [EOFError, KeyboardInterrupt])
+def test_uninstall_cancelled_at_the_prompt_deletes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cancel: type[BaseException],
+) -> None:
+    root = tmp_path / "state"
+    paths = _installed(root, "acme")
+    monkeypatch.setattr(workstation, "uninstall", lambda _p: pytest.fail("not confirmed"))
+
+    def cancelled(_prompt: str) -> str:
+        raise cancel
+
+    monkeypatch.setattr("builtins.input", cancelled)
+
+    assert cli.main(["uninstall", "acme", "--root", str(root)]) == 1
+    output = capsys.readouterr()
+    assert "login agent" in output.out
+    assert "saved credentials" in output.out
+    assert "acme was not removed; nothing was deleted" in output.err
+    assert paths.settings_file.is_file()
+
+
 @pytest.fixture
 def restarted(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     names: list[str] = []
@@ -1368,6 +1515,11 @@ class FakeKeychain:
         if argv[1] == "find-generic-password":
             value = self.items.get((argv[3], argv[5]))
             return subprocess.CompletedProcess(argv, 0 if value else 44, (value or "") + "\n", "")
+        if argv[1] == "delete-generic-password":
+            match = next((key for key in self.items if key[0] == argv[3]), None)
+            if match is None:
+                return subprocess.CompletedProcess(argv, 44, "", "")
+            del self.items[match]
         return subprocess.CompletedProcess(argv, 0, "", "")
 
 
@@ -1399,6 +1551,14 @@ def test_a_value_stored_through_the_os_store_reads_back_and_is_absent_from_disk(
     assert all(secret not in " ".join(argv) for argv in keychain.argv_seen)
 
 
+def test_a_keychain_that_refuses_the_clear_raises_instead_of_reporting_it_empty() -> None:
+    def locked(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 51, "", "User interaction is not allowed.")
+
+    with pytest.raises(RuntimeError, match="User interaction is not allowed"):
+        KeychainStore("agentic-runner.acme", run=locked).clear()
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="the real Keychain is macOS-only")
 def test_the_real_keychain_round_trips_a_value_off_disk(tmp_path: Path) -> None:
     keychain = tmp_path / "test.keychain-db"
@@ -1410,6 +1570,10 @@ def test_the_real_keychain_round_trips_a_value_off_disk(tmp_path: Path) -> None:
         store.put("deploy_key", 'va"l\\ue')
         assert store.get("deploy_key") == 'va"l\\ue'
         assert store.get("absent") is None
+        store.put("other_key", "value")
+        store.clear()
+        assert store.get("deploy_key") is None
+        assert store.get("other_key") is None
     finally:
         subprocess.run(["security", "delete-keychain", str(keychain)], check=False)
 

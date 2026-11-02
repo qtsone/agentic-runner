@@ -321,8 +321,9 @@ under that name once its control plane is on contracts 3.27.
 
 Running `install` again over the same Runner's directory keeps the identity it
 already holds: it prints `already registered …` and `token not used`, and the token you
-pasted never reaches the control plane. There is no `uninstall`. To swap an Organisation
-Runner for one hosted by you (or any Runner for a new token):
+pasted never reaches the control plane. `uninstall` is not the way either: it deletes the
+old identity for good. To swap an Organisation Runner for one hosted by you (or any Runner
+for a new token):
 
 1. `agentic-runner stop alice-laptop`.
 2. Move the Runner's directory aside rather than deleting it, so the old identity,
@@ -333,6 +334,34 @@ Runner for one hosted by you (or any Runner for a new token):
    the Runner shows on **/me/runners**. Then ask your Admin to revoke the old Runner on the
    Runners page.
 
-To remove a Runner: `agentic-runner stop alice-laptop`, delete the plist or the unit file, delete
-the Runner's directory under the state root, then ask your Admin to revoke the
-Runner on the Runners page.
+### Remove a Runner
+
+```sh
+agentic-runner list                     # the names installed here
+agentic-runner uninstall old-laptop     # asks you to type the name; --yes skips that
+```
+
+`uninstall` removes that one Runner from this computer: it stops it the way `stop` does,
+then deletes its login agent (the plist, the unit or the logon task), its Credential
+References in the Keychain or Secret Service, and its directory under the state root,
+with the Workspaces in it. A Runner whose login agent is already unloaded, such as one the
+console revoked, is removed all the same. Every other Runner on this computer keeps its own
+login agent, credentials and directory, because each is named after its own Runner.
+
+It always needs the name, even with one Runner here. Before you type the name, it lists
+what it deletes. Interrupting the prompt (Ctrl-C, Ctrl-D, or no terminal) deletes nothing.
+
+The console keeps listing the Runner: `uninstall` cannot retire it from this computer. Its
+last lines print the Runner's id. Retire that Runner in the console, unless it is already
+gone from there:
+
+- **Your own Runner:** on **/me/runners**, choose **Delete** on it.
+- **An Organisation Runner:** your Admin chooses **Remove** on it on the Organisation's
+  Runners page.
+
+On the Organisation's Runners page, a person's Runner shows **Disconnect** instead of
+**Remove**. Disconnect only ends that Organisation's connection; the Runner stays
+registered. Delete it on **/me/runners**.
+
+Then check the Runners you kept: `agentic-runner list` shows each as `running`, and
+`agentic-runner status <name>` shows a heartbeat seconds old.

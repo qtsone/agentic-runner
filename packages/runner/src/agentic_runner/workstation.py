@@ -1,8 +1,8 @@
 """The workstation Runner: one login agent per Runner (PRD issue 47, map ticket 23).
 
-``agentic-runner login | install | start | stop | restart | status <name>`` and ``list``.
-Everything a CI-runner precedent does on a developer machine and nothing a daemon would
-need:
+``agentic-runner login | install | start | stop | restart | uninstall | status <name>`` and
+``list``. Everything a CI-runner precedent does on a developer machine and nothing a daemon
+would need:
 
 * **One process per Runner** (23 item 3), each with its own state directory, identity,
   hooks, credential store and Workspaces under ``<root>/<name>/``. From Spec: Runners rev
@@ -110,6 +110,7 @@ __all__ = [
     "start",
     "status_lines",
     "stop",
+    "uninstall",
     "validate_name",
 ]
 
@@ -470,6 +471,8 @@ class ServiceDefinition:
     # Sends SIGTERM outside the service manager's own stop, which `stop` and `restart` then
     # run only once the process has drained. Empty where that stop already waits it out.
     drain: list[list[str]] = field(default_factory=list)
+    # Run by `uninstall` once `stop` has run and the file is gone.
+    remove: list[list[str]] = field(default_factory=list)
 
 
 def runner_command(name: str, root: Path) -> list[str]:
@@ -579,6 +582,7 @@ def _systemd_user_unit(
         start=[[*systemctl, "enable", "--now", unit_name]],
         stop=[[*systemctl, "disable", "--now", unit_name]],
         restart=[[*systemctl, "restart", unit_name]],
+        remove=[[*systemctl, "daemon-reload"]],
     )
 
 
@@ -636,6 +640,7 @@ def _logon_task(
             ["schtasks", "/End", "/TN", task_name],
             ["schtasks", "/Run", "/TN", task_name],
         ],
+        remove=[["schtasks", "/Delete", "/TN", task_name, "/F"]],
     )
 
 
@@ -943,6 +948,61 @@ def stop(paths: RunnerPaths, **driver: Any) -> None:
     """Stop this Runner; every other Runner on this machine keeps polling."""
 
     _drive_service(paths, "stop", **driver)
+
+
+def uninstall(
+    paths: RunnerPaths,
+    *,
+    platform: str = sys.platform,
+    home: Path | None = None,
+    run: Run = subprocess.run,
+    **driver: Any,
+) -> list[str]:
+    """Remove this Runner from this machine; every other Runner here keeps polling.
+
+    Its login agent, its entries in the OS credential store and ``<root>/<name>/`` go, each
+    keyed by its name alone, so no other install shares any of them (ADR-0022 §51). The
+    registration stays on the control plane, which this machine cannot retire: the lines
+    returned name the Runner to remove in the console.
+    """
+
+    settings = WorkstationSettings.load(paths)
+    state = load_state(paths.state_dir)
+    definition = service_definition(paths, settings, platform=platform, home=home)
+    lines: list[str] = []
+    try:
+        _drive_service(paths, "stop", platform=platform, home=home, run=run, **driver)
+    except RuntimeError as error:
+        # A login agent that is already unloaded refuses its stop (launchd's bootout, the
+        # task's /End); with no process left, that is the state the stop was for.
+        if process_id(paths) is not None:
+            raise
+        lines.append(f"not loaded     {error}")
+    had_definition = definition.path.exists()
+    definition.path.unlink(missing_ok=True)
+    drive(definition.remove, run=run)
+    if had_definition:
+        lines.append(f"removed        {definition.path}")
+    store = open_workstation_store(
+        paths.name, fallback=paths.credentials, platform=platform, run=run
+    )
+    store.clear()
+    lines.append(f"cleared        {store.kind.value} store entries for {paths.name}")
+    shutil.rmtree(paths.state_dir)
+    shutil.rmtree(paths.socket_dir, ignore_errors=True)
+    lines.append(f"removed        {paths.state_dir}")
+    if state is not None:
+        # The state file does not say who owns the Runner, and the console's action differs
+        # by owner: an Organisation page's Disconnect on a person's Runner leaves it
+        # registered, so both actions are named.
+        lines += [
+            f"next           the console still lists Runner {state.runner_id}; retire it there",
+            "  your own:     on /me/runners, choose Delete on it",
+            "  Organisation: an Admin chooses Remove on it on the Organisation's Runners page",
+            "                (Disconnect there keeps a person's Runner; use /me/runners)",
+        ]
+    lines.append("next           `agentic-runner list` shows the Runners still installed here")
+    return lines
 
 
 def restart(
