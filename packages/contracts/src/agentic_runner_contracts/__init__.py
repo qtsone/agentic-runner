@@ -204,6 +204,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # 4.5 reseals only to a User Key whose tag verifies under its Organisation Key, so the
 # control plane hands reseals only to a Runner on 4.5; a 4.4 body has no tag and is
 # refused, and no refusal is reported to a control plane that sent no member.
-__version__ = "4.4.0"
+__version__ = "4.5.0"
 
 __all__ = ["__version__"]
