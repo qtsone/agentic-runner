@@ -57,7 +57,12 @@ from agentic_runner_contracts.sealed_credential import (
     OpenedCredential,
     SealedCredential,
 )
-from agentic_runner_contracts.secret import RESEALS_MAX, HolderReseal, ResealedHolderShare
+from agentic_runner_contracts.secret import (
+    RESEALS_MAX,
+    HolderReseal,
+    ResealedHolderShare,
+    UnapprovedUserKey,
+)
 from agentic_runner_contracts.user_sources import SourceStatus, UserSourceAssignment
 
 # 23 item 4 (Buildkite's own numbers): heartbeat every 30 s, stale at 3 min. Stale is a
@@ -990,6 +995,12 @@ class HeartbeatEnvelope(BaseModel):
     # members' User Keys from the last ack's `holder_reseals`. Only a control plane on 4.4
     # hands reseals out, so a Runner with some to report talks to one that parses them.
     holder_reseals: list[ResealedHolderShare] = Field(default_factory=list, max_length=RESEALS_MAX)
+    # Spec: Agent Guardrails rev 10, S5: the User Keys the last ack's reseals were refused
+    # for, their approval tag missing or not verifying. Only a control plane on 4.5 sends
+    # tags, so a Runner that refuses one talks to one that parses this.
+    unapproved_user_keys: list[UnapprovedUserKey] = Field(
+        default_factory=list, max_length=RESEALS_MAX
+    )
 
     @model_serializer(mode="wrap")
     def _omit_empty_optional_fields(self, handler: SerializerFunctionWrapHandler) -> Any:
@@ -1004,6 +1015,7 @@ class HeartbeatEnvelope(BaseModel):
                 "oauth_tokens",
                 "oauth_outcomes",
                 "holder_reseals",
+                "unapproved_user_keys",
             ):
                 if not body.get(name):
                     body.pop(name, None)
@@ -1132,9 +1144,9 @@ class HeartbeatAck(BaseModel):
     connections: list[RunnerConnection] | None = Field(default=None, max_length=CONNECTIONS_MAX)
     # Spec: Agent Guardrails rev 7, A1, S5: holder shares of "Also members' Runners"
     # secrets this Organisation Runner reseals to members' User Keys, answered on the next
-    # envelope's `holder_reseals`. Sent only to an Organisation Runner on 4.4 or later that
-    # holds the current Organisation Key; the ack forbids extra keys, so it is omitted
-    # while empty.
+    # envelope's `holder_reseals`. Sent only to an Organisation Runner on 4.5 or later that
+    # holds the current Organisation Key, each with its User Key's approval tag (rev 10,
+    # S5); the ack forbids extra keys, so it is omitted while empty.
     holder_reseals: list[HolderReseal] = Field(default_factory=list, max_length=RESEALS_MAX)
 
     @model_serializer(mode="wrap")

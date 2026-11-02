@@ -101,6 +101,7 @@ from agentic_runner.pool_key import (
     LlmKeyOpener,
     PoolKey,
     PoolKeyError,
+    ResealOutcome,
     load_pool_key,
 )
 from agentic_runner.private_state import (
@@ -199,7 +200,7 @@ from agentic_runner_contracts.runner_registration import (
 )
 from agentic_runner_contracts.runtime_context import WorkerRuntimeContextResolver
 from agentic_runner_contracts.sealed_credential import key_fingerprint
-from agentic_runner_contracts.secret import ResealedHolderShare
+from agentic_runner_contracts.secret import ResealedHolderShare, UnapprovedUserKey
 
 __all__ = [
     "AGENT_TOKEN_ENV",
@@ -1090,8 +1091,10 @@ class ControlPlaneStream:
     # User Keys; only an Organisation Runner, which holds the Organisation Key, does any.
     llm_keys: LlmKeyOpener | None = None
     _delivered: set[tuple[str, str]] = field(default_factory=set)
-    # The holder shares resealed from the last ack, reported on the next envelope.
+    # The holder shares resealed from the last ack, and the User Keys refused for want of
+    # an approval, reported on the next envelope.
     _resealed: list[ResealedHolderShare] = field(default_factory=list)
+    _unapproved: list[UnapprovedUserKey] = field(default_factory=list)
     # ADR-0022 §7: the Contracts the last ack asked this Runner to report references for.
     _manifests: list[CredentialManifest] = field(default_factory=list)
     _offered_to_proxy: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -1315,14 +1318,17 @@ class ControlPlaneStream:
             pool_key_fingerprint=self.pool_key_fingerprint if self._pool is not None else None,
             user_key_fingerprint=self.user_key_fingerprint,
             holder_reseals=self._resealed,
+            unapproved_user_keys=self._unapproved,
         )
         ack = await self.client.heartbeat(self.state, envelope)
         # Reported once: one the control plane did not store, it hands out again.
-        self._resealed = (
+        outcome = (
             self.llm_keys.reseal(ack.holder_reseals)
             if self.llm_keys is not None and ack.holder_reseals
-            else []
+            else ResealOutcome()
         )
+        self._resealed = outcome.resealed
+        self._unapproved = outcome.unapproved
         if self.sources is not None:
             self.sources.assign(ack.user_sources)
         await self._deliver_transcripts(ack)

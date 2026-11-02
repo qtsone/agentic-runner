@@ -1,0 +1,30 @@
+{
+  "note": "One approval tag (agentic_runner_contracts.user_key_approval, Spec: Agent Guardrails rev 10, S5): an Admin approving the member of user-key.fixture.json in the Organisation of secret.fixture.json, keyed by that fixture's Organisation Key. The contracts tests verify it and refuse every tag under `refused`; the console's tests read the same file, so the browser's tag matches the Runner's. Never a real key.",
+  "approval_domain": "agentic-os/user-key-approval/v1",
+  "organisation_id": "7d2c4e19-3a8b-4f60-9c15-2e8a0b6d4f73",
+  "organisation_key_private": "wP8zrZ4k2HLf/v6vqGjg7LkOCcAtRbZZvxQKVkmZVV0=",
+  "user_id": "3e6b1f2a-9c47-4d08-b5e1-7a2c9f4d6b80",
+  "user_key_public": "IRkT1PWR3eGELlBs6uyF6LvviSZvs7uRH6+3lOgrchY=",
+  "user_key_fingerprint": "4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3",
+  "approval_key": "oiWohLzSFEl+O27G8nm36YWJ0+t1tZSuUdq5htrWMLM=",
+  "approval_message": "agentic-os/user-key-approval/v1|7d2c4e19-3a8b-4f60-9c15-2e8a0b6d4f73|3e6b1f2a-9c47-4d08-b5e1-7a2c9f4d6b80|4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3",
+  "approval_tag": "IhaPDrFxWZw7VNBrHOjMIbxd7Gt+2ldIm7fp7FXmULg=",
+  "refused": [
+    {
+      "why": "a tag for another member",
+      "approval_tag": "32CnYw2Vt9n6+HSNy3hiz2SGJ7+W2jkiIVK52+WUdyU="
+    },
+    {
+      "why": "a tag for another Organisation",
+      "approval_tag": "ROh6vFvelV6wyW4tPJxB/+Vh/xNGC71TahV19E+aCN8="
+    },
+    {
+      "why": "a tag for another User Key fingerprint",
+      "approval_tag": "ElP1StFaXgCqjqBApztx7aLlVGUDwB56iwY5B01Vi/o="
+    },
+    {
+      "why": "a tag keyed by a key the platform holds, not the Organisation Key",
+      "approval_tag": "hG2Wf3Xx772FZGG6lmkCCmaKMU7uygMTWuBRNjK5wpc="
+    }
+  ]
+}

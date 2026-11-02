@@ -27,6 +27,10 @@ its heartbeat ack, opens the share and seals it to the member's User Key, and re
 :class:`ResealedHolderShare` on its next envelope. Only the holder share moves: the
 platform's share never reaches the Runner this way, so the reseal opens no value.
 
+Whoever reseals seals only to a User Key an Admin approved (rev 10, S5): the reseal
+carries the key's approval tag (:mod:`.user_key_approval`), and one with no valid tag is
+refused and reported back as :class:`UnapprovedUserKey`.
+
 ``fixtures/secret.fixture.json`` is one secret split, sealed and bound by these rules.
 The contracts tests open it, and the console's tests read the same file.
 """
@@ -44,6 +48,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from agentic_runner_contracts.llm_key import Fingerprint, Identifier, SealedShare
 from agentic_runner_contracts.sealed_credential import KeyId, SlotName, key_fingerprint
 from agentic_runner_contracts.user_key import PublicKey
+from agentic_runner_contracts.user_key_approval import ApprovalTag, approval_tag_valid
 
 __all__ = [
     "SECRET_DOMAIN",
@@ -56,6 +61,7 @@ __all__ = [
     "SecretRelease",
     "SecretReleaseRequest",
     "SecretScope",
+    "UnapprovedUserKey",
     "holder_share_binding",
     "join_secret",
     "platform_share_binding",
@@ -219,6 +225,11 @@ class HolderReseal(BaseModel):
     ``holder_fingerprint``; it opens only under its own binding, so a share of another
     secret or Organisation does not. The resealed share is bound to the fingerprint the
     Runner computes from ``user_key_public_key`` itself, never to one it is told.
+
+    ``user_id`` and ``approval_tag`` are the member and the tag an Admin wrote when they
+    approved this User Key (rev 10, S5). Optional only so a body from a control plane on
+    4.4 still parses: with either missing, :meth:`approved` is false and nothing is
+    resealed.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -228,10 +239,24 @@ class HolderReseal(BaseModel):
     holder_fingerprint: Fingerprint
     holder_share: SealedShare
     user_key_public_key: PublicKey
+    user_id: Identifier | None = None
+    approval_tag: ApprovalTag | None = None
 
     @property
     def user_key_fingerprint(self) -> str:
         return key_fingerprint(self.user_key_public_key)
+
+    def approved(self, organisation_key_private: str) -> bool:
+        """Whether the tag approves this User Key for this member in this Organisation,
+        under the Organisation Key whose private half is given."""
+
+        return self.user_id is not None and approval_tag_valid(
+            self.approval_tag,
+            organisation_key_private=organisation_key_private,
+            organisation_id=self.organisation_id,
+            user_id=self.user_id,
+            user_key_fingerprint=self.user_key_fingerprint,
+        )
 
     def holder_share_binding(self) -> bytes:
         return holder_share_binding(
@@ -259,6 +284,17 @@ class ResealedHolderShare(BaseModel):
     secret_id: Identifier
     holder_fingerprint: Fingerprint
     holder_share: SealedShare
+
+
+class UnapprovedUserKey(BaseModel):
+    """A member's User Key a reseal was refused for: its approval tag is missing or does
+    not verify under this Runner's Organisation Key (rev 10, S5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    organisation_id: Identifier
+    user_id: Identifier
+    user_key_fingerprint: Fingerprint
 
 
 def _b64(raw: bytes) -> str:
