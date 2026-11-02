@@ -542,9 +542,20 @@ def _uninstall(arguments: argparse.Namespace) -> int:
         print(error, file=sys.stderr)
         return 2
     if not arguments.yes:
-        typed = input(f"This deletes {paths.state_dir}. Type {paths.name} to confirm: ")
+        print(
+            f"Uninstalling {paths.name} stops it and deletes, from this computer and for good:\n"
+            "  its login agent, so it no longer starts when you log in\n"
+            "  its saved credentials in the Keychain or Secret Service\n"
+            f"  {paths.state_dir}, with its identity and Workspaces\n"
+            "The console keeps listing the Runner until you retire it there."
+        )
+        try:
+            typed = input(f"Type {paths.name} to confirm: ")
+        except (EOFError, KeyboardInterrupt):
+            typed = ""
+            print()
         if typed.strip() != paths.name:
-            print(f"{paths.name} was not removed", file=sys.stderr)
+            print(f"{paths.name} was not removed; nothing was deleted", file=sys.stderr)
             return 1
     try:
         lines = workstation.uninstall(paths)

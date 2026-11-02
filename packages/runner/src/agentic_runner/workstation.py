@@ -990,10 +990,15 @@ def uninstall(
     shutil.rmtree(paths.socket_dir, ignore_errors=True)
     lines.append(f"removed        {paths.state_dir}")
     if state is not None:
-        lines.append(
-            f"next           remove Runner {state.runner_id} on /me/runners or the "
-            "Organisation's Runners page if it is still listed"
-        )
+        # The state file does not say who owns the Runner, and the console's action differs
+        # by owner: an Organisation page's Disconnect on a person's Runner leaves it
+        # registered, so both actions are named.
+        lines += [
+            f"next           the console still lists Runner {state.runner_id}; retire it there",
+            "  your own:     on /me/runners, choose Delete on it",
+            "  Organisation: an Admin chooses Remove on it on the Organisation's Runners page",
+            "                (Disconnect there keeps a person's Runner; use /me/runners)",
+        ]
     lines.append("next           `agentic-runner list` shows the Runners still installed here")
     return lines
 

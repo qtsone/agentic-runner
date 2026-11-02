@@ -824,6 +824,8 @@ def test_uninstall_removes_one_runner_and_leaves_every_other_one_installed(
     launchctl = [argv for argv in keychain.argv_seen if argv[0] == "launchctl"]
     assert launchctl == [["launchctl", "bootout", "gui/501/agentic-runner.stale"]]
     assert any(str(state.runner_id) in line for line in lines)
+    assert any("/me/runners, choose Delete" in line for line in lines)
+    assert any("Admin chooses Remove" in line for line in lines)
     assert kept.settings_file.is_file()
 
 
@@ -899,6 +901,30 @@ def test_uninstall_needs_the_name_typed_and_exits_2_for_one_not_installed(
     assert paths.settings_file.is_file()
     with pytest.raises(SystemExit):
         cli.main(["uninstall", "--root", str(root)])
+
+
+@pytest.mark.parametrize("cancel", [EOFError, KeyboardInterrupt])
+def test_uninstall_cancelled_at_the_prompt_deletes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    cancel: type[BaseException],
+) -> None:
+    root = tmp_path / "state"
+    paths = _installed(root, "acme")
+    monkeypatch.setattr(workstation, "uninstall", lambda _p: pytest.fail("not confirmed"))
+
+    def cancelled(_prompt: str) -> str:
+        raise cancel
+
+    monkeypatch.setattr("builtins.input", cancelled)
+
+    assert cli.main(["uninstall", "acme", "--root", str(root)]) == 1
+    output = capsys.readouterr()
+    assert "login agent" in output.out
+    assert "saved credentials" in output.out
+    assert "acme was not removed; nothing was deleted" in output.err
+    assert paths.settings_file.is_file()
 
 
 @pytest.fixture

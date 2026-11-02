@@ -348,8 +348,20 @@ with the Workspaces in it. A Runner whose login agent is already unloaded, such 
 console revoked, is removed all the same. Every other Runner on this computer keeps its own
 login agent, credentials and directory, because each is named after its own Runner.
 
-It always needs the name, even with one Runner here. Its last lines print the Runner's id:
-remove that Runner on **/me/runners** (your own) or ask your Admin to remove it on the
-Runners page (an Organisation Runner), unless it is already gone from there. Then check
-the Runners you kept: `agentic-runner list` shows each as `running`, and
+It always needs the name, even with one Runner here. Before you type the name, it lists
+what it deletes. Interrupting the prompt (Ctrl-C, Ctrl-D, or no terminal) deletes nothing.
+
+The console keeps listing the Runner: `uninstall` cannot retire it from this computer. Its
+last lines print the Runner's id. Retire that Runner in the console, unless it is already
+gone from there:
+
+- **Your own Runner:** on **/me/runners**, choose **Delete** on it.
+- **An Organisation Runner:** your Admin chooses **Remove** on it on the Organisation's
+  Runners page.
+
+On the Organisation's Runners page, a person's Runner shows **Disconnect** instead of
+**Remove**. Disconnect only ends that Organisation's connection; the Runner stays
+registered. Delete it on **/me/runners**.
+
+Then check the Runners you kept: `agentic-runner list` shows each as `running`, and
 `agentic-runner status <name>` shows a heartbeat seconds old.
