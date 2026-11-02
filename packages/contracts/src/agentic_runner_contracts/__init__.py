@@ -180,6 +180,11 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # every verb (issue 88); `host_party` on `DirectiveRouting`, `RunnerRoutingIdentity`,
 # `BootstrapResponse` and `SlotDelivery`, and `WorkerRuntimeContext.runner_host`, with
 # `RunnerRoutingIdentity.operated` in their place (QTS-2378).
+# 4.1.0 (QTS-2477, Spec: Agent Guardrails rev 7): `secret` -- `SecretReleaseRequest`,
+# `SecretRelease`, the holder-share and platform-share bindings and the fixture. Additive:
+# no existing body changes. A Runner on 4.1 asks for the Secrets a Directive needs and its
+# host does not hold; an older one never asks, so the control plane counts no Secret as
+# openable on it when it routes.
 __version__ = "4.0.0"
 
 __all__ = ["__version__"]

@@ -190,6 +190,19 @@ class RunnerFastApiClient:
             payload,
         )
 
+    async def release_secrets(
+        self, work_record_id: str, payload: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The sealed shares of the Secrets a Directive needs and this Runner's host does
+        not hold (Spec: Agent Guardrails rev 7, S4). ``payload`` is
+        ``SecretReleaseRequest``'s shape; the Directive token says which Runner and
+        Directive ask."""
+
+        return await self._post(
+            f"{self._prefix}/work-records/{_path_segment(work_record_id)}/secrets/release",
+            payload,
+        )
+
     async def append_evidence(
         self,
         work_record_id: str,

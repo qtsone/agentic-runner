@@ -315,7 +315,7 @@ async def test_a_directive_resolves_its_references_and_records_the_names() -> No
 
     activities = _activities(_resolver(**{REFERENCE: VALUE}))
 
-    credentials = await activities._resolve_credentials("wr-1", _state(REFERENCE))
+    credentials = await activities._resolve_credentials("wr-1", _state(REFERENCE), "wr-1:1")
 
     assert credentials is not None
     assert credentials.for_verb_seam(REFERENCE) == VALUE
@@ -330,7 +330,7 @@ async def test_a_contract_declaring_no_reference_resolves_nothing_at_all() -> No
 
     activities = _activities(None)
 
-    assert await activities._resolve_credentials("wr-1", _state()) is None
+    assert await activities._resolve_credentials("wr-1", _state(), "wr-1:1") is None
 
 
 @pytest.mark.asyncio
@@ -338,7 +338,7 @@ async def test_an_unresolvable_reference_fails_the_directive_closed_with_evidenc
     activities = _activities(_resolver())
 
     with pytest.raises(UnresolvableCredentialReferenceError) as refusal:
-        await activities._resolve_credentials("wr-1", _state(REFERENCE))
+        await activities._resolve_credentials("wr-1", _state(REFERENCE), "wr-1:1")
 
     client = activities._fastapi_client
     assert isinstance(client, _EvidenceRecordingClient)
