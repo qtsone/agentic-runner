@@ -3237,9 +3237,9 @@ class RunnerRalphActivities:
     ) -> dict[str, str]:
         """The Secrets this Directive needs and the host does not hold, opened in memory.
 
-        Asked only by a Runner holding the Organisation Key, the one holder key a Secret is
-        sealed to in this release; any other leaves the names to fail as not installed. The
-        values live in the Directive's credentials and nowhere else, and go with it.
+        Asked only by a Runner holding a holder key -- the Organisation Key, or its
+        operator's User Key; one with neither leaves the names to fail as not installed.
+        The values live in the Directive's credentials and nowhere else, and go with it.
         """
 
         missing = [
@@ -3247,8 +3247,8 @@ class RunnerRalphActivities:
             for reference in state.credential_references
             if not resolver.usable(str(state.contract_id), reference)
         ]
-        fingerprint = self._llm_keys.fingerprint if self._llm_keys is not None else None
-        if not missing or self._llm_keys is None or fingerprint is None:
+        fingerprints = self._llm_keys.holder_fingerprints if self._llm_keys is not None else []
+        if not missing or self._llm_keys is None or not fingerprints:
             return {}
         try:
             payload = await self._fastapi_client.release_secrets(
@@ -3256,7 +3256,7 @@ class RunnerRalphActivities:
                 SecretReleaseRequest(
                     directive_id=attempt_directive_id,
                     names=missing,
-                    holder_fingerprints=[fingerprint],
+                    holder_fingerprints=fingerprints,
                 ).model_dump(mode="json"),
             )
         except WorkerFastApiClientRejectionError as error:

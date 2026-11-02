@@ -43,6 +43,7 @@ from agentic_runner_contracts.runner_registration import (
     TagKey,
     Version,
 )
+from agentic_runner_contracts.user_key import SealedUserKey
 
 __all__ = [
     "ACCESS_DENIED",
@@ -141,6 +142,10 @@ class LoginResponse(BaseModel):
     heartbeat_interval_seconds: int = 30
     stale_after_seconds: int = 180
     temporal_address: str = ""
+    # Spec: Agent Guardrails rev 7, S5: the person's User Key, sealed in their browser to
+    # this Runner's Recipient Key when they confirmed. None for a person with no User Key
+    # yet: their Runner opens no member Secret until they log it in again with one.
+    user_key: SealedUserKey | None = None
 
 
 class ConnectableOrganisation(BaseModel):

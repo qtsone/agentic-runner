@@ -100,12 +100,20 @@ This needs a control plane on contracts 3.31 or later; an older one refuses `log
 ```sh
 agentic-runner login alice-laptop --control-plane <control-plane URL>
 # code           ABCD-EFGH
+# runner key     1a2b:3c4d:5e6f:7a8b:9c0d:1e2f:3a4b:5c6d
 # confirm at     https://<console>/device?code=ABCD-EFGH
+# user key       9f8e:7d6c:5b4a:3928:1706:f5e4:d3c2:b1a0
 ```
 
 `login` opens your browser on that page; sign in and confirm the code. The Runner is then
 yours, connected to no Organisation yet, and `login` installs and starts its login agent as
-`install` does. You hold at most 5 Runners. Then connect it:
+`install` does. You hold at most 5 Runners.
+
+When you confirm, the console also opens your User Key with your passkey and seals it to
+this Runner, so every Secret you set for yourself in the console works here with no
+retyping. Check that the Runner key the console shows matches the `runner key` line first.
+With no passkey yet, the console sets one up before it confirms. The `user key` line says
+the Runner kept it; this needs a control plane on contracts 4.3 or later. Then connect it:
 
 ```sh
 agentic-runner connect            # lists your Organisations and asks which

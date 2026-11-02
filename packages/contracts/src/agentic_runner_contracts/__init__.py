@@ -185,6 +185,13 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # no existing body changes. A Runner on 4.1 asks for the Secrets a Directive needs and its
 # host does not hold; an older one never asks, so the control plane counts no Secret as
 # openable on it when it routes.
+# 4.3.0 (QTS-2478, Spec: Agent Guardrails rev 7, S1, S3, S5): User Keys and a member's own
+# Secrets. `user_key` -- `SealedUserKey`, the enrolment and passkey-wrap bindings and
+# `fixtures/user-key.fixture.json`; `LoginResponse.user_key`;
+# `HeartbeatEnvelope.user_key_fingerprint`; `SecretScope` gains `member_product`, `agent`
+# and `runner`. Additive and omitted while None. Only a control plane on 4.3 hands a User
+# Key out at `login`, so only a Runner that talks to one has a fingerprint to report. A
+# Runner below 4.3 opens no member Secret, so routing counts none as openable on it.
 __version__ = "4.2.0"
 
 __all__ = ["__version__"]

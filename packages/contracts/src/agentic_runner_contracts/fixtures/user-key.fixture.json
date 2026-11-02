@@ -1,0 +1,39 @@
+{
+  "note": "One User Key (agentic_runner_contracts.user_key, Spec: Agent Guardrails rev 7, S3, S5): wrapped for two passkeys from their WebAuthn PRF output, sealed to a Runner's Recipient Key at login, and one member Secret sealed to it (agentic_runner_contracts.secret). The Runner's tests open it; the console's tests read the same file, so the browser's wrap, enrolment seal and bindings match the Runner's. Never a real value.",
+  "prf_input": "agentic-os/passkey-prf/v1",
+  "user_profile_id": "3e6b1f2a-9c47-4d08-b5e1-7a2c9f4d6b80",
+  "user_key_private": "wG90MDrNaDHm4Kydgs3lvZeK0BvNhdTxamGPlcW6Z1Q=",
+  "user_key_public": "IRkT1PWR3eGELlBs6uyF6LvviSZvs7uRH6+3lOgrchY=",
+  "user_key_fingerprint": "4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3",
+  "passkeys": [
+    {
+      "credential_id": "pk-fixture-AbCdEf012345",
+      "prf_output": "nf0lNjjj90/ppKCgfcZYmV0esqPdm50mjo11ZdoQ6jo=",
+      "wrap_binding": "agentic-os/user-key-wrap/v1|3e6b1f2a-9c47-4d08-b5e1-7a2c9f4d6b80|4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3|pk-fixture-AbCdEf012345",
+      "wrapped_private": "Qoq0qvYCY/8VKnqtGxt6z00IslZ4torvKWEXnkTpzsV9qLQwPEe5j3pBB52/+ZeZyiQb9pvbQdqIv0Qe"
+    },
+    {
+      "credential_id": "pk-fixture-ZyXwVu987654",
+      "prf_output": "/CHANvh+B4imsEHoc/fRFeLVgAk70R9sJ+vD27pP4NM=",
+      "wrap_binding": "agentic-os/user-key-wrap/v1|3e6b1f2a-9c47-4d08-b5e1-7a2c9f4d6b80|4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3|pk-fixture-ZyXwVu987654",
+      "wrapped_private": "5yPDTpc+aiVnKsnCGv962eS04griU3CbTsHAMMogRnA1Uqxh3CGt1pcot1Apj/Ki7fU6vtknWyGV9Iog"
+    }
+  ],
+  "recipient_key_id": "rk_7b3e9d1f5a2c4e6b8d0f2a4c6e8b0d1f",
+  "recipient_private_key": "CP+BcwlsCmC70eK22j2weATjwfllSPw6jagqTIig5mQ=",
+  "recipient_public_key": "mbRJWWX7QP+pqnJ4MTLBP23kb+Yp8nX9ub24Yx7eIC8=",
+  "enrolment_binding": "agentic-os/user-key/v1|enrolment|3e6b1f2a-9c47-4d08-b5e1-7a2c9f4d6b80|4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3|rk_7b3e9d1f5a2c4e6b8d0f2a4c6e8b0d1f",
+  "sealed_private": "9IB3FJ3CyddSWK5P1lLzSSXrNrnKxoau+FAXrkTKKV9nJlu0R03zsuwxTBQrm1nCZ74FUtdhOkyLOqpyjk1UzqMBqgJXOT98YrZxlTt4BAMSfYGRcU3aTnru2pQ=",
+  "value": "ghp_fixture-member-github-token-never-real",
+  "name": "GH_TOKEN",
+  "scope": "member_product",
+  "organisation_id": "7d2c4e19-3a8b-4f60-9c15-2e8a0b6d4f73",
+  "secret_id": "c41e7a92-5b3d-4f18-a6c0-9e2d8b7f1a35",
+  "holder_kind": "user_key",
+  "holder_share_plaintext": "rzgMXcPNV76ueX66MCmDHsXXVM2wLA4Td/dGI65IvV/vu1MLMQLxVlS2",
+  "holder_share_binding": "agentic-os/secret/v1|holder-share|7d2c4e19-3a8b-4f60-9c15-2e8a0b6d4f73|c41e7a92-5b3d-4f18-a6c0-9e2d8b7f1a35|user_key|4584:74f9:b2f9:3fb8:5662:50b5:e538:f7e3",
+  "holder_share": "dP8LnxoF8XBqtHQWeLgVkzv4F3O5jl3wBKX/xZOrKxn+F2hX6d69P8y/8svi//3WfEibQNi71YBuFIq90Baz5ZfzQrKA7JVXDp4B6IAnNHEgBwxvInEIkXhJUhqaJny7kkEUpOl9u/c=",
+  "platform_share_plaintext": "yFB8AqWkL8rbCxuXXUzufKClearZWGZmFdoyTMUt03KB3iVuQy+DMzXa",
+  "platform_share_binding": "agentic-os/secret/v1|platform-share|c41e7a92-5b3d-4f18-a6c0-9e2d8b7f1a35|rk_7b3e9d1f5a2c4e6b8d0f2a4c6e8b0d1f",
+  "platform_share": "YOW3RmtKSZwlFJdsMDoRB+YpQCw+ZwgLpbC7uo+aLSjGNTkjQk2yVeZAjNRuY5BOwEjJI5+EmjES2+xVHgX/bdsIjnYm5IKDUdGcwPbdhr/HGGFg1jJJoWQxMpHl1R40grt9Wf/Mlmg="
+}

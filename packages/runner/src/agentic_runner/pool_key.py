@@ -125,8 +125,12 @@ class LlmKeyOpener:
         pool_key: PoolKey | None,
         recipient_keys: RecipientKeyStore,
         endpoints: Mapping[str, LlmEndpoint] = LLM_SLOT_REFERENCES,
+        user_key: PoolKey | None = None,
     ) -> None:
         self._pool_key = pool_key
+        # The operator's User Key (Spec: Agent Guardrails rev 7, S5): it opens their own
+        # Secrets, never an LLM Key, which only the pool's Runners may hold.
+        self._user_key = user_key
         self._recipient_keys = recipient_keys
         self._endpoints = endpoints
 
@@ -137,6 +141,20 @@ class LlmKeyOpener:
     @property
     def holds_pool_key(self) -> bool:
         return self._pool_key is not None
+
+    @property
+    def user_key_fingerprint(self) -> str | None:
+        return self._user_key.fingerprint if self._user_key is not None else None
+
+    @property
+    def holder_fingerprints(self) -> list[str]:
+        """Every holder key this Runner holds, as a Secret release asks with them."""
+
+        return [key.fingerprint for key in self._holders().values()]
+
+    def _holders(self) -> dict[HolderKind, PoolKey]:
+        held = {HolderKind.ORGANISATION_KEY: self._pool_key, HolderKind.USER_KEY: self._user_key}
+        return {kind: key for kind, key in held.items() if key is not None}
 
     def open(self, release: LlmKeyRelease) -> CredentialSlot:
         """The key the two shares make, as a slot for the release's provider.
@@ -171,26 +189,24 @@ class LlmKeyOpener:
     def open_secrets(self, release: SecretRelease, *, names: Sequence[str]) -> dict[str, str]:
         """Every asked-for Secret's value, by name, held by the caller for one Directive.
 
-        The release must carry exactly ``names``, each sealed to this Runner's Pool Key:
-        a Secret the Directive did not ask for is not one it may hold. One error for every
+        The release must carry exactly ``names``, each sealed to a holder key this Runner
+        holds: the Organisation Key, or its operator's User Key for their own Secrets. A
+        Secret the Directive did not ask for is not one it may hold. One error for every
         way it fails, for :meth:`open`'s reason.
         """
 
         unopenable = "the released Secrets do not open with this Runner's keys"
-        if self._pool_key is None or sorted(secret.name for secret in release.secrets) != sorted(
-            names
-        ):
+        holders = self._holders()
+        if not holders or sorted(secret.name for secret in release.secrets) != sorted(names):
             raise LlmKeyUnopenableError(unopenable)
         values: dict[str, str] = {}
         try:
             for secret in release.secrets:
-                if (
-                    secret.holder_kind != HolderKind.ORGANISATION_KEY
-                    or secret.holder_fingerprint != self._pool_key.fingerprint
-                ):
+                holder = holders.get(secret.holder_kind)
+                if holder is None or secret.holder_fingerprint != holder.fingerprint:
                     raise SealedCredentialError("sealed to another holder key")
                 holder_share = open_sealed(
-                    private_key=self._pool_key.private_key,
+                    private_key=holder.private_key,
                     binding=release.holder_share_binding(secret),
                     ciphertext=secret.holder_share,
                 )
