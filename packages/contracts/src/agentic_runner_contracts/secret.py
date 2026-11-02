@@ -19,6 +19,14 @@ The sealed box is the one :mod:`.llm_key` and :mod:`.sealed_credential` use, unc
 the bindings are under their own domain :data:`SECRET_DOMAIN`, so a secret's share never
 opens as an LLM Key's, a sealed credential or an OAuth code, nor as another secret's.
 
+An Organisation or Product secret an Admin marks "Also members' Runners" (A1) has its
+holder share sealed also to each eligible member's User Key. The browser that typed it
+sealed it to the Organisation Key only, so for each member it is resealed later (S5): an
+Organisation Runner, which holds the Organisation Key, is handed :class:`HolderReseal` on
+its heartbeat ack, opens the share and seals it to the member's User Key, and reports
+:class:`ResealedHolderShare` on its next envelope. Only the holder share moves: the
+platform's share never reaches the Runner this way, so the reseal opens no value.
+
 ``fixtures/secret.fixture.json`` is one secret split, sealed and bound by these rules.
 The contracts tests open it, and the console's tests read the same file.
 """
@@ -34,12 +42,16 @@ from typing import Annotated, Final
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from agentic_runner_contracts.llm_key import Fingerprint, Identifier, SealedShare
-from agentic_runner_contracts.sealed_credential import KeyId, SlotName
+from agentic_runner_contracts.sealed_credential import KeyId, SlotName, key_fingerprint
+from agentic_runner_contracts.user_key import PublicKey
 
 __all__ = [
     "SECRET_DOMAIN",
+    "RESEALS_MAX",
     "HolderKind",
+    "HolderReseal",
     "ReleasedSecret",
+    "ResealedHolderShare",
     "SecretName",
     "SecretRelease",
     "SecretReleaseRequest",
@@ -58,6 +70,8 @@ SecretName = SlotName
 # One Directive's references fit well inside this; the bound keeps a release request small.
 _NAMES_MAX: Final[int] = 64
 _HOLDERS_MAX: Final[int] = 16
+# Reseals ride the heartbeat, so one beat carries a bounded batch; the rest wait a beat.
+RESEALS_MAX: Final[int] = 64
 
 
 class HolderKind(StrEnum):
@@ -196,6 +210,55 @@ class SecretRelease(BaseModel):
         return platform_share_binding(
             secret_id=secret.secret_id, recipient_key_id=self.recipient_key_id
         )
+
+
+class HolderReseal(BaseModel):
+    """One holder share an Organisation Runner reseals to a member's User Key (S5, A1).
+
+    ``holder_share`` is the share as stored, sealed to the Organisation Key of
+    ``holder_fingerprint``; it opens only under its own binding, so a share of another
+    secret or Organisation does not. The resealed share is bound to the fingerprint the
+    Runner computes from ``user_key_public_key`` itself, never to one it is told.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    organisation_id: Identifier
+    secret_id: Identifier
+    holder_fingerprint: Fingerprint
+    holder_share: SealedShare
+    user_key_public_key: PublicKey
+
+    @property
+    def user_key_fingerprint(self) -> str:
+        return key_fingerprint(self.user_key_public_key)
+
+    def holder_share_binding(self) -> bytes:
+        return holder_share_binding(
+            organisation_id=self.organisation_id,
+            secret_id=self.secret_id,
+            holder_kind=HolderKind.ORGANISATION_KEY,
+            holder_fingerprint=self.holder_fingerprint,
+        )
+
+    def resealed_binding(self) -> bytes:
+        return holder_share_binding(
+            organisation_id=self.organisation_id,
+            secret_id=self.secret_id,
+            holder_kind=HolderKind.USER_KEY,
+            holder_fingerprint=self.user_key_fingerprint,
+        )
+
+
+class ResealedHolderShare(BaseModel):
+    """A holder share resealed to the User Key of ``holder_fingerprint``. Ciphertext only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    organisation_id: Identifier
+    secret_id: Identifier
+    holder_fingerprint: Fingerprint
+    holder_share: SealedShare
 
 
 def _b64(raw: bytes) -> str:

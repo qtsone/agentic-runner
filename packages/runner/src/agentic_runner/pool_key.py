@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import os
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -25,11 +26,17 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from agentic_runner.llm_proxy import LLM_SLOT_REFERENCES, CredentialSlot, LlmEndpoint
 from agentic_runner.private_state import private_read, private_write
-from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialError, open_sealed
+from agentic_runner.sealed_box import RecipientKeyStore, SealedCredentialError, open_sealed, seal
 from agentic_runner_contracts.llm_access import PROVIDER_KEY_NAMES
 from agentic_runner_contracts.llm_key import LlmKeyRelease, join_llm_key
 from agentic_runner_contracts.sealed_credential import key_fingerprint
-from agentic_runner_contracts.secret import HolderKind, SecretRelease, join_secret
+from agentic_runner_contracts.secret import (
+    HolderKind,
+    HolderReseal,
+    ResealedHolderShare,
+    SecretRelease,
+    join_secret,
+)
 
 __all__ = [
     "POOL_KEY_ENV",
@@ -48,6 +55,8 @@ POOL_KEY_ENV: Final[str] = "AGENTIC_RUNNER_POOL_KEY"
 POOL_KEY_FILENAME: Final[str] = "pool-key"
 
 _KEY_BYTES: Final[int] = 32
+
+_logger = logging.getLogger(__name__)
 
 
 class PoolKeyError(ValueError):
@@ -219,6 +228,48 @@ class LlmKeyOpener:
         except (SealedCredentialError, ValueError) as error:
             raise LlmKeyUnopenableError(unopenable) from error
         return values
+
+    def reseal(self, reseals: Sequence[HolderReseal]) -> list[ResealedHolderShare]:
+        """Each holder share sealed to the Organisation Key, resealed to a member's User Key
+        (Spec: Agent Guardrails rev 7, A1, S5).
+
+        Only the holder share is opened, never a platform share, so no value is joined
+        here. A share that does not open with the Organisation Key this Runner holds is
+        skipped and the rest go on: the control plane asks again on a later beat.
+        """
+
+        if self._pool_key is None:
+            return []
+        resealed: list[ResealedHolderShare] = []
+        for item in reseals:
+            if item.holder_fingerprint != self._pool_key.fingerprint:
+                _logger.warning(
+                    "Secret %s is sealed to another Organisation Key; not resealed", item.secret_id
+                )
+                continue
+            try:
+                share = open_sealed(
+                    private_key=self._pool_key.private_key,
+                    binding=item.holder_share_binding(),
+                    ciphertext=item.holder_share,
+                )
+                sealed = seal(
+                    public_key=item.user_key_public_key,
+                    binding=item.resealed_binding(),
+                    plaintext=share,
+                )
+            except (SealedCredentialError, ValueError):
+                _logger.warning("Secret %s does not open with this Runner's keys", item.secret_id)
+                continue
+            resealed.append(
+                ResealedHolderShare(
+                    organisation_id=item.organisation_id,
+                    secret_id=item.secret_id,
+                    holder_fingerprint=item.user_key_fingerprint,
+                    holder_share=sealed,
+                )
+            )
+        return resealed
 
     def _recipient_private_key(self, recipient_key_id: str) -> str:
         # The previous key too: the control plane may have sealed its share just before a

@@ -192,6 +192,11 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # and `runner`. Additive and omitted while None. Only a control plane on 4.3 hands a User
 # Key out at `login`, so only a Runner that talks to one has a fingerprint to report. A
 # Runner below 4.3 opens no member Secret, so routing counts none as openable on it.
+# 4.4.0 (QTS-2479, Spec: Agent Guardrails rev 7, A1, S5): "Also members' Runners".
+# `secret` -- `HolderReseal`, `ResealedHolderShare`, `RESEALS_MAX`;
+# `HeartbeatAck.holder_reseals` and `HeartbeatEnvelope.holder_reseals`. Additive and
+# omitted while empty: the control plane hands reseals only to an Organisation Runner on
+# 4.4, so only such a Runner has resealed shares to report.
 __version__ = "4.3.0"
 
 __all__ = ["__version__"]
