@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+# [4.6.0](https://github.com/qtsone/agentic-runner/compare/v4.5.0...v4.6.0) (2026-11-02)
+
+
+### Features
+
+* **contracts:** reseal only Secrets an Admin marked "Also members' Runners" (QTS-2701) ([#101](https://github.com/qtsone/agentic-runner/issues/101)) ([8b4ca27](https://github.com/qtsone/agentic-runner/commit/8b4ca271dbbc4c2ff564bf432b1252ecb860127e)), closes [#100](https://github.com/qtsone/agentic-runner/issues/100) [#98](https://github.com/qtsone/agentic-runner/issues/98) [#100](https://github.com/qtsone/agentic-runner/issues/100)
+
 # [4.5.0](https://github.com/qtsone/agentic-runner/compare/v4.4.0...v4.5.0) (2026-11-02)
 
 
