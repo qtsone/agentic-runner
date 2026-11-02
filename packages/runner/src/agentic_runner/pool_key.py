@@ -35,6 +35,7 @@ from agentic_runner_contracts.secret import (
     HolderReseal,
     ResealedHolderShare,
     SecretRelease,
+    UnapprovedUserKey,
     join_secret,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "LlmKeyUnopenableError",
     "PoolKey",
     "PoolKeyError",
+    "ResealOutcome",
     "load_pool_key",
     "parse_pool_key",
     "save_pool_key",
@@ -118,6 +120,15 @@ def save_pool_key(state_dir: Path, value: str) -> PoolKey:
     pool_key = parse_pool_key(value)
     private_write(state_dir / POOL_KEY_FILENAME, pool_key.private_key.encode("ascii"))
     return pool_key
+
+
+@dataclass(frozen=True)
+class ResealOutcome:
+    """The holder shares resealed from one ack, and the members' User Keys refused for
+    want of an approval (Spec: Agent Guardrails rev 10, S5)."""
+
+    resealed: list[ResealedHolderShare] = field(default_factory=list)
+    unapproved: list[UnapprovedUserKey] = field(default_factory=list)
 
 
 class LlmKeyOpener:
@@ -229,23 +240,48 @@ class LlmKeyOpener:
             raise LlmKeyUnopenableError(unopenable) from error
         return values
 
-    def reseal(self, reseals: Sequence[HolderReseal]) -> list[ResealedHolderShare]:
+    def reseal(self, reseals: Sequence[HolderReseal]) -> ResealOutcome:
         """Each holder share sealed to the Organisation Key, resealed to a member's User Key
         (Spec: Agent Guardrails rev 7, A1, S5).
 
         Only the holder share is opened, never a platform share, so no value is joined
         here. A share that does not open with the Organisation Key this Runner holds is
         skipped and the rest go on: the control plane asks again on a later beat.
+
+        Only to a User Key an Admin approved (rev 10, S5): the control plane names the
+        key, so its word alone must not be enough. A reseal whose approval tag does not
+        verify under this Runner's Organisation Key is refused and its key reported
+        unapproved; one with no member at all comes from a control plane on 4.4, which
+        would not parse the report, so it is only logged.
         """
 
         if self._pool_key is None:
-            return []
-        resealed: list[ResealedHolderShare] = []
+            return ResealOutcome()
+        outcome = ResealOutcome()
         for item in reseals:
             if item.holder_fingerprint != self._pool_key.fingerprint:
                 _logger.warning(
                     "Secret %s is sealed to another Organisation Key; not resealed", item.secret_id
                 )
+                continue
+            if not item.approved(self._pool_key.private_key):
+                _logger.warning(
+                    "User Key %s has no valid approval here; Secret %s not resealed",
+                    item.user_key_fingerprint,
+                    item.secret_id,
+                )
+                refused = (
+                    None
+                    if item.user_id is None
+                    else UnapprovedUserKey(
+                        organisation_id=item.organisation_id,
+                        user_id=item.user_id,
+                        user_key_fingerprint=item.user_key_fingerprint,
+                        approval_tag=item.approval_tag,
+                    )
+                )
+                if refused is not None and refused not in outcome.unapproved:
+                    outcome.unapproved.append(refused)
                 continue
             try:
                 share = open_sealed(
@@ -261,7 +297,7 @@ class LlmKeyOpener:
             except (SealedCredentialError, ValueError):
                 _logger.warning("Secret %s does not open with this Runner's keys", item.secret_id)
                 continue
-            resealed.append(
+            outcome.resealed.append(
                 ResealedHolderShare(
                     organisation_id=item.organisation_id,
                     secret_id=item.secret_id,
@@ -269,7 +305,7 @@ class LlmKeyOpener:
                     holder_share=sealed,
                 )
             )
-        return resealed
+        return outcome
 
     def _recipient_private_key(self, recipient_key_id: str) -> str:
         # The previous key too: the control plane may have sealed its share just before a

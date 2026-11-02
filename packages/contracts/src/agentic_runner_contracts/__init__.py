@@ -197,6 +197,13 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # `HeartbeatAck.holder_reseals` and `HeartbeatEnvelope.holder_reseals`. Additive and
 # omitted while empty: the control plane hands reseals only to an Organisation Runner on
 # 4.4, so only such a Runner has resealed shares to report.
+# 4.5.0 (QTS-2699, Spec: Agent Guardrails rev 10, S5, S7): approved User Keys.
+# `user_key_approval` -- the approval tag and `fixtures/user-key-approval.fixture.json`;
+# `HolderReseal.user_id` and `.approval_tag`, `UnapprovedUserKey` and
+# `HeartbeatEnvelope.unapproved_user_keys`. Additive and omitted while empty. A Runner on
+# 4.5 reseals only to a User Key whose tag verifies under its Organisation Key, so the
+# control plane hands reseals only to a Runner on 4.5; a 4.4 body has no tag and is
+# refused, and no refusal is reported to a control plane that sent no member.
 __version__ = "4.4.0"
 
 __all__ = ["__version__"]

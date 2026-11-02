@@ -1,14 +1,19 @@
 """An Organisation Runner reseals "Also members' Runners" Secrets to members' User Keys
-(QTS-2479, Spec: Agent Guardrails rev 7, A1, S5).
+(QTS-2479, Spec: Agent Guardrails rev 7, A1, S5), and only to one an Admin approved
+(QTS-2699, rev 10, S5).
 
 What this pins, on ``fixtures/secret.fixture.json`` (an Organisation Secret sealed to the
-Organisation Key) and ``fixtures/user-key.fixture.json`` (a member's User Key):
+Organisation Key), ``fixtures/user-key.fixture.json`` (a member's User Key) and
+``fixtures/user-key-approval.fixture.json`` (an Admin's approval of that key):
 
 * the Organisation Runner opens the holder share with the Organisation Key and seals it to
   the member's User Key, bound to the fingerprint it computes itself; the member's Runner
   then opens the Secret with no retyping;
 * a share sealed to another Organisation Key, or bound to another Secret, is not resealed,
   and a Runner without the Organisation Key reseals nothing;
+* a reseal with no approval tag, or a tag for another member, Organisation or fingerprint,
+  or one keyed by anything but the Organisation Key, is refused and its key reported
+  unapproved, once; one naming no member (a 4.4 control plane) is refused unreported;
 * the ack's reseals are answered on the next envelope, once, and an envelope with none
   says nothing, so an older control plane still parses it.
 """
@@ -26,7 +31,7 @@ import pytest
 from agentic_runner import service
 from agentic_runner.credentials import CredentialResolver, EmptyCredentialStore
 from agentic_runner.llm_proxy import LlmProxy, SlotStore
-from agentic_runner.pool_key import LlmKeyOpener, parse_pool_key
+from agentic_runner.pool_key import LlmKeyOpener, ResealOutcome, parse_pool_key
 from agentic_runner.registration import RunnerState
 from agentic_runner.sealed_box import (
     RecipientKeyPair,
@@ -40,12 +45,15 @@ from agentic_runner_contracts.runner_registration import (
     HeartbeatAck,
     HeartbeatEnvelope,
 )
+from agentic_runner_contracts.sealed_credential import key_fingerprint
 from agentic_runner_contracts.secret import (
     HolderKind,
     HolderReseal,
     SecretRelease,
+    UnapprovedUserKey,
     holder_share_binding,
 )
+from agentic_runner_contracts.user_key_approval import approval_tag
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -55,9 +63,15 @@ def _fixture(name: str) -> dict[str, Any]:
 
 SECRET = _fixture("secret")
 USER_KEY = _fixture("user-key")
+APPROVAL = _fixture("user-key-approval")
+UNAPPROVED = UnapprovedUserKey(
+    organisation_id=SECRET["organisation_id"],
+    user_id=USER_KEY["user_profile_id"],
+    user_key_fingerprint=USER_KEY["user_key_fingerprint"],
+)
 
 
-def _reseal(**overrides: str) -> HolderReseal:
+def _reseal(**overrides: str | None) -> HolderReseal:
     return HolderReseal(
         **{
             "organisation_id": SECRET["organisation_id"],
@@ -65,6 +79,8 @@ def _reseal(**overrides: str) -> HolderReseal:
             "holder_fingerprint": SECRET["holder_fingerprint"],
             "holder_share": SECRET["holder_share"],
             "user_key_public_key": USER_KEY["user_key_public"],
+            "user_id": USER_KEY["user_profile_id"],
+            "approval_tag": APPROVAL["approval_tag"],
             **overrides,
         }
     )
@@ -91,7 +107,10 @@ def _organisation_runner(tmp_path: Path) -> LlmKeyOpener:
 def test_the_organisation_runner_reseals_a_share_the_members_runner_opens(
     tmp_path: Path,
 ) -> None:
-    [resealed] = _organisation_runner(tmp_path).reseal([_reseal()])
+    outcome = _organisation_runner(tmp_path).reseal([_reseal()])
+
+    [resealed] = outcome.resealed
+    assert outcome.unapproved == []
 
     assert resealed.holder_fingerprint == USER_KEY["user_key_fingerprint"]
     binding = holder_share_binding(
@@ -141,15 +160,69 @@ def test_the_organisation_runner_reseals_a_share_the_members_runner_opens(
     [
         pytest.param({"holder_fingerprint": ":".join(["0000"] * 8)}, id="another-organisation-key"),
         pytest.param({"secret_id": str(uuid4())}, id="bound-to-another-secret"),
-        pytest.param({"organisation_id": str(uuid4())}, id="bound-to-another-organisation"),
+        # Approved there, so the share's own binding is what refuses it.
+        pytest.param(
+            {
+                "organisation_id": (other := str(uuid4())),
+                "approval_tag": approval_tag(
+                    organisation_key_private=SECRET["organisation_key_private"],
+                    organisation_id=other,
+                    user_id=USER_KEY["user_profile_id"],
+                    user_key_fingerprint=USER_KEY["user_key_fingerprint"],
+                ),
+            },
+            id="bound-to-another-organisation",
+        ),
     ],
 )
 def test_a_share_that_does_not_open_is_skipped_and_the_rest_go_on(
     tmp_path: Path, overrides: dict[str, str]
 ) -> None:
-    resealed = _organisation_runner(tmp_path).reseal([_reseal(**overrides), _reseal()])
+    outcome = _organisation_runner(tmp_path).reseal([_reseal(**overrides), _reseal()])
 
-    assert [item.secret_id for item in resealed] == [SECRET["secret_id"]]
+    assert [item.secret_id for item in outcome.resealed] == [SECRET["secret_id"]]
+    assert outcome.unapproved == []
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        pytest.param(None, id="no-tag"),
+        *(
+            pytest.param(refused["approval_tag"], id=refused["why"].replace(" ", "-"))
+            for refused in APPROVAL["refused"]
+        ),
+    ],
+)
+def test_a_user_key_with_no_valid_approval_is_refused_and_reported(
+    tmp_path: Path, tag: str | None
+) -> None:
+    outcome = _organisation_runner(tmp_path).reseal(
+        [_reseal(approval_tag=tag), _reseal(approval_tag=tag, secret_id=str(uuid4()))]
+    )
+
+    assert outcome.resealed == []
+    # One report per key, not per Secret, naming the tag refused.
+    assert outcome.unapproved == [UNAPPROVED.model_copy(update={"approval_tag": tag})]
+
+
+def test_a_valid_tag_does_not_approve_another_members_key(tmp_path: Path) -> None:
+    # The control plane swaps in a key of its own and keeps the member's tag: the tag is
+    # over the fingerprint, which the Runner computes from the key it would seal to.
+    outcome = _organisation_runner(tmp_path).reseal(
+        [_reseal(user_key_public_key=SECRET["recipient_public_key"])]
+    )
+
+    assert outcome.resealed == []
+    assert [item.user_key_fingerprint for item in outcome.unapproved] == [
+        key_fingerprint(SECRET["recipient_public_key"])
+    ]
+
+
+def test_a_reseal_naming_no_member_is_refused_and_not_reported(tmp_path: Path) -> None:
+    outcome = _organisation_runner(tmp_path).reseal([_reseal(user_id=None, approval_tag=None)])
+
+    assert outcome == ResealOutcome()
 
 
 def test_a_runner_without_the_organisation_key_reseals_nothing(tmp_path: Path) -> None:
@@ -159,7 +232,7 @@ def test_a_runner_without_the_organisation_key_reseals_nothing(tmp_path: Path) -
         user_key=parse_pool_key(USER_KEY["user_key_private"]),
     )
 
-    assert members_runner.reseal([_reseal()]) == []
+    assert members_runner.reseal([_reseal()]) == ResealOutcome()
 
 
 class _Registration:
@@ -217,6 +290,39 @@ async def test_the_acks_reseals_are_answered_once_on_the_next_envelope(tmp_path:
     # Nothing to report is no key at all: a control plane below 4.4 forbids it.
     assert "holder_reseals" not in third.model_dump(mode="json")
     assert "holder_reseals" in second.model_dump(mode="json")
+    assert "unapproved_user_keys" not in second.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_an_unapproved_key_is_reported_once_on_the_next_envelope(tmp_path: Path) -> None:
+    registration = _Registration()
+    runner_id = uuid4()
+    stream = service.ControlPlaneStream(
+        client=registration,  # type: ignore[arg-type]
+        state=RunnerState(
+            runner_id=runner_id,
+            identity_id="id",
+            private_key_pem="unused",
+            temporal_namespace="org-x",
+            task_queue=f"runner.{runner_id}",
+        ),
+        isolation=service.IsolationMode.NONE,
+        proxy=LlmProxy(slots=SlotStore()),
+        sealed=SealedCredentialStream(RecipientKeyStore(tmp_path / "stream")),
+        credentials=CredentialResolver(store=EmptyCredentialStore()),
+        load=service._LoadInterceptor(),
+        llm_keys=_organisation_runner(tmp_path),
+    )
+
+    registration.reseals = [_reseal(approval_tag=None)]
+    await stream.exchange([])
+    await stream.exchange([])
+    await stream.exchange([])
+
+    _, second, third = registration.sent
+    assert second.holder_reseals == []
+    assert second.unapproved_user_keys == [UNAPPROVED]  # no tag was sent, none is named
+    assert "unapproved_user_keys" not in third.model_dump(mode="json")
 
 
 def test_an_ack_with_no_reseals_omits_the_field() -> None:
