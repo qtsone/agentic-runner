@@ -1551,6 +1551,14 @@ def test_a_value_stored_through_the_os_store_reads_back_and_is_absent_from_disk(
     assert all(secret not in " ".join(argv) for argv in keychain.argv_seen)
 
 
+def test_a_keychain_that_refuses_the_clear_raises_instead_of_reporting_it_empty() -> None:
+    def locked(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 51, "", "User interaction is not allowed.")
+
+    with pytest.raises(RuntimeError, match="User interaction is not allowed"):
+        KeychainStore("agentic-runner.acme", run=locked).clear()
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="the real Keychain is macOS-only")
 def test_the_real_keychain_round_trips_a_value_off_disk(tmp_path: Path) -> None:
     keychain = tmp_path / "test.keychain-db"

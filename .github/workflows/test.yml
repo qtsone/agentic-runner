@@ -244,6 +244,12 @@ jobs:
         if: runner.os == 'macOS'
         run: uv run --locked pytest -q tests/unit/test_directive_sandbox_spawn.py
 
+      # The only run of `security` against a real keychain, in a temp keychain of its own;
+      # uninstall's clear depends on its exit codes (QTS-2687).
+      - name: Real Keychain on macOS
+        if: runner.os == 'macOS'
+        run: uv run --locked pytest -q tests/unit/test_runner_workstation.py -k real_keychain
+
   summary:
     name: Summary
     runs-on: ubuntu-latest

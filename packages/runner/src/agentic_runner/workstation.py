@@ -978,9 +978,11 @@ def uninstall(
         if process_id(paths) is not None:
             raise
         lines.append(f"not loaded     {error}")
+    had_definition = definition.path.exists()
     definition.path.unlink(missing_ok=True)
     drive(definition.remove, run=run)
-    lines.append(f"removed        {definition.path}")
+    if had_definition:
+        lines.append(f"removed        {definition.path}")
     store = open_workstation_store(
         paths.name, fallback=paths.credentials, platform=platform, run=run
     )

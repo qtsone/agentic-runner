@@ -150,12 +150,17 @@ class KeychainStore:
                 text=True,
                 check=False,
             )
-            if deleted.returncode != 0:
+            if deleted.returncode == _ITEM_NOT_FOUND:
                 return
+            # A locked keychain or a refused access prompt is not "nothing left": returning
+            # would let uninstall report the secrets gone and delete the state behind them.
+            if deleted.returncode != 0:
+                raise RuntimeError(f"Keychain refused the clear: {deleted.stderr.strip()}")
         raise RuntimeError(f"Keychain still holds {self._service} items after {_CLEAR_LIMIT}")
 
 
 _CLEAR_LIMIT = 1000
+_ITEM_NOT_FOUND = 44  # errSecItemNotFound, as `security` exits
 
 
 def _quote(value: str) -> str:
