@@ -4211,6 +4211,7 @@ class RunnerRalphActivities:
             else self._product_scope_refusal(
                 state,
                 snapshot,
+                snapshots,
                 verb=verb,
                 identifier=identifier,
                 bound_product=bound_product or state.product_id,
@@ -4237,6 +4238,7 @@ class RunnerRalphActivities:
         self,
         state: _RuntimeContextState,
         snapshot: GrantSnapshot,
+        snapshots: tuple[GrantSnapshot, ...],
         *,
         verb: str,
         identifier: str,
@@ -4253,6 +4255,11 @@ class RunnerRalphActivities:
           before any verb on a repository it checks its own tags against the selector of
           the Product that owns it, and fails closed. After binding, routing carries the
           Product's selector and ``assert_routed`` already holds it.
+
+        The selector is checked against every snapshot the verb is decided on, not only
+        the deciding one: an Organisation Admin's selector edit reaches the Runner as a
+        push (PRD issue 44), and the Directive's own snapshot -- which wins a Grant tie --
+        still holds the old selector until the next Directive boundary (QTS-2843).
 
         ``None`` when neither applies, including a repository no registry row in the
         snapshot names a Product for: the Grant has already answered that one.
@@ -4276,9 +4283,14 @@ class RunnerRalphActivities:
         identity = self._current_routing_identity()
         if state.repository or identity is None:
             return None
-        selector = snapshot.runner_selector_of(product_id)
-        if selector is not None and selector_satisfied(selector, identity.tags):
+        unsatisfied = [
+            selector
+            for selector in (each.runner_selector_of(product_id) for each in snapshots)
+            if selector is None or not selector_satisfied(selector, identity.tags)
+        ]
+        if not unsatisfied:
             return None
+        selector = unsatisfied[0]
         return (
             f"this Runner's tags do not satisfy the Runner selector of Product {product_id}, "
             f"which owns {identifier}",

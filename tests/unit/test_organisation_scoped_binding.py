@@ -263,6 +263,58 @@ async def test_a_runner_whose_tags_miss_the_products_selector_refuses_the_reposi
     assert refused[0]["runner_id"] == str(RUNNER_ID)
 
 
+class _PushedLink:
+    """A heartbeat link that has applied one pushed snapshot and is otherwise live."""
+
+    tags = None
+    operated = None
+
+    def __init__(self, pushed: GrantSnapshot) -> None:
+        self._pushed = pushed
+
+    def snapshot_for(self, agent_id: str, contract_id: str | None) -> GrantSnapshot:
+        return self._pushed
+
+    async def require_ready(self, agent_id: str, contract_id: str | None, *, verb: str) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_selector_edit_pushed_mid_directive_refuses_the_repository(
+    tmp_path: Path, socket_dir: Path
+) -> None:
+    """QTS-2843: the Directive's snapshot wins a Grant tie, but its selector is the one
+    from before the edit; the pushed snapshot's narrower selector must still bite."""
+
+    client = _Client()
+    activities = RunnerRalphActivities(
+        client,  # type: ignore[arg-type]
+        git_workspace=FakeGitWorkspace(),
+        workspace_root=tmp_path,
+        routing_identity=RunnerRoutingIdentity(runner_id=RUNNER_ID, tags={"zone": "us"}),
+        heartbeat_link=_PushedLink(_snapshot(app_selector={"zone": "eu"})),  # type: ignore[arg-type]
+    )
+    workspace = _workspace(tmp_path)
+    server = AttemptCallbackServer(
+        socket_path=socket_dir / "s.sock",
+        handlers=activities._callback_handlers(WORK_RECORD_ID, _state(), workspace),
+    )
+
+    async with server:
+        read_app = await _post(server, "/v0/repo/read", {"repository": APP})
+        read_lib = await _post(server, "/v0/repo/read", {"repository": LIB})
+
+    assert read_app["allowed"] is False and "selector" in read_app["reason"]
+    assert read_lib["allowed"] is True
+    assert not (workspace / "acme" / "app").exists()
+    (refused,) = [
+        evaluation
+        for evaluation in client.evaluations()
+        if evaluation.get("event") == "directive.repository_refused"
+    ]
+    assert refused["selector"] == [{"key": "zone", "operator": "In", "values": ["eu"]}]
+
+
 @pytest.mark.asyncio
 async def test_a_binding_the_control_plane_refuses_binds_nothing(
     tmp_path: Path, socket_dir: Path
