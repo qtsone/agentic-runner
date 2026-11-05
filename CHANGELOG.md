@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.6.1](https://github.com/qtsone/agentic-runner/compare/v4.6.0...v4.6.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* **runner:** check a Product's selector against the pushed Grant snapshot too (QTS-2843) ([#102](https://github.com/qtsone/agentic-runner/issues/102)) ([b478c14](https://github.com/qtsone/agentic-runner/commit/b478c1467d05edd4ed139d7b4df3d6def0a5b4cd))
+
 # [4.6.0](https://github.com/qtsone/agentic-runner/compare/v4.5.0...v4.6.0) (2026-11-02)
 
 
