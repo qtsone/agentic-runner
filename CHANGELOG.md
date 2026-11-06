@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.6.2](https://github.com/qtsone/agentic-runner/compare/v4.6.1...v4.6.2) (2026-11-06)
+
+
+### Bug Fixes
+
+* **runner:** a reinstall over a registered Runner asks for no token (QTS-2861) ([#104](https://github.com/qtsone/agentic-runner/issues/104)) ([3bf2ebe](https://github.com/qtsone/agentic-runner/commit/3bf2ebe8cc4d2c202e5a5e6cc6cd2768eaee68e9))
+
 ## [4.6.1](https://github.com/qtsone/agentic-runner/compare/v4.6.0...v4.6.1) (2026-11-05)
 
 
