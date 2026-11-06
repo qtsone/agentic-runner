@@ -790,10 +790,16 @@ def _install(arguments: argparse.Namespace, paths: workstation.RunnerPaths) -> i
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
-    # Pasted, never a flag: a flag is in the process table for every uid on the box.
-    token = registration_token_from_env() or getpass.getpass(
-        "Runner Registration Token (yours from /me/runners, or the Organisation Admin's for "
-        "an Organisation Runner): "
+    # Pasted, never a flag: a flag is in the process table for every uid on the box. A state
+    # directory that already holds a Runner never registers again, so a reinstall (a new
+    # PATH, `--acp-cli-kinds`) asks for no token it would not use (QTS-2861).
+    token = registration_token_from_env() or (
+        None
+        if load_state(paths.state_dir) is not None
+        else getpass.getpass(
+            "Runner Registration Token (yours from /me/runners, or the Organisation Admin's "
+            "for an Organisation Runner): "
+        )
     )
     # Pasted too, never a flag value, for the token's reason. Taken out of the environment so
     # the Runner this install starts reads it from the state directory, where it is kept.
