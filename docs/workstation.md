@@ -83,7 +83,8 @@ After the Organisation creates a new Pool Key, run `install` again with the new 
   keeps running after a reboot with nobody logged in.
 
 The Runner captures the `PATH` you installed from. If you install a CLI later, run
-`agentic-runner install` again so the Runner can find it.
+`agentic-runner install` again so the Runner can find it. A Runner that is already
+registered asks for no Registration Token on a reinstall.
 
 To drive a CLI through its ACP bridge, name its kind on `install`:
 `--acp-cli-kinds codex_cli,claude_code`. The Runner keeps it in the Runner's
@@ -328,8 +329,8 @@ under that name once its control plane is on contracts 3.27.
 ### Switch to a new token
 
 Running `install` again over the same Runner's directory keeps the identity it
-already holds: it prints `already registered …` and `token not used`, and the token you
-pasted never reaches the control plane. `uninstall` is not the way either: it deletes the
+already holds: it asks for no token, and one you set in the environment never reaches the
+control plane (it prints `already registered …` and `token not used`). `uninstall` is not the way either: it deletes the
 old identity for good. To swap an Organisation Runner for one hosted by you (or any Runner
 for a new token):
 

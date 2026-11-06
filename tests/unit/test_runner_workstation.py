@@ -1244,6 +1244,53 @@ def test_the_token_prompt_names_both_places_a_token_comes_from(
     assert "/me/runners" in prompt and "Organisation Admin" in prompt
 
 
+def test_reinstalling_a_registered_runner_asks_for_no_token(
+    tmp_path: Path,
+    bin_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """QTS-2861: `install --acp-cli-kinds` over a registered Runner prompted for a token it
+    then reported as not used."""
+
+    paths = workstation.RunnerPaths(root=tmp_path / "state", name="acme")
+    plane = FakeControlPlane()
+    real_install = workstation.install
+
+    async def install_against_the_fake(*args: Any, **kwargs: Any) -> list[str]:
+        async with httpx.AsyncClient(transport=plane.transport()) as http:
+            return await real_install(
+                *args,
+                **kwargs,
+                platform="darwin",
+                home=tmp_path / "home",
+                run=Commands(),
+                http_client=http,
+            )
+
+    def refuse(_prompt: str) -> str:
+        raise AssertionError("a reinstall must not prompt for a Registration Token")
+
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(cli.workstation, "install", install_against_the_fake)
+    flags = ["install", "acme", "--control-plane", CONTROL_PLANE, "--root", str(paths.root)]
+    monkeypatch.setenv(cli.REGISTRATION_TOKEN_ENV, "registration-token-of-sixteen-plus")
+    assert cli.main([*flags, "--no-start"]) == 0
+    registered = load_state(paths.state_dir)
+    capsys.readouterr()
+
+    monkeypatch.delenv(cli.REGISTRATION_TOKEN_ENV)
+    monkeypatch.delenv(cli.AGENT_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(cli.getpass, "getpass", refuse)
+    assert cli.main([*flags, "--no-start", "--acp-cli-kinds", "claude_code"]) == 0
+
+    assert len(plane.bootstraps) == 1
+    assert load_state(paths.state_dir) == registered
+    assert workstation.WorkstationSettings.load(paths).acp_cli_kinds == "claude_code"
+    out = capsys.readouterr().out
+    assert out.startswith("already registered") and "token" not in out
+
+
 def test_a_reinstall_keeps_the_acp_cli_kinds_the_last_install_was_given(
     tmp_path: Path, bin_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

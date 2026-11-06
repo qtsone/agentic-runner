@@ -823,7 +823,7 @@ async def install(
     paths: RunnerPaths,
     settings: WorkstationSettings,
     *,
-    registration_token: str,
+    registration_token: str | None,
     pool_key: str | None = None,
     platform: str = sys.platform,
     home: Path | None = None,
@@ -837,7 +837,8 @@ async def install(
     on /me/runners or the Organisation's Admin issued them (12 A6, QTS-1304) -- pasted at the
     prompt, never stored: the identity bootstrap hands back is what every later start uses,
     and a lost state directory means a reinstall and a re-delivery of any sealed value
-    (22 A4), by design.
+    (22 A4), by design. ``registration_token`` is ``None`` for a reinstall over a state
+    directory that already holds a Runner, which registers nothing.
 
     ``pool_key`` is the Organisation's Pool Key, for a Runner of its pool that opens the
     pool's LLM Keys (Spec: Runners rev 3). Unlike the token it is kept, 0600 in the state
@@ -862,7 +863,7 @@ async def install(
     if pool_key:
         save_pool_key(paths.state_dir, pool_key)
     lines = [outcome]
-    if already_registered:
+    if already_registered and registration_token:
         # QTS-1314: the dogfood reinstall kept an Organisation-hosted identity while the
         # person believed the user-hosted token they had just pasted had taken effect.
         lines.append(
