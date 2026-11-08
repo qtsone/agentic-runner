@@ -342,11 +342,16 @@ def test_an_install_made_before_the_runner_name_keeps_running(
 
 
 def _installed(
-    root: Path, name: str, *, organisation: UUID | None = None
+    root: Path,
+    name: str,
+    *,
+    organisation: UUID | None = None,
+    operator: UUID | None = None,
+    control_plane: str = CONTROL_PLANE,
 ) -> workstation.RunnerPaths:
     paths = workstation.RunnerPaths(root=root, name=name)
     paths.create()
-    _settings(paths, "/usr/bin:/bin").save(paths)
+    _settings(paths, "/usr/bin:/bin", control_plane_url=control_plane).save(paths)
     if organisation is not None:
         save_state(
             paths.state_dir,
@@ -356,6 +361,7 @@ def _installed(
                 private_key_pem="unused",
                 temporal_namespace=f"org-{organisation}",
                 task_queue="runner.x",
+                operator_user_profile_id=operator,
             ),
         )
     return paths
@@ -1109,6 +1115,125 @@ def test_a_subscription_sign_in_needs_only_the_workstation_run_environment(
 
     assert cli.main(["sign-in", "claude", "--name", "alice-laptop"]) == 0
     assert called_back == [f"{CONTROL_PLANE}/"]
+
+
+# ------------------------------------------------------------------ login on a machine with Runners
+
+
+@pytest.fixture
+def logins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[tuple[str, str]]:
+    """``workstation.login`` recorded as (Runner name, control plane), on a workstation with
+    no control plane in its environment, as the owner's walk ran it (QTS-2937)."""
+
+    called: list[tuple[str, str]] = []
+
+    async def login(
+        paths: workstation.RunnerPaths, settings: workstation.WorkstationSettings, **_: Any
+    ) -> list[str]:
+        called.append((paths.name, settings.control_plane_url))
+        return [f"logged in {paths.name}"]
+
+    monkeypatch.setattr(workstation, "login", login)
+    monkeypatch.delenv(service.CONTROL_PLANE_ENV, raising=False)
+    monkeypatch.setenv(workstation.ROOT_ENV, str(tmp_path / "state"))
+    monkeypatch.setattr(cli, "_in_container", lambda: False)
+    return called
+
+
+def test_login_on_a_runner_installed_by_a_persons_token_says_it_is_already_theirs(
+    tmp_path: Path, logins: list[tuple[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """QTS-2937: the owner's macbook-iulian, installed by token from /me/runners, got
+    `--control-plane is required`, and past that would have become a second Runner."""
+
+    root = tmp_path / "state"
+    _installed(root, "macbook-iulian", organisation=uuid4(), operator=uuid4())
+
+    assert cli.main(["login"]) == 0
+
+    out = capsys.readouterr().out
+    assert out.startswith("macbook-iulian is already yours (")
+    assert "`agentic-runner connect --name macbook-iulian`" in out
+    assert "`agentic-runner sign-in claude|codex --name macbook-iulian`" in out
+    assert logins == []
+    assert workstation.installed_names(root) == ["macbook-iulian"]
+
+
+def test_login_never_makes_an_organisations_runner_anyones(
+    tmp_path: Path, logins: list[tuple[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "acme-pool", organisation=uuid4())
+
+    assert cli.main(["login"]) == 1
+
+    error = capsys.readouterr().err
+    assert "acme-pool is an Organisation's Runner" in error
+    assert "`agentic-runner login <name>`" in error
+    assert logins == []
+    assert workstation.installed_names(root) == ["acme-pool"]
+
+
+def test_login_of_a_new_runner_takes_the_control_plane_the_installed_ones_use(
+    tmp_path: Path, logins: list[tuple[str, str]]
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "macbook-iulian", organisation=uuid4(), operator=uuid4())
+
+    assert cli.main(["login", "second-laptop"]) == 0
+
+    assert logins == [("second-laptop", CONTROL_PLANE)]
+
+
+def test_login_asks_which_installed_runner_and_which_control_plane_when_there_are_several(
+    tmp_path: Path,
+    logins: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop", organisation=uuid4(), operator=uuid4())
+    _installed(root, "never-logged-in", control_plane="https://api.agentic.other.test")
+    answers = iter(["2", "2"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(os, "isatty", lambda _fd: True)
+
+    assert cli.main(["login"]) == 0
+    assert logins == [("never-logged-in", "https://api.agentic.other.test")]
+
+    assert cli.main(["login", "third"]) == 0
+    assert logins[1] == ("third", "https://api.agentic.other.test")
+    out = capsys.readouterr().out
+    assert "  [1] alice-laptop\n  [2] never-logged-in" in out
+    assert f"  [1] {CONTROL_PLANE}\n  [2] https://api.agentic.other.test" in out
+
+
+def test_login_without_a_terminal_names_the_installed_runners_and_registers_none(
+    tmp_path: Path,
+    logins: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "state"
+    _installed(root, "alice-laptop", organisation=uuid4(), operator=uuid4())
+    _installed(root, "billing", organisation=uuid4())
+    monkeypatch.setattr(os, "isatty", lambda _fd: False)
+
+    assert cli.main(["login"]) == 2
+
+    assert "this machine has alice-laptop, billing: name one" in capsys.readouterr().err
+    assert logins == []
+    assert not (root / cli.DEFAULT_LOGIN_NAME).exists()
+
+
+def test_login_on_a_machine_with_no_runner_needs_a_control_plane(
+    logins: list[tuple[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["login"]) == 2
+    assert "--control-plane (or AGENTIC_CONTROL_PLANE_URL) is required" in capsys.readouterr().err
+
+    assert cli.main(["login", "--control-plane", CONTROL_PLANE]) == 0
+    assert logins == [(cli.DEFAULT_LOGIN_NAME, CONTROL_PLANE)]
 
 
 def test_a_bare_run_on_a_machine_with_installed_runners_says_to_start_one(
