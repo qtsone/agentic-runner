@@ -210,6 +210,6 @@ the package the floor is *about*, and read back through ``agentic-runner --versi
 # A Runner on 4.6 reseals only a Secret whose tag verifies under its Organisation Key, so
 # the control plane hands reseals only to a Runner on 4.6; a 4.5 body has no tag and is
 # refused, logged only.
-__version__ = "4.6.3"
+__version__ = "4.6.4"
 
 __all__ = ["__version__"]

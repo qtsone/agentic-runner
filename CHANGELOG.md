@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.6.4](https://github.com/qtsone/agentic-runner/compare/v4.6.3...v4.6.4) (2026-11-08)
+
+
+### Bug Fixes
+
+* **runner:** login acts on the Runner installed here, with its control plane (QTS-2937) ([#106](https://github.com/qtsone/agentic-runner/issues/106)) ([f350fbc](https://github.com/qtsone/agentic-runner/commit/f350fbc523e42e8c3ba23f6c4a20f577f933caf3))
+
 ## [4.6.3](https://github.com/qtsone/agentic-runner/compare/v4.6.2...v4.6.3) (2026-11-08)
 
 
