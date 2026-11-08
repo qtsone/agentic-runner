@@ -223,32 +223,26 @@ jobs:
             index:org.opencontainers.image.description=The Agentic OS Runner: an activity-only Temporal executor for workspaces, Agent Runtimes and verb seams
             index:org.opencontainers.image.licenses=AGPL-3.0-only
 
-      - uses: sigstore/cosign-installer@v4.1.2
-        if: env.PUBLISH == 'true'
-
-      - name: Sign the image
-        if: env.PUBLISH == 'true'
-        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
-
+      # Not pushed to the registry, and no cosign signature: GHCR has no referrers API, so
+      # either lands in an index tagged `sha256-<digest>`, which the package page then offers
+      # as its pull command and docker cannot run (QTS-1716). `gh attestation verify` reads
+      # the attestation from GitHub.
       - name: Attest build provenance
         if: env.PUBLISH == 'true'
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          push-to-registry: false
 
       - uses: imjasonh/setup-crane@v0.7
         if: env.PUBLISH == 'true'
         with:
           version: v0.22.1
 
-      # Last, after the signature and the attestation: GHCR has no referrers API, so both land
-      # in an index tagged `sha256-<digest>`, and the package page shows the newest tagged
-      # version, which docker cannot pull (QTS-1712). `crane tag` re-uses the manifest as is,
-      # so the digest signed above is the one tagged. The contracts tag is what the control
-      # plane's floor check names (issue 41); it equals the runner tag and stays for those
-      # who pin it.
+      # `crane tag` re-uses the manifest as is, so the digest attested above is the one
+      # tagged. The contracts tag is what the control plane's floor check names (issue 41);
+      # it equals the runner tag and stays for those who pin it.
       - name: Tag the release
         if: env.PUBLISH == 'true'
         env:
@@ -284,16 +278,6 @@ jobs:
       - name: helm package
         run: helm package charts/agentic-runner --destination dist/
 
-      # Both logins: helm keeps its own credential store, and cosign and the attestation push
-      # read Docker's.
-      - name: Log in to GHCR
-        if: env.PUBLISH == 'true'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: helm push
         id: push
         if: env.PUBLISH == 'true'
@@ -308,31 +292,14 @@ jobs:
           [ -n "$digest" ] || { echo "::error::helm push printed no digest"; exit 1; }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      - uses: sigstore/cosign-installer@v4.1.2
-        if: env.PUBLISH == 'true'
-
-      - name: Sign the chart
-        if: env.PUBLISH == 'true'
-        run: cosign sign --yes "ghcr.io/qtsone/charts/agentic-runner@${{ steps.push.outputs.digest }}"
-
+      # Not pushed to the registry, for the same package page as the image's (QTS-1716).
       - name: Attest build provenance
         if: env.PUBLISH == 'true'
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/qtsone/charts/agentic-runner
           subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-
-      - uses: imjasonh/setup-crane@v0.7
-        if: env.PUBLISH == 'true'
-        with:
-          version: v0.22.1
-
-      # `helm push` cannot push untagged, so the version tag is written again after the
-      # signature and the attestation, for the same package page as the image's (QTS-1712).
-      - name: Tag the release
-        if: env.PUBLISH == 'true'
-        run: crane tag "ghcr.io/qtsone/charts/agentic-runner@${{ steps.push.outputs.digest }}" "$VERSION"
+          push-to-registry: false
 
   # semantic-release created the Release with the changelog when it pushed the tag; this
   # appends what an installer checks against.
