@@ -23,9 +23,11 @@ own store (``sign_in.py``, Spec: Runners rev 3). No ids, and no code or token pa
 through the control plane.
 
 ``login [name]`` makes this Runner the person's with a device flow -- a code shown here,
-confirmed in the browser, no token copied -- and ``connect [organisation]`` asks for a
-connection to an Organisation they belong to (Spec: Runners rev 14). One Runner then takes
-the work of every Organisation it is connected to, under one concurrency limit.
+confirmed in the browser, no token copied; ``install`` is the token's way, for an
+Organisation's own Runner or a New token that reinstalls one -- and ``connect
+[organisation]`` asks for a connection to an Organisation they belong to (Spec: Runners
+rev 14). One Runner then takes the work of every Organisation it is connected to, under
+one concurrency limit.
 
 ``skill install | print`` hands the setup skill to the person's own Claude Code or Codex
 (``skill.py``, console-v2 issue 21).
@@ -64,7 +66,12 @@ from agentic_runner.config import load as load_config
 from agentic_runner.host_store import open_workstation_store
 from agentic_runner.pool_key import POOL_KEY_ENV, PoolKeyError
 from agentic_runner.recipient_key_secret import ensure_recipient_key, in_cluster
-from agentic_runner.registration import RunnerRegistrationError, can_separate_uids, load_state
+from agentic_runner.registration import (
+    RunnerRegistrationError,
+    RunnerState,
+    can_separate_uids,
+    load_state,
+)
 from agentic_runner.sealed_box import RECIPIENT_KEY_FILENAME
 from agentic_runner.service import (
     AGENT_TOKEN_ENV,
@@ -187,7 +194,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--login-agent", action="store_true", help=argparse.SUPPRESS)
 
     install = subcommands.add_parser(
-        "install", help="register a workstation Runner and install its login agent (issue 47)"
+        "install",
+        help="install a workstation Runner from a pasted Runner Registration Token: an "
+        "Organisation's Runner, or a New token that reinstalls one; a Runner of your own is "
+        "`login`",
     )
     install.add_argument("name", help=_NAME_HELP)
     install.add_argument(
@@ -219,17 +229,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     install.add_argument("--root", default=None, type=Path, help="state root (default per OS)")
     login = subcommands.add_parser(
         "login",
-        help="make this Runner yours: confirm a code in the browser, no token to copy",
+        help="make a Runner yours: confirm a code in the browser, no token to copy",
     )
     login.add_argument(
         "name",
         nargs="?",
         default=None,
-        help=f"{_NAME_HELP}; default `{DEFAULT_LOGIN_NAME}` on a workstation, `RUNNER_NAME` "
-        "in a container",
+        help=f"{_NAME_HELP}; omitted, the Runner installed here (asked when several), "
+        f"`{DEFAULT_LOGIN_NAME}` on a machine with none, `RUNNER_NAME` in a container",
     )
     login.add_argument(
-        "--control-plane", default=os.environ.get(CONTROL_PLANE_ENV), help="control plane URL"
+        "--control-plane",
+        default=os.environ.get(CONTROL_PLANE_ENV),
+        help="control plane URL; omitted on a workstation, the one its Runners use",
     )
     login.add_argument("--temporal-plaintext", action="store_true", help=argparse.SUPPRESS)
     login.add_argument("--no-start", action="store_true", help="write the agent, do not start")
@@ -690,19 +702,18 @@ def _login(arguments: argparse.Namespace) -> int:
     """``login [name]``: a workstation Runner gets its login agent, as ``install`` gives one;
     in a container the identity goes to the state directory ``run`` reads."""
 
-    if not arguments.control_plane:
-        print(f"--control-plane (or {CONTROL_PLANE_ENV}) is required", file=sys.stderr)
-        return 2
-
     def say(line: str) -> None:
         print(line, flush=True)
 
     def open_browser(url: str) -> object:
         return None if arguments.no_browser or _in_container() else webbrowser.open(url)
 
-    try:
-        if _in_container():
-            name = arguments.name or _container_name()
+    if _in_container():
+        if not arguments.control_plane:
+            print(f"--control-plane (or {CONTROL_PLANE_ENV}) is required", file=sys.stderr)
+            return 2
+        name = arguments.name or _container_name()
+        try:
             _, outcome = asyncio.run(
                 service.login(
                     state_dir=_state_dir(),
@@ -712,19 +723,27 @@ def _login(arguments: argparse.Namespace) -> int:
                     open_browser=open_browser,
                 )
             )
-            print(outcome)
-            return 0
-        paths = workstation.RunnerPaths(
-            root=arguments.root or workstation.default_root(),
-            name=workstation.validate_name(arguments.name or DEFAULT_LOGIN_NAME),
-        )
+        except (RunnerRegistrationError, RuntimeError, ValueError) as error:
+            print(f"login refused: {error}", file=sys.stderr)
+            return 1
+        print(outcome)
+        return 0
+    try:
+        paths = _login_target(arguments)
+        state = load_state(paths.state_dir)
+        if state is not None:
+            return _logged_in_already(paths, state)
         settings = workstation.WorkstationSettings(
-            control_plane_url=arguments.control_plane,
+            control_plane_url=_login_control_plane(arguments, paths),
             temporal_tls=not arguments.temporal_plaintext,
             path=os.environ.get("PATH", ""),
             install_channel=workstation.install_channel(),
             acp_cli_kinds=_acp_cli_kinds(None, paths),
         )
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+    try:
         lines = asyncio.run(
             workstation.login(
                 paths,
@@ -745,6 +764,85 @@ def _login(arguments: argparse.Namespace) -> int:
     for line in lines:
         print(line)
     return 0
+
+
+def _login_target(arguments: argparse.Namespace) -> workstation.RunnerPaths:
+    """The Runner ``login`` is for: the one named, else the one installed here, else the
+    one picked of several. Only a machine with none falls back to ``runner``: a person
+    whose Runner was installed by token would otherwise get a second Runner (QTS-2937)."""
+
+    root = arguments.root or workstation.default_root()
+    if arguments.name:
+        return workstation.RunnerPaths(root=root, name=workstation.validate_name(arguments.name))
+    names = workstation.installed_names(root)
+    if not names:
+        return workstation.RunnerPaths(root=root, name=DEFAULT_LOGIN_NAME)
+    return workstation.RunnerPaths(
+        root=root,
+        name=_pick(
+            names,
+            prompt="Runner to log in",
+            how="name one, or a new name for a Runner of your own",
+        ),
+    )
+
+
+def _login_control_plane(arguments: argparse.Namespace, paths: workstation.RunnerPaths) -> str:
+    """The flag, else the control plane this Runner, or the Runners installed here, use."""
+
+    if arguments.control_plane:
+        return str(arguments.control_plane)
+    if paths.settings_file.is_file():
+        return workstation.WorkstationSettings.load(paths).control_plane_url
+    recorded = sorted(
+        {
+            workstation.WorkstationSettings.load(
+                workstation.RunnerPaths(root=paths.root, name=name)
+            ).control_plane_url
+            for name in workstation.installed_names(paths.root)
+        }
+    )
+    if not recorded:
+        raise ValueError(f"--control-plane (or {CONTROL_PLANE_ENV}) is required")
+    return _pick(recorded, prompt="Control plane", how="name one with --control-plane")
+
+
+def _pick(choices: list[str], *, prompt: str, how: str) -> str:
+    """The one choice, or the one a person picks by number; without a terminal to ask in,
+    refused with the choices and ``how`` to name one instead."""
+
+    if len(choices) == 1:
+        return choices[0]
+    if not (os.isatty(0) and os.isatty(1)):
+        raise ValueError(f"this machine has {', '.join(choices)}: {how}")
+    for number, choice in enumerate(choices, start=1):
+        print(f"  [{number}] {choice}")
+    answer = input(f"{prompt} [number]: ").strip()
+    if answer.isdigit() and 0 < int(answer) <= len(choices):
+        return choices[int(answer) - 1]
+    raise ValueError(f"{answer!r} is not one of the numbers listed")
+
+
+def _logged_in_already(paths: workstation.RunnerPaths, state: RunnerState) -> int:
+    """A Runner already registered here is never logged in again: an operated one, from
+    ``login`` or a token minted on /me/runners, is already the person's; an Organisation's
+    own Runner never becomes anyone's (``operator_user_profile_id`` never changes)."""
+
+    if state.operator_user_profile_id is not None:
+        print(
+            f"{paths.name} is already yours ({state.runner_id}) and listed on /me/runners: "
+            f"`agentic-runner connect --name {paths.name}` connects it to an Organisation, "
+            f"`agentic-runner sign-in claude|codex --name {paths.name}` gives it your LLM "
+            "access"
+        )
+        return 0
+    print(
+        f"login refused: {paths.name} is an Organisation's Runner ({state.runner_id}), which "
+        "never becomes yours; log in a Runner of your own under a new name: "
+        "`agentic-runner login <name>`",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _connect(arguments: argparse.Namespace) -> int:

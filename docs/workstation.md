@@ -110,6 +110,15 @@ agentic-runner login alice-laptop --control-plane <control-plane URL>
 yours, connected to no Organisation yet, and `login` installs and starts its login agent as
 `install` does. You hold at most 5 Runners.
 
+On a machine that already runs Runners, `login` needs no `--control-plane`: it takes the
+one they use, and asks which when they use several. Without a name it acts on the Runner
+installed here, and asks which one when there are several; it never makes a second Runner
+under a default name. A Runner you installed with a token from **/me/runners** is already
+yours: `login` says so and points to `connect` and `sign-in`. An Organisation's Runner
+never becomes yours; give a Runner of your own a new name, `agentic-runner login <name>`.
+`install` stays the way for a pasted token: an Organisation's Runner, or a New token that
+reinstalls a Runner.
+
 When you confirm, the console also opens your User Key with your passkey and seals it to
 this Runner, so every Secret you set for yourself in the console works here with no
 retyping. Check that the Runner key the console shows matches the `runner key` line first.
