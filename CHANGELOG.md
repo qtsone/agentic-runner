@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.6.3](https://github.com/qtsone/agentic-runner/compare/v4.6.2...v4.6.3) (2026-11-08)
+
+
+### Bug Fixes
+
+* **ci:** drop the cosign signature and keep provenance off the registry (QTS-1716) ([#105](https://github.com/qtsone/agentic-runner/issues/105)) ([36c163b](https://github.com/qtsone/agentic-runner/commit/36c163bb287f16702323f68286586b235a0680f5)), closes [qtsone/agentic-runner#69](https://github.com/qtsone/agentic-runner/issues/69)
+
 ## [4.6.2](https://github.com/qtsone/agentic-runner/compare/v4.6.1...v4.6.2) (2026-11-06)
 
 
