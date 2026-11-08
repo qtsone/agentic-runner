@@ -57,9 +57,7 @@ unset POOL_KEY
 Verify the release before you install it, if you like:
 
 ```sh
-cosign verify ghcr.io/qtsone/charts/agentic-runner:<version> \
-  --certificate-identity "https://github.com/qtsone/agentic-runner/.github/workflows/publish-pypi.yml@refs/tags/v<version>" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/qtsone/charts/agentic-runner:<version> --repo qtsone/agentic-runner
 ```
 
 ## Values

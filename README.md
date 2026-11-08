@@ -74,19 +74,13 @@ which publishes:
 | Runner image, `linux/amd64` and `linux/arm64` | `ghcr.io/qtsone/agentic-runner:<version>`, `:contracts-<version>`, `:latest` |
 | Chart | `oci://ghcr.io/qtsone/charts/agentic-runner`, `appVersion` = `<version>` |
 
-The image carries an SBOM and build provenance. The image and the chart are signed with keyless
-cosign and carry a GitHub build provenance attestation. The GitHub Release lists the contracts
+The image carries an SBOM and build provenance. The image and the chart carry a GitHub build
+provenance attestation, signed keyless with Sigstore and kept by GitHub, not in the registry
+(releases up to v4.6.2 were also signed with cosign). The GitHub Release lists the contracts
 version and every artifact's digest. To verify a release:
 
 ```bash
-cosign verify ghcr.io/qtsone/agentic-runner:<version> \
-  --certificate-identity "https://github.com/qtsone/agentic-runner/.github/workflows/publish-pypi.yml@refs/tags/v<version>" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify oci://ghcr.io/qtsone/agentic-runner:<version> --repo qtsone/agentic-runner
-
-cosign verify ghcr.io/qtsone/charts/agentic-runner:<version> \
-  --certificate-identity "https://github.com/qtsone/agentic-runner/.github/workflows/publish-pypi.yml@refs/tags/v<version>" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 gh attestation verify oci://ghcr.io/qtsone/charts/agentic-runner:<version> --repo qtsone/agentic-runner
 ```
 
