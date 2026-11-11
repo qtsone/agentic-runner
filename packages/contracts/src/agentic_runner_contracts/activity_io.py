@@ -1390,6 +1390,9 @@ class TriageTurnOutput:
     """The completion's text, or ``None`` on a hang, a refusal or a malformed answer."""
 
     raw_text: str | None
+    # What the turn spent against its Reserve, so a Listener firing's second turn gets only
+    # what the first left (QTS-2462). ``None`` from a Runner before 3.33, which reports none.
+    spent_tokens: int | None = None
 
 
 @dataclass(frozen=True)

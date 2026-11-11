@@ -644,6 +644,12 @@ class LlmProxy:
     def base_url(self) -> str:
         return f"http://{self._host}:{self._port}"
 
+    def reserve_spent(self, attempt_id: str) -> int:
+        """What a live capped attempt has spent against its Reserve; read it before the
+        attempt ends, which forgets the count."""
+
+        return self._reserve_spent.get(attempt_id, 0)
+
     async def __aenter__(self) -> Self:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
