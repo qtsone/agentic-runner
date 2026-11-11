@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.27
+# syntax=docker/dockerfile:1.28
 #
 # ghcr.io/qtsone/agentic-runner -- the barebones Runner image (PRD issue 46, ADR-0013 §6).
 #
